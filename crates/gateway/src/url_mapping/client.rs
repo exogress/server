@@ -68,7 +68,6 @@ impl Client {
         external_port: u16,
         proto: Protocol,
         tunnels: ClientTunnels,
-        log: &slog::Logger,
     ) -> Result<
         Option<(
             MappingAction,
@@ -77,13 +76,10 @@ impl Client {
         ClientError,
     > {
         // Try to read from cache
-        if let Some((cached, matched_prefix)) = self.mappings.resolve(
-            url_prefix.clone(),
-            tunnels.clone(),
-            external_port,
-            proto,
-            log,
-        ) {
+        if let Some((cached, matched_prefix)) =
+            self.mappings
+                .resolve(url_prefix.clone(), tunnels.clone(), external_port, proto)
+        {
             match cached {
                 Some(data) => {
                     // mapping exist
@@ -94,10 +90,8 @@ impl Client {
                 }
                 None => {
                     info!(
-                        log,
                         "Found in cache, but for higher-level prefix: {}. Query was: {}",
-                        matched_prefix,
-                        url_prefix
+                        matched_prefix, url_prefix
                     );
                     // go ahead, and ask again on subpath, since it may be another oath
                 }
@@ -105,7 +99,7 @@ impl Client {
         }
 
         // no info in cache
-        info!(log, "No data in cache for {}", url_prefix);
+        info!("No data in cache for {}", url_prefix);
 
         let host = url_prefix.host();
 
@@ -117,7 +111,7 @@ impl Client {
             .entry(host.clone())
             .or_insert_with({
                 shadow_clone!(url_prefix);
-                shadow_clone!(log);
+
                 let mappings = self.mappings.clone();
                 let int_api_access_secret = self.retrieval.int_api_access_secret.clone();
 
@@ -127,12 +121,11 @@ impl Client {
                     // initiate query
                     tokio::spawn({
                         shadow_clone!(ready_event);
-                        shadow_clone!(log);
 
                         async move {
                             info!(
-                                log,
-                                "Initiating new request to retrieve mapping for {}", url_prefix
+                                "Initiating new request to retrieve mapping for {}",
+                                url_prefix
                             );
 
                             // FIXME
@@ -147,7 +140,6 @@ impl Client {
                             //         let mapping_response = response.into_inner();
                             //
                             //         debug!(
-                            //             log,
                             //             "Mapping retrieved successfully: `{:?}`", mapping_response
                             //         );
                             //
@@ -157,7 +149,7 @@ impl Client {
                             //                     mapping,
                             //                 ),
                             //             ) => {
-                            //                 info!(log, "Mapping found: {:?}", mapping);
+                            //                 info!("Mapping found: {:?}", mapping);
                             //
                             //                 let mapping = Mapping::try_from_message(
                             //                     mapping,
@@ -171,7 +163,7 @@ impl Client {
                             //                                 Some(mapping))
                             //                     }
                             //                     Err(e) => {
-                            //                         error!(log, "Could not parse incoming mapping: {}. Save None to prevent queries on each request", e);
+                            //                         error!("Could not parse incoming mapping: {}. Save None to prevent queries on each request", e);
                             //                         mappings.upsert(&url_prefix, None);
                             //                     }
                             //                 }
@@ -181,19 +173,18 @@ impl Client {
                             //                     _,
                             //                 ),
                             //             ) => {
-                            //                 info!(log, "Mapping not found");
+                            //                 info!("Mapping not found");
                             //                 mappings.upsert(&url_prefix, None);
                             //             }
                             //             None => {
                             //                 error!(
-                            //                     log,
                             //                     "unexpected empty response from gRPC mapping api"
                             //                 );
                             //             }
                             //         }
                             //     }
                             //     Err(e) => {
-                            //         error!(log, "Error retrieving mapping: {}", e);
+                            //         error!("Error retrieving mapping: {}", e);
                             //     }
                             // }
 
@@ -218,16 +209,13 @@ impl Client {
             }
         }
 
-        if let Some((cached, _)) =
-            self.mappings
-                .resolve(url_prefix, tunnels, external_port, proto, log)
+        if let Some((cached, _)) = self
+            .mappings
+            .resolve(url_prefix, tunnels, external_port, proto)
         {
             Ok(cached)
         } else {
-            error!(
-                log,
-                "Still can't resolve after successful reset event happened"
-            );
+            error!("Still can't resolve after successful reset event happened");
             Err(ClientError::CouldNotRetrieve)
         }
     }

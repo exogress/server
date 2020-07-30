@@ -1,5 +1,4 @@
 #[macro_use]
-extern crate slog;
+extern crate tracing;
 
 pub mod clap;
-pub mod termination;

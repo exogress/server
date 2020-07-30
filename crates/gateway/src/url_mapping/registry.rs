@@ -117,7 +117,6 @@ impl Mappings {
         tunnels: ClientTunnels,
         external_port: u16,
         proto: Protocol,
-        log: &slog::Logger,
     ) -> Option<
         //first option indicate, if the data exist in registrty
         (
@@ -135,10 +134,10 @@ impl Mappings {
             .map(move |(maybe_mapping, matched_prefix)| {
                 (
                     maybe_mapping.and_then(|r| {
-                        match r.handle(url_prefix, tunnels, external_port, proto, log) {
+                        match r.handle(url_prefix, tunnels, external_port, proto) {
                             Ok(r) => Some(r),
                             Err(e) => {
-                                error!(log, "error handling URL: {:?}", e);
+                                error!("error handling URL: {:?}", e);
                                 None
                             }
                         }
@@ -167,8 +166,6 @@ impl Mappings {
 mod tests {
     use std::thread;
 
-    use slog::{o, Logger};
-
     use crate::url_mapping::mapping::{
         AuthProviderConfig, MatchPattern, Oauth2Provider, Oauth2SsoClient, ProxyMatchedTo,
     };
@@ -177,8 +174,6 @@ mod tests {
 
     #[test]
     pub fn lifetime_tests() {
-        let log = Logger::root(slog::Discard, o!());
-
         let mappings = Mappings::new(Duration::from_secs(2));
 
         assert!(mappings
@@ -187,7 +182,6 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .is_none());
 
@@ -217,7 +211,6 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .is_some());
         mappings.upsert(&request_url, None);
@@ -227,7 +220,6 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .unwrap()
             .0
@@ -243,7 +235,6 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .is_some());
 
@@ -273,7 +264,6 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .is_none());
 
@@ -290,7 +280,6 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .is_some());
 
@@ -305,7 +294,6 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .is_none());
     }

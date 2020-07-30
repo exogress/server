@@ -1,6 +1,6 @@
 use std::fmt;
 
-use exogress_server_common::termination::StopSignal;
+use exogress_common_utils::termination::StopSignal;
 use rdkafka::error::KafkaError;
 use stop_handle::{StopHandle, StopWait};
 

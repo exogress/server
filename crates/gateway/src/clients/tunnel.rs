@@ -35,7 +35,6 @@ pub async fn spawn(
     tls_cert_path: String,
     tls_key_path: String,
     tunnels: ClientTunnels,
-    log: slog::Logger,
 ) -> io::Result<()> {
     let mut config = ServerConfig::new(NoClientAuth::new());
 
@@ -48,7 +47,7 @@ pub async fn spawn(
 
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
-    info!(log, "Listening for incoming tunnels on {:?}", addr);
+    info!("Listening for incoming tunnels on {:?}", addr);
     let mut listener = TcpListener::bind(addr).await?;
 
     loop {
@@ -59,8 +58,6 @@ pub async fn spawn(
         shadow_clone!(acceptor);
 
         tokio::spawn({
-            shadow_clone!(log);
-
             async move {
                 match acceptor.accept(tunnel_stream).await {
                     Ok(mut tls_conn) => {
@@ -76,35 +73,28 @@ pub async fn spawn(
                         {
                             Ok(Ok(tunnel_hello)) => {
                                 warn!(
-                                    log,
-                                    "accepted new TLS tunnel with tunnel_hello {:?}", tunnel_hello
+                                    "accepted new TLS tunnel with tunnel_hello {:?}",
+                                    tunnel_hello
                                 );
 
                                 tunnel_hello
                             }
                             Ok(Err(e)) => {
-                                warn!(log, "error on TLS tunnel: {}. Closing connection", e);
+                                warn!("error on TLS tunnel: {}. Closing connection", e);
                                 return;
                             }
                             Err(tokio::time::Elapsed { .. }) => {
-                                warn!(
-                                    log,
-                                    "no initial connection data received. Closing connection"
-                                );
+                                warn!("no initial connection data received. Closing connection");
                                 return;
                             }
                         };
 
-                        let (bg, connector) = server_connection(server_framed(tls_conn), &log);
+                        let (bg, connector) = server_connection(server_framed(tls_conn));
 
                         let instance_id = tunnel_hello.instance_id;
                         let config_name = tunnel_hello.config_name;
 
-                        let log = log.new(
-                            o!("instance_id" => instance_id, "config_name" => config_name.clone()),
-                        );
-
-                        info!(log, "new instance connected");
+                        info!("new instance connected");
 
                         {
                             let locked = &mut *tunnels.inner.lock();
@@ -146,10 +136,10 @@ pub async fn spawn(
 
                         match res {
                             Ok(()) => {
-                                info!(log, "instance connection closed successfully");
+                                info!("instance connection closed successfully");
                             }
                             Err(e) => {
-                                info!(log, "instance connection closed with error {:?}", e);
+                                info!("instance connection closed with error {:?}", e);
                             }
                         }
 
@@ -169,7 +159,7 @@ pub async fn spawn(
                         }
                     }
                     Err(e) => {
-                        warn!(log, "could not accept tunnel connnection: {}", e);
+                        warn!("could not accept tunnel connnection: {}", e);
                     }
                 }
             }

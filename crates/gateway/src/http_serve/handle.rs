@@ -68,7 +68,6 @@ pub async fn server(
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
-    log: slog::Logger,
 ) {
     let (https_stop_handle, https_stop_wait) = stop_handle();
 
@@ -109,36 +108,34 @@ pub async fn server(
     let acme = warp::path!(".well-known" / "acme-challenge" / String)
         .and(filters::host::host())
         .and_then({
-            shadow_clone!(log);
             shadow_clone!(webapp_client);
 
             move |token: String, host: Option<String>| {
                 shadow_clone!(webapp_client);
-                shadow_clone!(log);
 
                 async move {
                     let filename = format!(".well-known/acme-challenge/{}", token);
                     let hostname = host.expect("no host in request");
 
                     info!(
-                        log,
-                        "ACME HTTP challenge verification request: {} on {}", filename, hostname
+                        "ACME HTTP challenge verification request: {} on {}",
+                        filename, hostname
                     );
 
                     let res = webapp_client
-                        .acme_http_challenge_verification(&hostname, filename.as_str(), &log)
+                        .acme_http_challenge_verification(&hostname, filename.as_str())
                         .await;
 
                     match res {
                         Ok(info) => {
-                            info!(log, "validation request succeeded for host {}", hostname);
+                            info!("validation request succeeded for host {}", hostname);
                             Ok(Response::builder()
                                 .header(CONTENT_TYPE, info.content_type)
                                 .body(info.file_content)
                                 .unwrap())
                         }
                         Err(e) => {
-                            warn!(log, "error in ACME verification: {}", e);
+                            warn!("error in ACME verification: {}", e);
                             Err(warp::reject::not_found())
                         }
                     }
@@ -151,13 +148,11 @@ pub async fn server(
 
     let (_, http_server) = warp::serve(acme.or(health).or(redirect_http_server))
         .bind_with_graceful_shutdown(listen_http_addr, {
-            shadow_clone!(log);
-
             async move {
                 let reason = https_stop_wait.await;
                 info!(
-                    log,
-                    "Triggering graceful shutdown of HTTP by request: {}", reason
+                    "Triggering graceful shutdown of HTTP by request: {}",
+                    reason
                 );
             }
         });
@@ -192,7 +187,6 @@ pub async fn server(
     let oauth2_callback = warp::path!("_exg" / String / "callback")
         .and(filters::query::query::<HashMap<String, String>>())
         .and_then({
-            shadow_clone!(log);
             shadow_clone!(google_oauth2_client);
             shadow_clone!(github_oauth2_client);
             shadow_clone!(auth_finalizers);
@@ -201,21 +195,12 @@ pub async fn server(
                 shadow_clone!(google_oauth2_client);
                 shadow_clone!(github_oauth2_client);
 
-                shadow_clone!(log);
                 shadow_clone!(auth_finalizers);
 
                 async move {
                     let oauth2_result = match provider.as_str() {
-                        "google" => {
-                            google_oauth2_client
-                                .process_callback(params, log.clone())
-                                .await
-                        }
-                        "github" => {
-                            github_oauth2_client
-                                .process_callback(params, log.clone())
-                                .await
-                        }
+                        "google" => google_oauth2_client.process_callback(params).await,
+                        "github" => github_oauth2_client.process_callback(params).await,
                         _ => panic!("unsupported provider"),
                     };
 
@@ -223,7 +208,7 @@ pub async fn server(
 
                     match oauth2_result {
                         Ok(res) => {
-                            info!(log, "oauth2 result: {:?}", res);
+                            info!("oauth2 result: {:?}", res);
                             let secret: String =
                                 thread_rng().sample_iter(&Alphanumeric).take(30).collect();
 
@@ -250,7 +235,7 @@ pub async fn server(
                             *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
                         }
                         Err(e) => {
-                            warn!(log, "Error from Google: {:?}", e);
+                            warn!("Error from Google: {:?}", e);
 
                             *resp.status_mut() = StatusCode::FORBIDDEN;
                             *resp.body_mut() = "Forbidden";
@@ -263,7 +248,6 @@ pub async fn server(
         });
 
     let authorized_callback = warp::path!("_exg" / "authorized" / String).and_then({
-        shadow_clone!(log);
         shadow_clone!(auth_finalizers);
 
         move |secret| {
@@ -328,41 +312,32 @@ pub async fn server(
         // take query part
         .and(
             filters::query::raw()
-                .or_else(|_| futures::future::ready(Ok::<(String, ), Rejection>(("".into(), )))),
+                .or_else(|_| futures::future::ready(Ok::<(String,), Rejection>(("".into(),)))),
         )
         .and_then({
-            shadow_clone!(log);
+            move |path: warp::filters::path::FullPath, query: String| async move {
+                info!("check injections in path {:?}", path.as_str());
+                let decoded_path = percent_decode_str(path.as_str()).decode_utf8_lossy();
+                let decoded_query = percent_decode_str(query.as_str()).decode_utf8_lossy();
 
-            move |path: warp::filters::path::FullPath, query: String| {
-                shadow_clone!(log);
-
-                async move {
-                    info!(log, "check injections in path {:?}", path.as_str());
-                    let decoded_path = percent_decode_str(path.as_str()).decode_utf8_lossy();
-                    let decoded_query = percent_decode_str(query.as_str()).decode_utf8_lossy();
-
-                    if let Some(true) = libinjection::xss(decoded_path.as_ref()) {
-                        warn!(log, "found XSS in path");
-                        return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                    }
-                    if let Some((true, fingerprint)) = libinjection::sqli(decoded_path.as_ref()) {
-                        warn!(log, "found SQL injection in path: {}", fingerprint);
-                        return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                    }
-                    if let Some(true) = libinjection::xss(decoded_query.as_ref()) {
-                        warn!(log, "found XSS in query params");
-                        return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                    }
-                    if let Some((true, fingerprint)) = libinjection::sqli(decoded_query.as_ref()) {
-                        warn!(
-                            log,
-                            "found SQL injection in query params: {}", fingerprint
-                        );
-                        return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                    }
-
-                    Ok((path, query))
+                if let Some(true) = libinjection::xss(decoded_path.as_ref()) {
+                    warn!("found XSS in path");
+                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
                 }
+                if let Some((true, fingerprint)) = libinjection::sqli(decoded_path.as_ref()) {
+                    warn!("found SQL injection in path: {}", fingerprint);
+                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
+                }
+                if let Some(true) = libinjection::xss(decoded_query.as_ref()) {
+                    warn!("found XSS in query params");
+                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
+                }
+                if let Some((true, fingerprint)) = libinjection::sqli(decoded_query.as_ref()) {
+                    warn!("found SQL injection in query params: {}", fingerprint);
+                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
+                }
+
+                Ok((path, query))
             }
         })
         .and(warp::ws().or(filters::body::stream()))
@@ -370,7 +345,6 @@ pub async fn server(
         .and(filters::host::host())
         // find mapping
         .and_then({
-            shadow_clone!(log);
             shadow_clone!(api_client);
             shadow_clone!(tunnels);
             shadow_clone!(individual_hostname);
@@ -379,7 +353,6 @@ pub async fn server(
                   ws_or_body,
                   headers: http::HeaderMap,
                   maybe_host: Option<String>| {
-                shadow_clone!(log);
                 shadow_clone!(api_client);
                 shadow_clone!(individual_hostname);
                 shadow_clone!(tunnels);
@@ -393,7 +366,7 @@ pub async fn server(
                         path.as_str(),
                         query.as_str(),
                     )
-                        .unwrap();
+                    .unwrap();
 
                     let proto = match &ws_or_body {
                         warp::Either::A(_) => Protocol::WebSockets,
@@ -407,7 +380,7 @@ pub async fn server(
                             external_https_port,
                             proto,
                             tunnels,
-                            &log)
+                        )
                         .await;
 
                     match handle_result {
@@ -416,7 +389,7 @@ pub async fn server(
                         }
                         Ok(None) => Err(warp::reject::not_found()),
                         Err(e) => {
-                            error!(log, "Error resolving URL: {:?}", e);
+                            error!("Error resolving URL: {:?}", e);
                             Err(warp::reject::not_found())
                         }
                     }
@@ -425,8 +398,6 @@ pub async fn server(
         })
         // check rate limits
         .and_then({
-            shadow_clone!(log);
-
             move |(ws_or_body, headers, path, maybe_rate_limiter, action): (
                 _,
                 http::HeaderMap,
@@ -434,8 +405,6 @@ pub async fn server(
                 Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
                 _,
             )| {
-                shadow_clone!(log);
-
                 async move {
                     if let Some(rate_limiter) = maybe_rate_limiter {
                         let locked = &*rate_limiter.lock();
@@ -446,7 +415,7 @@ pub async fn server(
                                 let wait_time =
                                     limited.wait_time_from(MonotonicClock::default().now());
 
-                                info!(log, "rate limited! {:?}", wait_time);
+                                info!("rate limited! {:?}", wait_time);
                                 Err::<_, _>(warp::reject::custom(RateLimited { wait_time }))
                             }
                         }
@@ -460,22 +429,29 @@ pub async fn server(
         // ...
         .and_then({
             shadow_clone!(individual_hostname);
-            shadow_clone!(log);
+
             shadow_clone!(tunnels);
 
             move |(ws_or_body, headers, path, mapping_action): (_, _, _, MappingAction), _params| {
                 shadow_clone!(individual_hostname);
-                shadow_clone!(log);
+
                 shadow_clone!(tunnels);
 
                 async move {
                     match mapping_action.target {
                         ProxyTarget::Client { config_name, url } => {
-                            if let Some(ConnectedTunnel { connector, hyper, instance_id, .. }) = tunnels
-                                .retrieve_client_target(config_name.clone(), individual_hostname.into(), &log)
-                                .await {
-                                info!(log, "forward to client"; "config_name" => config_name, "instance_id" => instance_id);
-
+                            if let Some(ConnectedTunnel {
+                                connector,
+                                hyper,
+                                instance_id,
+                                ..
+                            }) = tunnels
+                                .retrieve_client_target(
+                                    config_name.clone(),
+                                    individual_hostname.into(),
+                                )
+                                .await
+                            {
                                 Ok::<_, warp::Rejection>((
                                     ws_or_body,
                                     headers,
@@ -487,7 +463,7 @@ pub async fn server(
                                     Some((connector, hyper)),
                                 ))
                             } else {
-                                info!(log, "No connected tunnels. Return bad request.");
+                                info!("No connected tunnels. Return bad request.");
                                 Err::<_, _>(warp::reject::custom(BadGateway {}))
                             }
                         }
@@ -497,9 +473,16 @@ pub async fn server(
         })
         // validate JWT token from cookies
         .and_then({
-            shadow_clone!(log);
-
-            move |(ws_or_body, headers, path, proxy_to, base_url, auth_type, jwt_secret, connector): (
+            move |(
+                ws_or_body,
+                headers,
+                path,
+                proxy_to,
+                base_url,
+                auth_type,
+                jwt_secret,
+                connector,
+            ): (
                 _,
                 http::HeaderMap,
                 warp::filters::path::FullPath,
@@ -529,18 +512,15 @@ pub async fn server(
                     .filter_map(move |s| Cookie::parse(s).ok())
                     .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
 
-                shadow_clone!(log);
-
                 async move {
                     if let Some(token) = jwt_token {
                         match jwt::Token::<jwt::Header, jwt::Claims>::parse(&token.value()) {
                             Ok(token) if token.verify(jwt_secret.as_ref(), sha2::Sha256::new()) => {
-                                info!(log, "jwt-token parse and verified");
+                                info!("jwt-token parse and verified");
                                 Ok((ws_or_body, headers, path, proxy_to, token.claims, connector))
                             }
                             Ok(_token) => {
                                 info!(
-                                    log,
                                     "jwt-token parsed but not verified with secret {:?}",
                                     jwt_secret
                                 );
@@ -554,7 +534,7 @@ pub async fn server(
                                 }))
                             }
                             Err(e) => {
-                                info!(log, "JWT token error: {:?}. Token: {}", e, token.value());
+                                info!("JWT token error: {:?}. Token: {}", e, token.value());
                                 Err::<_, _>(warp::reject::custom(NotAuthorized {
                                     auth_type: Some(auth_type),
                                     requested_url: base_url.clone(),
@@ -566,7 +546,7 @@ pub async fn server(
                             }
                         }
                     } else {
-                        info!(log, "jwt-token not found");
+                        info!("jwt-token not found");
 
                         Err::<_, _>(warp::reject::custom(NotAuthorized {
                             auth_type: Some(auth_type),
@@ -585,7 +565,7 @@ pub async fn server(
         .and(filters::addr::local())
         .and_then({
             shadow_clone!(client);
-            shadow_clone!(log);
+
             shadow_clone!(resolver);
             shadow_clone!(dbip);
 
@@ -601,36 +581,34 @@ pub async fn server(
                   remote_addr: Option<SocketAddr>,
                   local_addr: Option<SocketAddr>| {
                 shadow_clone!(client);
-                shadow_clone!(log);
+
                 shadow_clone!(resolver);
                 shadow_clone!(dbip);
 
                 let remote_addr = remote_addr.unwrap().ip();
                 let local_addr = local_addr.unwrap().ip();
 
-                let log = if let Some(dbip) = dbip {
-                    match dbip.lookup::<crate::dbip::LocationAndIsp>(remote_addr) {
-                        Ok(loc) => log
-                            .new(o!(
-                                "loc" => format!(
-                                    "{}/{}",
-                                    loc.country.and_then(|c| c.iso_code).unwrap_or_default(),
-                                    loc.city.and_then(|c| c.names.and_then(|n| n.en)).unwrap_or_default()
-                                )
-                            ))
-                            .into_erased(),
-                        Err(e) => log
-                            .new(o!("loc" => format!("resolve_error {:?}", e)))
-                            .into_erased(),
-                    }
-                } else {
-                    log.new(o!("loc" => "disabled")).into_erased()
-                };
+                // if let Some(dbip) = dbip {
+                //     match dbip.lookup::<crate::dbip::LocationAndIsp>(remote_addr) {
+                //         Ok(loc) => log
+                //             .new(o!(
+                //                 "loc" => format!(
+                //                     "{}/{}",
+                //                     loc.country.and_then(|c| c.iso_code).unwrap_or_default(),
+                //                     loc.city.and_then(|c| c.names.and_then(|n| n.en)).unwrap_or_default()
+                //                 )
+                //             ))
+                //             .into_erased(),
+                //         Err(e) => log
+                //             .new(o!("loc" => format!("resolve_error {:?}", e)))
+                //             .into_erased(),
+                //     }
+                // };
 
-                info!(log, "HTTP: proxy to {}", proxy_to);
+                info!("HTTP: proxy to {}", proxy_to);
 
                 match ws_or_body {
-                    warp::Either::A((ws, )) => Either::Left(proxy_ws(
+                    warp::Either::A((ws,)) => Either::Left(proxy_ws(
                         ws,
                         remote_addr,
                         headers,
@@ -638,9 +616,8 @@ pub async fn server(
                         local_addr,
                         connector,
                         resolver,
-                        log,
                     )),
-                    warp::Either::B((body, )) => Either::Right(proxy_http_request(
+                    warp::Either::B((body,)) => Either::Right(proxy_http_request(
                         body,
                         remote_addr,
                         headers,
@@ -649,24 +626,21 @@ pub async fn server(
                         client,
                         local_addr,
                         connector,
-                        log,
                     )),
                 }
             }
         })
         .recover({
-            shadow_clone!(log);
             shadow_clone!(google_oauth2_client);
             shadow_clone!(github_oauth2_client);
 
             move |r| {
-                shadow_clone!(log);
                 shadow_clone!(google_oauth2_client);
                 shadow_clone!(github_oauth2_client);
 
-                warn!(log, "Error: {:?}", r);
+                warn!("Error: {:?}", r);
 
-                handle_rejection(r, google_oauth2_client, github_oauth2_client, log)
+                handle_rejection(r, google_oauth2_client, github_oauth2_client)
             }
         });
 
@@ -677,23 +651,21 @@ pub async fn server(
             .or(server),
     )
     .tls({
-        shadow_clone!(log);
         shadow_clone!(webapp_client);
 
         move |hostname| {
             shadow_clone!(webapp_client);
-            shadow_clone!(log);
+
             shadow_clone!(public_base_url);
             shadow_clone!(tls_cert_path);
             shadow_clone!(tls_key_path);
 
-            info!(log, "Serve hostname (from SNI) `{:?}`", hostname);
+            info!("Serve hostname (from SNI) `{:?}`", hostname);
 
             Box::pin(async move {
                 let mut builder = warp::TlsConfigBuilder::new();
 
                 info!(
-                    log,
                     "compare {:?} with {:?}",
                     Some(public_base_url.host().unwrap().to_string()),
                     hostname
@@ -704,10 +676,7 @@ pub async fn server(
                 } else {
                     shadow_clone!(webapp_client);
 
-                    let certs = webapp_client
-                        .retrieve_certificate(&hostname?, &log)
-                        .await
-                        .ok()?;
+                    let certs = webapp_client.retrieve_certificate(&hostname?).await.ok()?;
 
                     builder = builder
                         .cert(certs.certificate.as_bytes())
@@ -719,14 +688,12 @@ pub async fn server(
         }
     })
     .bind_with_graceful_shutdown(listen_https_addr, {
-        shadow_clone!(log);
-
         async move {
             let reason = app_stop_wait.await;
 
             https_stop_handle.stop(reason.clone());
 
-            info!(log, "Triggering graceful shutdown by request: {}", reason);
+            info!("Triggering graceful shutdown by request: {}", reason);
         }
     });
 
@@ -737,7 +704,6 @@ async fn handle_rejection(
     err: Rejection,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
-    log: slog::Logger,
 ) -> Result<impl Reply, Infallible> {
     let mut resp = Response::new("");
 
@@ -773,10 +739,10 @@ async fn handle_rejection(
     {
         let redirect_to = match provider {
             Oauth2Provider::Google => {
-                google_oauth2_client.authorization_url(base_url, jwt_secret, requested_url, &log)
+                google_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
             }
             Oauth2Provider::Github => {
-                github_oauth2_client.authorization_url(base_url, jwt_secret, requested_url, &log)
+                github_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
             }
         };
 
@@ -825,7 +791,6 @@ async fn proxy_ws(
     local_ip: IpAddr,
     connector: Option<(Connector, hyper::client::Client<Connector>)>,
     resolver: Arc<trust_dns_resolver::TokioAsyncResolver>,
-    log: slog::Logger,
 ) -> Result<Response<Body>, warp::Rejection> {
     let should_use_tls = if proxy_to.scheme() == "http" {
         proxy_to.set_scheme("ws").unwrap();
@@ -838,7 +803,7 @@ async fn proxy_ws(
     } else if proxy_to.scheme() == "wss" {
         true
     } else {
-        error!(log, "bad protocol {:?}", proxy_to);
+        error!("bad protocol {:?}", proxy_to);
         panic!("bad protocol {:?}", proxy_to)
     };
 
@@ -849,15 +814,13 @@ async fn proxy_ws(
         .parse()
         .expect("FIXME");
 
-    let log = log.new(o!("upstream" => upstream.clone()));
-
-    info!(log, "handle WS connection. proxy to {}", proxy_to);
+    info!("handle WS connection. proxy to {}", proxy_to);
 
     let mut proxy_req = http::Request::new(());
 
     *proxy_req.uri_mut() = proxy_to.to_string().try_into().unwrap();
 
-    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers, &log);
+    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers);
 
     for (header, value) in proxy_headers.into_iter() {
         match proxy_req
@@ -884,7 +847,6 @@ async fn proxy_ws(
                 .ok_or_else(|| warp::reject::custom(BadGateway {}))?;
 
             info!(
-                log,
                 "about to connect via TCP to {:?}",
                 (addr, proxy_to.port_or_known_default().unwrap())
             );
@@ -898,7 +860,7 @@ async fn proxy_ws(
         Some((connector, _)) => Box::new(connector.get_connection(upstream).await.expect("FIXME")),
     };
 
-    info!(log, "connected");
+    info!("connected");
 
     let (proxied_ws, proxied_response) = if should_use_tls {
         let (s, resp) = tokio_tungstenite::client_async_tls(proxy_req, transport)
@@ -907,7 +869,7 @@ async fn proxy_ws(
 
         (Either::Left(s), resp)
     } else {
-        info!(log, "PLAIN");
+        info!("PLAIN");
         let (s, resp) = tokio_tungstenite::client_async(proxy_req, transport)
             .await
             .unwrap();
@@ -917,18 +879,13 @@ async fn proxy_ws(
 
     let mut resp = ws
         .on_upgrade({
-            shadow_clone!(log);
-
             move |ws| async move {
                 let (server_sink, server_stream) = ws.split();
                 let (proxied_sink, proxied_stream) = proxied_ws.split();
 
                 let mut forward1 = server_stream
                     .map({
-                        shadow_clone!(log);
                         move |warp_msg| {
-                            shadow_clone!(log);
-
                             warp_msg.map(move |r| {
                                 let m = if r.is_text() {
                                     tungstenite::Message::Text(r.to_str().unwrap().into())
@@ -945,34 +902,26 @@ async fn proxy_ws(
                                     unreachable!()
                                 };
 
-                                trace!(log, "Send warp message to target: {:?}", m);
+                                trace!("Send warp message to target: {:?}", m);
 
                                 m
                             })
                         }
                     })
                     .map_err({
-                        shadow_clone!(log);
-
                         move |e| {
-                            error!(log, "Warp WS stream error: {:?}", e);
+                            error!("Warp WS stream error: {:?}", e);
                         }
                     })
                     .forward(proxied_sink.sink_map_err({
-                        shadow_clone!(log);
-
                         move |e| {
-                            error!(log, "Tungstenite WS sink error: {:?}", e);
+                            error!("Tungstenite WS sink error: {:?}", e);
                         }
                     }));
 
                 let mut forward2 = proxied_stream
                     .map({
-                        shadow_clone!(log);
-
                         move |tungstenite_msg| {
-                            shadow_clone!(log);
-
                             tungstenite_msg.map(move |r| {
                                 let m = match r {
                                     tungstenite::Message::Text(s) => warp::ws::Message::text(s),
@@ -980,7 +929,7 @@ async fn proxy_ws(
                                     tungstenite::Message::Ping(v) => warp::ws::Message::ping(v),
                                     tungstenite::Message::Pong(v) => warp::ws::Message::pong(v),
                                     tungstenite::Message::Close(v) => {
-                                        trace!(log, "Proxied host asked to close connection");
+                                        trace!("Proxied host asked to close connection");
                                         if let Some(close_frame) = v {
                                             warp::ws::Message::close_with(
                                                 close_frame.code,
@@ -992,24 +941,20 @@ async fn proxy_ws(
                                     }
                                 };
 
-                                trace!(log, "Send from host to warp: {:?}", m);
+                                trace!("Send from host to warp: {:?}", m);
 
                                 m
                             })
                         }
                     })
                     .map_err({
-                        shadow_clone!(log);
-
                         move |e| {
-                            error!(log, "Tungstenite WS stream error: {:?}", e);
+                            error!("Tungstenite WS stream error: {:?}", e);
                         }
                     })
                     .forward(server_sink.sink_map_err({
-                        shadow_clone!(log);
-
                         move |e| {
-                            error!(log, "Warp WS sink error: {:?}", e);
+                            error!("Warp WS sink error: {:?}", e);
                         }
                     }));
 
@@ -1018,7 +963,7 @@ async fn proxy_ws(
                     _ = forward2 => {},
                 }
 
-                info!(log, "WS connection closed");
+                info!("WS connection closed");
             }
         })
         .into_response();
@@ -1027,10 +972,7 @@ async fn proxy_ws(
 
     for (header, value) in proxied_response.headers().into_iter() {
         if header.as_str().to_lowercase().starts_with("x-exg") {
-            info!(
-                log,
-                "Trying to proxy already proxied request (prevent loops)"
-            );
+            info!("Trying to proxy already proxied request (prevent loops)");
             let resp = Response::builder().status(StatusCode::LOOP_DETECTED);
             return Ok::<_, warp::Rejection>(resp.body("Loop detected".into()).unwrap());
         }
@@ -1065,7 +1007,6 @@ fn proxy_request_headers(
     local_ip: IpAddr,
     client_ip: IpAddr,
     mut headers: http::HeaderMap,
-    _log: &slog::Logger,
 ) -> Vec<(String, String)> {
     let mut res = vec![];
 
@@ -1114,9 +1055,8 @@ async fn proxy_http_request(
     client: reqwest::Client,
     local_ip: IpAddr,
     connector: Option<(Connector, hyper::client::Client<Connector>)>,
-    log: slog::Logger,
 ) -> Result<Response<Body>, warp::Rejection> {
-    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers, &log);
+    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers);
     match connector {
         None => {
             let mut proxy_req = reqwest::Request::new(method, proxy_to.clone());
@@ -1136,15 +1076,12 @@ async fn proxy_http_request(
             }
 
             *proxy_req.body_mut() = Some(reqwest::Body::wrap_stream(
-                to_bytes_stream_and_check_injections(body_stream, log.clone()),
+                to_bytes_stream_and_check_injections(body_stream),
             ));
 
             match client.execute(proxy_req).await {
                 Err(e) => {
-                    info!(
-                        log,
-                        "Error in executing hyper connection through tunnel: {}", e
-                    );
+                    info!("Error in executing hyper connection through tunnel: {}", e);
                     Err::<_, _>(warp::reject::custom(BadGateway {}))
                 }
                 Ok(reqwest_response) => {
@@ -1155,10 +1092,7 @@ async fn proxy_http_request(
 
                     for (header, value) in reqwest_response.headers().into_iter() {
                         if header.as_str().to_lowercase().starts_with("x-exg") {
-                            info!(
-                                log,
-                                "Trying to proxy already proxied request (prevent loops)"
-                            );
+                            info!("Trying to proxy already proxied request (prevent loops)");
                             let resp = Response::builder().status(StatusCode::LOOP_DETECTED);
                             return Ok::<_, warp::Rejection>(
                                 resp.body("Loop detected".into()).unwrap(),
@@ -1179,16 +1113,14 @@ async fn proxy_http_request(
                         .unwrap()
                         .insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
 
-                    shadow_clone!(log);
-
                     let body =
                         Body::wrap_stream(reqwest_response.bytes_stream().map(move |bytes| {
                             match &bytes {
                                 Ok(b) => {
-                                    trace!(log, "Proxy {} bytes", b.len());
+                                    trace!("Proxy {} bytes", b.len());
                                 }
                                 Err(e) => {
-                                    info!(log, "Error: {:?}", e);
+                                    info!("Error: {:?}", e);
                                 }
                             }
                             bytes
@@ -1199,7 +1131,7 @@ async fn proxy_http_request(
             }
         }
         Some((_, hyper)) => {
-            info!(log, "Proxy request to {}", proxy_to);
+            info!("Proxy request to {}", proxy_to);
 
             let mut proxy_req = hyper::Request::builder()
                 .uri(proxy_to.to_string())
@@ -1216,14 +1148,14 @@ async fn proxy_http_request(
                 .request(
                     proxy_req
                         .body(hyper::Body::wrap_stream(
-                            to_bytes_stream_and_check_injections(body_stream, log.clone()),
+                            to_bytes_stream_and_check_injections(body_stream),
                         ))
                         .unwrap(),
                 )
                 .await
             {
                 Err(e) => {
-                    info!(log, "error requesting client connection: {}", e);
+                    info!("error requesting client connection: {}", e);
 
                     Err::<_, _>(warp::reject::custom(BadGateway {}))
                 }
@@ -1235,10 +1167,7 @@ async fn proxy_http_request(
 
                     for (header, value) in hyper_response.headers().into_iter() {
                         if header.as_str().to_lowercase().starts_with("x-exg") {
-                            info!(
-                                log,
-                                "Trying to proxy already proxied request (prevent loops)"
-                            );
+                            info!("Trying to proxy already proxied request (prevent loops)");
                             let resp = Response::builder().status(StatusCode::LOOP_DETECTED);
                             return Ok::<_, warp::Rejection>(
                                 resp.body("Loop detected".into()).unwrap(),
@@ -1281,7 +1210,6 @@ pub enum StreamingError {
 #[inline]
 fn to_bytes_stream_and_check_injections(
     s: impl Stream<Item = Result<impl Buf + 'static, warp::Error>>,
-    log: slog::Logger,
 ) -> impl Stream<Item = Result<Bytes, StreamingError>> {
     s.map(move |s| match s {
         Ok(r) => {
@@ -1289,11 +1217,11 @@ fn to_bytes_stream_and_check_injections(
             // if let Ok(str) = std::str::from_utf8(bytes) {
             //     let decoded = percent_decode_str(str).decode_utf8_lossy();
             //     if let Some(true) = libinjection::xss(decoded.as_ref()) {
-            //         warn!(log, "found XSS in body");
+            //         warn!("found XSS in body");
             //         return Err(StreamingError::XssDetected);
             //     }
             //     if let Some((true, fingerprint)) = libinjection::sqli(decoded.as_ref()) {
-            //         warn!(log, "found sql injection in body: `{:?}`", fingerprint);
+            //         warn!("found sql injection in body: `{:?}`", fingerprint);
             //         return Err(StreamingError::SqlInjectionDetected { fingerprint });
             //     }
             // }
@@ -1301,7 +1229,7 @@ fn to_bytes_stream_and_check_injections(
             Ok(Bytes::copy_from_slice(bytes))
         }
         Err(e) => {
-            info!(log, "Error sending data: {:?}", e);
+            info!("Error sending data: {:?}", e);
             Err(e.into())
         }
     })

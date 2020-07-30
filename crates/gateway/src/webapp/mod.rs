@@ -54,7 +54,6 @@ impl Client {
         &self,
         domain: &str,
         path: &str,
-        _log: &slog::Logger,
     ) -> Result<AcmeHttpChallengeVerificationResponse, Error> {
         let mut url = Url::parse("https://int-api2.stage.exogress.com/").unwrap();
         url.path_segments_mut()
@@ -82,11 +81,7 @@ impl Client {
         }
     }
 
-    pub async fn retrieve_certificate(
-        &self,
-        domain: &str,
-        _log: &slog::Logger,
-    ) -> Result<CertificateResponse, Error> {
+    pub async fn retrieve_certificate(&self, domain: &str) -> Result<CertificateResponse, Error> {
         let mut url = Url::parse("https://int-api2.stage.exogress.com/").unwrap();
         url.path_segments_mut()
             .unwrap()

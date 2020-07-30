@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate shadow_clone;
 #[macro_use]
-extern crate slog;
+extern crate tracing;
 
 use std::net::SocketAddr;
 use std::panic;
@@ -17,10 +17,8 @@ use redis::Client;
 use smartstring::alias::String;
 use stop_handle::stop_handle;
 
-use exogress_server_common::clap as clap_helpers;
-use exogress_server_common::termination::stop_signal_listener;
-
 use crate::termination::StopReason;
+use exogress_common_utils::termination::stop_signal_listener;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use tokio::runtime::Builder;
@@ -87,19 +85,25 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = clap_helpers::threads::add_args(clap_helpers::sentry::add_args(
-        clap_helpers::log::add_args(spawn_args),
-    ));
+    let spawn_args = exogress_common_utils::clap::threads::add_args(
+        exogress_server_common::clap::sentry::add_args(exogress_common_utils::clap::log::add_args(
+            spawn_args,
+        )),
+    );
 
     let args = App::new("Exogress Signaler Server")
         .version(crate_version!())
         .author("Exogress Team <team@exogress.com>")
         .subcommand(spawn_args);
 
-    let mut args = clap_helpers::autocompletion::add_args(args);
+    let mut args = exogress_common_utils::clap::autocompletion::add_args(args);
 
     let matches = args.clone().get_matches().clone();
-    clap_helpers::autocompletion::handle_autocompletion(&mut args, &matches, "exogress-signaler");
+    exogress_common_utils::clap::autocompletion::handle_autocompletion(
+        &mut args,
+        &matches,
+        "exogress-signaler",
+    );
 
     let (app_stop_handle, mut app_stop_wait) = stop_handle::<StopReason>();
 
@@ -107,13 +111,9 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let maybe_sentry = clap_helpers::sentry::extract_matches(&matches);
-    let log = clap_helpers::log::extract_matches(
-        &matches,
-        "signaler",
-        maybe_sentry.map(|(_, _, drain)| drain),
-    );
-    let num_threads = clap_helpers::threads::extract_matches(&matches, &log);
+    let maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
+    exogress_common_utils::clap::log::handle(&matches, "signaler");
+    let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
 
     let signaler_id: String = matches
         .value_of("signaler_id")
@@ -155,14 +155,13 @@ fn main() {
         .unwrap();
 
     let maybe_panic = rt.block_on({
-        shadow_clone!(log);
-        let webapp_base_url = webapp_base_url.clone();
-        let signaler_id = signaler_id.clone();
+        shadow_clone!(webapp_base_url);
+        shadow_clone!(signaler_id);
 
         AssertUnwindSafe(async move {
             let presence_client = presence::Client::new(webapp_base_url, signaler_id);
 
-            tokio::spawn(stop_signal_listener(app_stop_handle.clone(), log.clone()));
+            tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
             presence_client
                 .register_signaler()
@@ -186,7 +185,7 @@ fn main() {
             }
             .fuse();
 
-            info!(log, "Listening public HTTP on {}", listen_public_http_addr);
+            info!("Listening public HTTP on {}", listen_public_http_addr);
 
             let redis_client = Client::open(redis_addr.as_str()).unwrap();
 
@@ -200,19 +199,14 @@ fn main() {
                 presence_client.clone(),
                 redis_client.clone(),
                 public_server_graceful_stop_wait,
-                log.clone(),
             ));
 
-            info!(
-                log,
-                "Listening private HTTP on {}", listen_private_http_addr
-            );
+            info!("Listening private HTTP on {}", listen_private_http_addr);
 
             tokio::spawn(http::private::server(
                 listen_private_http_addr,
                 redis_client,
                 private_server_graceful_stop_wait,
-                log.clone(),
             ));
 
             pin_mut!(periodic_send_alive);
@@ -221,16 +215,16 @@ fn main() {
                 r = periodic_send_alive => {
                     match r {
                         Err(e) => {
-                            error!(log, "Could not send signaler alive: {}", e);
+                            error!("Could not send signaler alive: {}", e);
                         }
                         Ok(()) => {
-                            crit!(log, "Signaler alive unexpectedly stopped");
+                            error!("Signaler alive unexpectedly stopped");
                         }
                     };
                     stop_handle::StopReason::Requested(StopReason::PeriodicSenderTerminated)
                 },
                 r = app_stop_wait => {
-                    info!(log, "Stop {}", r);
+                    info!("Stop {}", r);
                     r
                 },
             };
@@ -238,13 +232,13 @@ fn main() {
             public_server_graceful_stop_handle.stop(http_termination_reason.clone());
             private_server_graceful_stop_handle.stop(http_termination_reason);
 
-            info!(log, "Signaler server stopped. Unregistering");
+            info!("Signaler server stopped. Unregistering");
         })
         .catch_unwind()
     });
 
     if let Err(_e) = maybe_panic {
-        error!(log, "stop on panic");
+        error!("stop on panic");
     }
 
     rt.block_on(async move {

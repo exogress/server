@@ -11,7 +11,6 @@ pub async fn server(
     listen_addr: SocketAddr,
     redis: redis::Client,
     stop_wait: StopWait<stop_handle::StopReason<StopReason>>,
-    log: slog::Logger,
 ) {
     let connection_manager = redis
         .get_tokio_connection_manager()
@@ -23,10 +22,7 @@ pub async fn server(
         .and(warp::header("authorization"))
         .and(warp::body::json())
         .and_then({
-            shadow_clone!(log);
-
             move |config_name: ConfigName, authorization: String, body: TunnelRequest| {
-                let log = log.new(o!("config_name" => config_name.clone()));
                 let mut connection_manager = connection_manager.clone();
 
                 async move {
@@ -37,7 +33,7 @@ pub async fn server(
                         .await
                         .expect("redis error");
 
-                    debug!(log, "delivered to {} recipients", num_recipients);
+                    debug!("delivered to {} recipients", num_recipients);
 
                     if num_recipients == 0 {
                         Err(warp::reject::not_found())
@@ -50,15 +46,12 @@ pub async fn server(
 
     let (_, server) = warp::serve(tunnels_api).bind_with_graceful_shutdown(
         listen_addr,
-        stop_wait.map({
-            shadow_clone!(log);
-            move |r| info!(log, "private HTTP server stop request received: {}", r)
-        }),
+        stop_wait.map({ move |r| info!("private HTTP server stop request received: {}", r) }),
     );
 
     server.await;
 
-    info!(log, "private HTTP server stopped");
+    info!("private HTTP server stopped");
 }
 
 #[derive(Debug)]

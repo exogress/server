@@ -47,13 +47,10 @@ impl ClientTunnels {
         &self,
         config_name: ConfigName,
         individual_hostname: String,
-        log: &slog::Logger,
     ) -> Option<ConnectedTunnel> {
         // TODO:
         // 1. Figure out when to request connection
         // 2. figure out how to request all connections
-
-        shadow_clone!(log);
 
         let (maybe_reset_event, should_request) = {
             let locked = &mut *self.inner.lock();
@@ -79,10 +76,10 @@ impl ClientTunnels {
         };
 
         if should_request {
-            match request_connection(individual_hostname, config_name.clone(), log.clone()).await {
+            match request_connection(individual_hostname, config_name.clone()).await {
                 Ok(()) => {}
                 Err(e) => {
-                    error!(log, "Error requesting connection: {}", e);
+                    error!("Error requesting connection: {}", e);
                     self.inner.lock().remove(&config_name);
                     return None;
                 }
@@ -91,7 +88,7 @@ impl ClientTunnels {
 
         if let Some(reset_event) = maybe_reset_event {
             if let Err(_e) = timeout(WAIT_TIME, reset_event.wait()).await {
-                error!(log, "Timeout waiting for tunnel");
+                error!("Timeout waiting for tunnel");
                 self.inner.lock().remove(&config_name);
                 return None;
             }

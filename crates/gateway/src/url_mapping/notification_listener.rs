@@ -16,9 +16,7 @@ use exogress_entities::MountPointId;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Mappings;
 
-pub struct CustomContext {
-    pub log: slog::Logger,
-}
+pub struct CustomContext {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
@@ -40,11 +38,11 @@ impl ClientContext for CustomContext {}
 
 impl ConsumerContext for CustomContext {
     fn pre_rebalance(&self, rebalance: &Rebalance<'_>) {
-        info!(self.log, "Pre rebalance {:?}", rebalance);
+        info!("Pre rebalance {:?}", rebalance);
     }
 
     fn post_rebalance(&self, rebalance: &Rebalance<'_>) {
-        info!(self.log, "Post rebalance {:?}", rebalance);
+        info!("Post rebalance {:?}", rebalance);
     }
 
     fn commit_callback(
@@ -52,7 +50,7 @@ impl ConsumerContext for CustomContext {
         result: KafkaResult<()>,
         _offsets: &rdkafka::topic_partition_list::TopicPartitionList,
     ) {
-        info!(self.log, "Committing offsets: {:?}", result);
+        info!("Committing offsets: {:?}", result);
     }
 }
 
@@ -60,7 +58,6 @@ pub struct KafkaConsumer {
     consumer: StreamConsumer<CustomContext>,
     stop_handle: AppStopHandle,
     mappings: Mappings,
-    log: slog::Logger,
 }
 
 impl KafkaConsumer {
@@ -69,7 +66,6 @@ impl KafkaConsumer {
         exg_gw_id: &str,
         mappings: &Mappings,
         app_stop_handle: &AppStopHandle,
-        log: &slog::Logger,
     ) -> KafkaResult<KafkaConsumer> {
         shadow_clone!(mappings);
 
@@ -80,32 +76,29 @@ impl KafkaConsumer {
             .set("session.timeout.ms", "6000")
             .set("enable.auto.commit", "true")
             .set("auto.offset.reset", "latest")
-            .create_with_context::<_, StreamConsumer<_>>(CustomContext { log: log.clone() })?;
+            .create_with_context::<_, StreamConsumer<_>>(CustomContext {})?;
 
         Ok(KafkaConsumer {
             consumer,
             stop_handle: app_stop_handle.clone(),
             mappings,
-            log: log.clone(),
         })
     }
 
     pub async fn spawn(self) {
-        let log = self.log.new(o!("subsys" => "kafka_consumer"));
-
-        info!(log, "spawning kafka consumer...");
+        info!("spawning kafka consumer...");
 
         self.consumer
             .subscribe(&[&KAFKA_GUARDIAN_NOTIFICATIONS_TOPIC])
             .expect("Can't subscribe to notifications topic");
-        info!(log, "subscribed to topic successfully");
+        info!("subscribed to topic successfully");
 
         let mut message_stream = self.consumer.start();
 
         while let Some(res) = message_stream.next().await {
             match res {
                 Err(e) => {
-                    warn!(log, "Error while receiving from Kafka: {}", e);
+                    warn!("Error while receiving from Kafka: {}", e);
                     self.stop_handle.stop(StopReason::KafkaConsumeError(e));
                 }
                 Ok(msg) => {
@@ -114,23 +107,20 @@ impl KafkaConsumer {
 
                     if let Some(payload) = maybe_payload {
                         if msg.topic() == KAFKA_GUARDIAN_NOTIFICATIONS_TOPIC {
-                            self.handle_notification(payload, &log);
+                            self.handle_notification(payload);
                         }
                     } else {
-                        error!(
-                            log,
-                            "Couldn't process notification message {:?}", maybe_payload
-                        );
+                        error!("Couldn't process notification message {:?}", maybe_payload);
                     }
                 }
             }
         }
     }
 
-    fn handle_notification(&self, payload: &[u8], log: &slog::Logger) {
+    fn handle_notification(&self, payload: &[u8]) {
         match serde_json::from_slice::<Notification>(payload) {
             Ok(msg) => {
-                info!(log, "Process kafka notification {:?}", msg);
+                info!("Process kafka notification {:?}", msg);
                 match msg.action {
                     Action::Invalidate { mount_point_ids } => {
                         // self.mappings.remove_by_notification_if_time_applicable(
@@ -143,7 +133,7 @@ impl KafkaConsumer {
                 }
             }
             Err(e) => {
-                error!(log, "error parsing notification in kafka: {}", e);
+                error!("error parsing notification in kafka: {}", e);
             }
         }
     }

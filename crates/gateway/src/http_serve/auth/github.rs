@@ -86,7 +86,6 @@ impl GithubOauth2Client {
         base_url: &Url,
         jwt_secret: &[u8],
         requested_url: &Url,
-        _log: &slog::Logger,
     ) -> String {
         let client = self.creds.client();
 
@@ -113,7 +112,6 @@ impl GithubOauth2Client {
     pub async fn process_callback(
         &self,
         mut params: HashMap<String, String>,
-        _log: slog::Logger,
     ) -> Result<CallbackResult, Oauth2FlowError> {
         let received_state = CsrfToken::new(
             params

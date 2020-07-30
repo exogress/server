@@ -20,7 +20,6 @@ pub async fn server(
     presence_client: presence::Client,
     redis: redis::Client,
     stop_wait: StopWait<stop_handle::StopReason<StopReason>>,
-    log: slog::Logger,
 ) {
     let presence = warp::path!("channel" / String)
         .and_then(|instance_id: String| async move {
@@ -32,10 +31,7 @@ pub async fn server(
         .and(warp::ws())
         .and(warp::header("authorization"))
         .map({
-            shadow_clone!(log);
-
             move |instance_id: InstanceId, ws: warp::ws::Ws, authorization: String| {
-                let log = log.new(o!("instance_id" => instance_id));
                 let redis = redis.clone();
                 let presence_client = presence_client.clone();
 
@@ -69,13 +65,13 @@ pub async fn server(
                                 .set_online(&instance_id, &authorization, &config)
                                 .await
                             {
-                                info!(log, "could not set presence: {}", e);
+                                info!("could not set presence: {}", e);
                                 return;
                             }
 
                             let r = {
                                 let presence_client = presence_client.clone();
-                                shadow_clone!(log);
+
                                 let authorization = authorization.clone();
 
                                 async move {
@@ -83,7 +79,7 @@ pub async fn server(
                                         redis.get_tokio_connection_tokio().await?.into_pubsub();
                                     let redis_subscription =
                                         format!("signaler.config.{}", config.name);
-                                    info!(log, "subscribe to {}", redis_subscription);
+                                    info!("subscribe to {}", redis_subscription);
                                     pubsub.subscribe(redis_subscription).await?;
                                     let mut messages = pubsub.on_message();
 
@@ -215,21 +211,21 @@ pub async fn server(
                             };
 
                             if let Err(e) = r {
-                                error!(log, "error forwarding WS: {}", e);
+                                error!("error forwarding WS: {}", e);
                             }
                         }
                         Err(_e) => {
-                            info!(log, "timeout waiting for the first config");
+                            info!("timeout waiting for the first config");
                         }
                         Ok(Err(e)) => {
-                            info!(log, "config error: {}", e);
+                            info!("config error: {}", e);
                         }
                     }
                     if let Err(e) = presence_client
                         .set_offline(&instance_id, &authorization)
                         .await
                     {
-                        error!(log, "could not unset presence: {}", e);
+                        error!("could not unset presence: {}", e);
                     }
                 })
             }
@@ -237,15 +233,12 @@ pub async fn server(
 
     let (_, server) = warp::serve(presence).bind_with_graceful_shutdown(
         listen_addr,
-        stop_wait.map({
-            shadow_clone!(log);
-            move |r| info!(log, "public HTTP server stop request received: {}", r)
-        }),
+        stop_wait.map({ move |r| info!("public HTTP server stop request received: {}", r) }),
     );
 
     server.await;
 
-    info!(log, "public HTTP server stopped");
+    info!("public HTTP server stopped");
 }
 
 #[derive(Debug)]

@@ -15,12 +15,7 @@ pub enum Error {
     HttpCall(#[from] reqwest::Error),
 }
 
-pub async fn request_connection(
-    hostname: String,
-    config_name: ConfigName,
-    log: slog::Logger,
-) -> Result<(), Error> {
-    let log = log.new(o!("config_name" => config_name.clone()));
+pub async fn request_connection(hostname: String, config_name: ConfigName) -> Result<(), Error> {
     let client = reqwest::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
@@ -34,7 +29,7 @@ pub async fn request_connection(
         num_connections: 1,
     };
 
-    info!(log, "requesting connection for instance {}", config_name);
+    info!("requesting connection for instance {}", config_name);
 
     let resp = client
         .post(
@@ -51,12 +46,12 @@ pub async fn request_connection(
     match resp.status() {
         reqwest::StatusCode::NOT_FOUND => Err(Error::ClientNotConnected),
         s if s.is_success() => {
-            info!(log, "requesting connection succeeded");
+            info!("requesting connection succeeded");
 
             Ok(())
         }
         s => {
-            info!(log, "requesting connection failed with code {}", s);
+            info!("requesting connection failed with code {}", s);
 
             Err(Error::UnexpectedStatusCode(s))
         }

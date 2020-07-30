@@ -5,7 +5,7 @@ extern crate shadow_clone;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
-extern crate slog;
+extern crate tracing;
 
 use std::fs;
 use std::net::SocketAddr;
@@ -25,15 +25,14 @@ use stop_handle::stop_handle;
 use tempfile::NamedTempFile;
 use url::Url;
 
-use exogress_server_common::clap as clap_helpers;
-use exogress_server_common::termination::stop_signal_listener;
-
 use crate::clients::{spawn_tunnel, ClientTunnels};
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::stop_reasons::StopReason;
 use crate::url_mapping::client::Client;
 use crate::url_mapping::notification_listener::KafkaConsumer;
+use exogress_common_utils::termination::stop_signal_listener;
+use tokio::runtime::Builder;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -46,20 +45,15 @@ mod stop_reasons;
 mod url_mapping;
 mod webapp;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let args = App::new("Exogress Gateway")
-        .version(crate_version!())
-        .author("Exogress Team <team@exogress.com>")
-        .about("Load-balancing cloud gateway")
-        .arg(
-            Arg::with_name("public_base_url")
-                .long("public-base-url")
-                .value_name("URL")
-                .required(true)
-                .about("Public base URL")
-                .takes_value(true),
-        )
+fn main() {
+    let spawn_args = App::new("spawn")        .arg(
+        Arg::with_name("public_base_url")
+            .long("public-base-url")
+            .value_name("URL")
+            .required(true)
+            .about("Public base URL")
+            .takes_value(true),
+    )
         .arg(
             Arg::with_name("google_oauth2_client_id")
                 .long("google-oauth2-client-id")
@@ -232,22 +226,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .arg(
             Arg::with_name("dbip_path")
                 .long("dbip-path")
-                .conflicts_with("download_db")
+                .conflicts_with("download_dbip")
                 .value_name("PATH")
                 .env("DBIP_PATH")
                 .about("Path to MMDB database")
                 .takes_value(true),
         );
 
-    let args = clap_helpers::sentry::add_args(clap_helpers::log::add_args(args));
+    let spawn_args = exogress_common_utils::clap::threads::add_args(
+        exogress_server_common::clap::sentry::add_args(exogress_common_utils::clap::log::add_args(
+            spawn_args,
+        )),
+    );
 
-    let matches = args.get_matches().clone();
+    let args = App::new("Exogress Gateway")
+        .version(crate_version!())
+        .author("Exogress Team <team@exogress.com>")
+        .about("Load-balancing cloud gateway")
+        .subcommand(spawn_args);
+
+    let mut args = exogress_common_utils::clap::autocompletion::add_args(args);
+
+    let matches = args.clone().get_matches().clone();
+    exogress_common_utils::clap::autocompletion::handle_autocompletion(
+        &mut args,
+        &matches,
+        "exogress-gateway",
+    );
+
+    let matches = matches
+        .subcommand_matches("spawn")
+        .expect("Unknown subcommand");
 
     let exg_gw_id = matches.value_of("exg_gw_id").expect("no exg_gw_id");
 
-    let maybe_sentry = clap_helpers::sentry::extract_matches(&matches);
-    let log =
-        clap_helpers::log::extract_matches(&matches, "gw", maybe_sentry.map(|(_, _, drain)| drain));
+    let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
+    exogress_common_utils::clap::log::handle(&matches, "gw");
+    let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
+
+    let mut rt = Builder::new()
+        .threaded_scheduler()
+        .enable_all()
+        .core_threads(num_threads)
+        .thread_name("signaler-reactor")
+        .build()
+        .unwrap();
 
     sentry::configure_scope(|scope| {
         scope.set_tag("gw_id", &exg_gw_id[..]);
@@ -293,7 +316,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .expect("no int_api_access_secret")
         .into();
 
-    info!(log, "Use API url at {}", api_url);
+    info!("Use API url at {}", api_url);
 
     let listen_http_addr = matches
         .value_of("listen_http")
@@ -319,190 +342,195 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap();
 
-    let temp_db_file = NamedTempFile::new().expect("could not create named temp file");
+    rt.block_on(async move {
+        let temp_db_file = NamedTempFile::new().expect("could not create named temp file");
 
-    let db_path = if matches.is_present("download_dbip") {
-        use tokio_util::compat::Tokio02AsyncReadCompatExt;
+        let db_path = if matches.is_present("download_dbip") {
+            use tokio_util::compat::Tokio02AsyncReadCompatExt;
 
-        let (db_file, db_path) = match matches.value_of("dbip_download_dir") {
-            Some(download_dir) => {
-                let db_path = PathBuf::from(download_dir.to_string()).join("dbip.mmdb");
+            let (db_file, db_path) = match matches.value_of("dbip_download_dir") {
+                Some(download_dir) => {
+                    let db_path = PathBuf::from(download_dir.to_string()).join("dbip.mmdb");
 
-                if db_path.exists() {
-                    fs::remove_file(&db_path).expect("Could not delete DB");
-                };
+                    if db_path.exists() {
+                        fs::remove_file(&db_path).expect("Could not delete DB");
+                    };
 
-                (
-                    tokio::fs::File::create(&db_path)
-                        .await
-                        .expect("Could not create dbip path"),
-                    db_path,
-                )
+                    (
+                        tokio::fs::File::create(&db_path)
+                            .await
+                            .expect("Could not create dbip path"),
+                        db_path,
+                    )
+                }
+                None => (
+                    tokio::fs::File::from(
+                        temp_db_file.reopen().expect("could not reopen temp file"),
+                    ),
+                    temp_db_file.path().to_path_buf(),
+                ),
+            };
+
+            let dbip_url = matches
+                .value_of("isp_location_dbip_url")
+                .unwrap()
+                .to_string();
+
+            let client = reqwest::Client::new();
+
+            let total_size = {
+                let resp = client
+                    .head(dbip_url.as_str())
+                    .send()
+                    .await
+                    .expect("could not get DB size");
+                if resp.status().is_success() {
+                    resp.headers()
+                        .get(header::CONTENT_LENGTH)
+                        .and_then(|ct_len| ct_len.to_str().ok())
+                        .and_then(|ct_len| ct_len.parse().ok())
+                        .unwrap_or(0)
+                } else {
+                    panic!("could not get DB size");
+                }
+            };
+
+            let mut pb = ProgressBar::new(total_size);
+
+            let mut compressed_csv_db = reqwest::get(&dbip_url)
+                .await
+                .expect("Could not download dbip DB");
+
+            let mut decoder = GzipDecoder::new(BufWriter::new(db_file.compat()));
+
+            println!(
+                "Downloading dbip mmdb file from {:?} to {:?}...",
+                dbip_url, db_path
+            );
+
+            let mut read_bytes: usize = 0;
+
+            while let Some(chunk) = compressed_csv_db.chunk().await? {
+                read_bytes += chunk.len();
+                pb.set_progression(read_bytes);
+                decoder.write_all(&chunk).await.expect("Error writing DB");
             }
-            None => (
-                tokio::fs::File::from(temp_db_file.reopen().expect("could not reopen temp file")),
-                temp_db_file.path().to_path_buf(),
-            ),
+
+            decoder.close().await.expect("Error writing DB");
+
+            println!("Download complete!");
+
+            Some(db_path)
+        } else {
+            matches
+                .value_of("dbip-path")
+                .map(|path| PathBuf::from(path.to_string()))
         };
 
-        let dbip_url = matches
-            .value_of("isp_location_dbip_url")
-            .unwrap()
+        let dbip = db_path.map(|path| {
+            info!("Opening maxminddb...");
+            let dbip = Arc::new(maxminddb::Reader::open_mmap(&path).expect("Failed to open dbip"));
+            info!("maxminddb successfully opened");
+
+            let loc = dbip
+                .lookup::<dbip::LocationAndIsp>("123.33.22.123".parse().unwrap())
+                .unwrap();
+
+            info!(
+                "{}/{}",
+                loc.country
+                    .clone()
+                    .and_then(|c| c.iso_code)
+                    .unwrap_or_default(),
+                loc.city
+                    .clone()
+                    .and_then(|c| c.names.and_then(|n| n.en))
+                    .unwrap_or_default()
+            );
+
+            dbip
+        });
+
+        tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
+
+        let external_https_port = matches
+            .value_of("external_https_port")
+            .map(|r| r.parse().expect("Could not parse external_https_port"))
+            .unwrap_or_else(|| listen_https_addr.port());
+
+        info!("Listening HTTP on {}", listen_http_addr);
+        info!(
+            "Listening HTTPS on {}, external_port is {}",
+            listen_https_addr, external_https_port
+        );
+
+        let client_tunnels = ClientTunnels::new();
+
+        tokio::spawn(spawn_tunnel(
+            listen_tunnel_addr,
+            tunnel_tls_cert_path.into(),
+            tunnel_tls_key_path.into(),
+            client_tunnels.clone(),
+        ));
+
+        let kafka_bootstrap_servers = matches
+            .value_of("kafka_bootstrap_servers")
+            .expect("Please provide --kafka-bootstrap-servers")
             .to_string();
 
-        let client = reqwest::Client::new();
+        let individual_hostname = matches
+            .value_of("individual_hostname")
+            .expect("Please provide --individual-hostname")
+            .to_string();
 
-        let total_size = {
-            let resp = client
-                .head(dbip_url.as_str())
-                .send()
-                .await
-                .expect("could not get DB size");
-            if resp.status().is_success() {
-                resp.headers()
-                    .get(header::CONTENT_LENGTH)
-                    .and_then(|ct_len| ct_len.to_str().ok())
-                    .and_then(|ct_len| ct_len.parse().ok())
-                    .unwrap_or(0)
-            } else {
-                panic!("could not get DB size");
-            }
-        };
-
-        let mut pb = ProgressBar::new(total_size);
-
-        let mut compressed_csv_db = reqwest::get(&dbip_url)
+        let api_client = Client::new(cache_ttl, api_url.parse().unwrap(), int_api_access_secret)
             .await
-            .expect("Could not download dbip DB");
+            .expect("failed to create API client");
 
-        let mut decoder = GzipDecoder::new(BufWriter::new(db_file.compat()));
+        let kafka_consumer = KafkaConsumer::new(
+            &kafka_bootstrap_servers,
+            &exg_gw_id,
+            &api_client.mappings(),
+            &app_stop_handle,
+        )
+        .expect("Could not start kafka consumer");
 
-        println!(
-            "Downloading dbip mmdb file from {:?} to {:?}...",
-            dbip_url, db_path
+        tokio::spawn(kafka_consumer.spawn());
+
+        let google_oauth2_client = GoogleOauth2Client::new(
+            Duration::from_secs(60),
+            google_oauth2_client_id,
+            google_oauth2_client_secret,
+            public_base_url.clone(),
         );
 
-        let mut read_bytes: usize = 0;
-
-        while let Some(chunk) = compressed_csv_db.chunk().await? {
-            read_bytes += chunk.len();
-            pb.set_progression(read_bytes);
-            decoder.write_all(&chunk).await.expect("Error writing DB");
-        }
-
-        decoder.close().await.expect("Error writing DB");
-
-        println!("Download complete!");
-
-        Some(db_path)
-    } else {
-        matches
-            .value_of("dbip-path")
-            .map(|path| PathBuf::from(path.to_string()))
-    };
-
-    let dbip = db_path.map(|path| {
-        info!(log, "Opening maxminddb...");
-        let dbip = Arc::new(maxminddb::Reader::open_mmap(&path).expect("Failed to open dbip"));
-        info!(log, "maxminddb successfully opened");
-
-        let loc = dbip
-            .lookup::<dbip::LocationAndIsp>("123.33.22.123".parse().unwrap())
-            .unwrap();
-
-        info!(
-            log,
-            "{}/{}",
-            loc.country.and_then(|c| c.iso_code).unwrap_or_default(),
-            loc.city
-                .and_then(|c| c.names.and_then(|n| n.en))
-                .unwrap_or_default()
+        let github_oauth2_client = GithubOauth2Client::new(
+            Duration::from_secs(60),
+            github_oauth2_client_id,
+            github_oauth2_client_secret,
+            public_base_url.clone(),
         );
 
-        dbip
-    });
+        http_serve::handle::server(
+            client_tunnels,
+            listen_http_addr,
+            listen_https_addr,
+            external_https_port,
+            api_client,
+            app_stop_wait,
+            tls_cert_path.into(),
+            tls_key_path.into(),
+            public_base_url,
+            individual_hostname,
+            google_oauth2_client,
+            github_oauth2_client,
+            dbip,
+        )
+        .await;
 
-    tokio::spawn(stop_signal_listener(app_stop_handle.clone(), log.clone()));
+        Ok::<(), anyhow::Error>(())
+    })
+    .expect("error running server");
 
-    let external_https_port = matches
-        .value_of("external_https_port")
-        .map(|r| r.parse().expect("Could not parse external_https_port"))
-        .unwrap_or_else(|| listen_https_addr.port());
-
-    info!(log, "Listening HTTP on {}", listen_http_addr);
-    info!(
-        log,
-        "Listening HTTPS on {}, external_port is {}", listen_https_addr, external_https_port
-    );
-
-    let client_tunnels = ClientTunnels::new();
-
-    tokio::spawn(spawn_tunnel(
-        listen_tunnel_addr,
-        tunnel_tls_cert_path.into(),
-        tunnel_tls_key_path.into(),
-        client_tunnels.clone(),
-        log.clone(),
-    ));
-
-    let kafka_bootstrap_servers = matches
-        .value_of("kafka_bootstrap_servers")
-        .expect("Please provide --kafka-bootstrap-servers")
-        .to_string();
-
-    let individual_hostname = matches
-        .value_of("individual_hostname")
-        .expect("Please provide --individual-hostname")
-        .to_string();
-
-    let api_client = Client::new(cache_ttl, api_url.parse().unwrap(), int_api_access_secret)
-        .await
-        .expect("failed to create API client");
-
-    let kafka_consumer = KafkaConsumer::new(
-        &kafka_bootstrap_servers,
-        &exg_gw_id,
-        &api_client.mappings(),
-        &app_stop_handle,
-        &log,
-    )
-    .expect("Could not start kafka consumer");
-
-    tokio::spawn(kafka_consumer.spawn());
-
-    let google_oauth2_client = GoogleOauth2Client::new(
-        Duration::from_secs(60),
-        google_oauth2_client_id,
-        google_oauth2_client_secret,
-        public_base_url.clone(),
-    );
-
-    let github_oauth2_client = GithubOauth2Client::new(
-        Duration::from_secs(60),
-        github_oauth2_client_id,
-        github_oauth2_client_secret,
-        public_base_url.clone(),
-    );
-
-    http_serve::handle::server(
-        client_tunnels,
-        listen_http_addr,
-        listen_https_addr,
-        external_https_port,
-        api_client,
-        app_stop_wait,
-        tls_cert_path.into(),
-        tls_key_path.into(),
-        public_base_url,
-        individual_hostname,
-        google_oauth2_client,
-        github_oauth2_client,
-        dbip,
-        log.clone(),
-    )
-    .await;
-
-    info!(log, "Web server stopped");
-
-    Ok(())
+    info!("Web server stopped");
 }

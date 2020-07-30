@@ -436,7 +436,6 @@ impl Mapping {
         _tunnels: ClientTunnels,
         external_port: u16,
         proto: Protocol,
-        _log: &slog::Logger,
     ) -> Result<
         (
             MappingAction,
@@ -471,8 +470,6 @@ impl Mapping {
 
 #[cfg(test)]
 mod tests {
-    use slog::{o, Logger};
-
     use super::*;
 
     #[test]
@@ -548,8 +545,6 @@ mod tests {
 
     #[test]
     pub fn incorrect() {
-        let log = Logger::root(slog::Discard, o!());
-
         let mapping = Mapping {
             match_pattern: MatchPattern::new("example.exg.co", "/").unwrap(),
             proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", "test-config".parse().unwrap())
@@ -568,15 +563,12 @@ mod tests {
                 ClientTunnels::new(),
                 443,
                 Protocol::Http,
-                &log,
             )
             .is_err())
     }
 
     // #[test]
     // pub fn domain_rewrite() {
-    //     let log = Logger::root(slog::Discard, o!());
-    //
     //     let mapping = Mapping {
     //         match_pattern: MatchPattern::new("example.exg.co", "/").unwrap(),
     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", Default::default()).unwrap(),
@@ -596,7 +588,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::Http,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
@@ -606,8 +597,6 @@ mod tests {
 
     // #[test]
     // pub fn domain_and_path_rewrite() {
-    //     let log = Logger::root(slog::Discard, o!());
-    //
     //     let mapping = Mapping {
     //         match_pattern: MatchPattern::new("example.exg.co", "/from/url").unwrap(),
     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to/newurl", Default::default()).unwrap(),
@@ -628,7 +617,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::Http,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
@@ -638,8 +626,6 @@ mod tests {
 
     // #[test]
     // pub fn port_rewrite() {
-    //     let log = Logger::root(slog::Discard, o!());
-    //
     //     let mapping = Mapping {
     //         match_pattern: MatchPattern::new("example.exg.co", "/from/url").unwrap(),
     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", Default::default()).unwrap(),
@@ -660,7 +646,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::Http,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
@@ -670,8 +655,6 @@ mod tests {
 
     // #[test]
     // pub fn websockets_rewrite() {
-    //     let log = Logger::root(slog::Discard, o!());
-    //
     //     let mapping = Mapping {
     //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
@@ -691,7 +674,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::WebSockets,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
@@ -701,8 +683,6 @@ mod tests {
 
     // #[test]
     // pub fn rewrite_tls_to_plain() {
-    //     let log = Logger::root(slog::Discard, o!());
-    //
     //     let mapping = Mapping {
     //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
@@ -722,7 +702,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::Http,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
@@ -737,7 +716,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::WebSockets,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
@@ -747,8 +725,6 @@ mod tests {
 
     // #[test]
     // pub fn rewrite_plain_to_tls() {
-    //     let log = Logger::root(slog::Discard, o!());
-    //
     //     let mapping = Mapping {
     //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
@@ -768,7 +744,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::Http,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
@@ -783,7 +758,6 @@ mod tests {
     //                 ClientTunnels::new(),
     //                 443,
     //                 Protocol::WebSockets,
-    //                 &log,
     //             )
     //             .unwrap()
     //             .0
