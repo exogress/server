@@ -1,4 +1,4 @@
-use exogress_entities::{ConfigName, InstanceId};
+use exogress_entities::{ConfigName};
 use exogress_signaling::TunnelRequest;
 use smartstring::alias::*;
 use std::time::Duration;

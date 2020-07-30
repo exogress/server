@@ -233,7 +233,7 @@ pub async fn server(
 
     let (_, server) = warp::serve(presence).bind_with_graceful_shutdown(
         listen_addr,
-        stop_wait.map({ move |r| info!("public HTTP server stop request received: {}", r) }),
+        stop_wait.map( move |r| info!("public HTTP server stop request received: {}", r) ),
     );
 
     server.await;

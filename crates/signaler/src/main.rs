@@ -10,7 +10,7 @@ use std::panic;
 
 use clap::{crate_version, App, Arg};
 use futures::{pin_mut, select};
-use futures::{FutureExt, SinkExt};
+use futures::{FutureExt};
 use lazy_static::lazy_static;
 use mimalloc::MiMalloc;
 use redis::Client;
@@ -111,7 +111,7 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
+    let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "signaler");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
 

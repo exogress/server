@@ -1,5 +1,5 @@
-use std::convert::TryFrom;
-use std::time::SystemTime;
+
+
 
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
@@ -9,7 +9,7 @@ use rdkafka::consumer::StreamConsumer;
 use rdkafka::consumer::{Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::KafkaResult;
 use rdkafka::{ClientContext, Message};
-use smartstring::alias::String;
+
 
 use exogress_entities::MountPointId;
 
@@ -122,7 +122,7 @@ impl KafkaConsumer {
             Ok(msg) => {
                 info!("Process kafka notification {:?}", msg);
                 match msg.action {
-                    Action::Invalidate { mount_point_ids } => {
+                    Action::Invalidate { mount_point_ids: _ } => {
                         // self.mappings.remove_by_notification_if_time_applicable(
                         //     url_prefix,
                         //     generated_at,

@@ -1,5 +1,5 @@
 use crate::termination::StopReason;
-use exogress_entities::{ConfigName, InstanceId};
+use exogress_entities::{ConfigName};
 use exogress_signaling::{TunnelRequest, TunnelRequestResponse};
 use futures::FutureExt;
 use redis::AsyncCommands;
@@ -22,7 +22,7 @@ pub async fn server(
         .and(warp::header("authorization"))
         .and(warp::body::json())
         .and_then({
-            move |config_name: ConfigName, authorization: String, body: TunnelRequest| {
+            move |config_name: ConfigName, _authorization: String, body: TunnelRequest| {
                 let mut connection_manager = connection_manager.clone();
 
                 async move {
@@ -46,7 +46,7 @@ pub async fn server(
 
     let (_, server) = warp::serve(tunnels_api).bind_with_graceful_shutdown(
         listen_addr,
-        stop_wait.map({ move |r| info!("private HTTP server stop request received: {}", r) }),
+        stop_wait.map( move |r| info!("private HTTP server stop request received: {}", r) ),
     );
 
     server.await;

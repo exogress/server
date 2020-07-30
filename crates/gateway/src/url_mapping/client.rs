@@ -1,14 +1,14 @@
-use std::convert::{TryFrom, TryInto};
-use std::num::NonZeroU32;
+
+
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::SystemTime;
 
-use chrono::{DateTime, Utc};
+
+
 use futures_intrusive::sync::ManualResetEvent;
 use governor::clock::MonotonicClock;
 use governor::state::{InMemoryState, NotKeyed};
-use governor::{Quota, RateLimiter};
+use governor::{RateLimiter};
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
@@ -16,7 +16,7 @@ use url::Url;
 
 use smartstring::alias::*;
 
-use exogress_entities::ConfigName;
+
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping;
@@ -47,7 +47,7 @@ pub enum ClientError {
 }
 
 impl Client {
-    pub async fn new(ttl: Duration, url: Url, int_api_access_secret: String) -> Result<Client, ()> {
+    pub async fn new(ttl: Duration, _url: Url, int_api_access_secret: String) -> Result<Client, ()> {
         Ok(Client {
             mappings: Mappings::new(ttl),
             retrieval: Arc::new(Inner {
@@ -112,8 +112,8 @@ impl Client {
             .or_insert_with({
                 shadow_clone!(url_prefix);
 
-                let mappings = self.mappings.clone();
-                let int_api_access_secret = self.retrieval.int_api_access_secret.clone();
+                let _mappings = self.mappings.clone();
+                let _int_api_access_secret = self.retrieval.int_api_access_secret.clone();
 
                 move || {
                     let ready_event = Arc::new(ManualResetEvent::new(false));

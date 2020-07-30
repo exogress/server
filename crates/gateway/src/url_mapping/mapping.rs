@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use governor::clock::MonotonicClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::RateLimiter;
-use hashbrown::HashMap;
+
 use http::Uri;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
@@ -190,8 +190,8 @@ impl Matched {
 
         match rewrite_to {
             ProxyMatchedTo::Client {
-                config_name,
-                dst_path,
+                config_name: _,
+                dst_path: _,
             } => {
                 let dst = "main-backend-fixme"; //format!("client-{}{}", config_name, dst_path);
                 rewritten_str.replace_range(0..self.pattern.matchable_prefix.len(), dst);
@@ -502,7 +502,7 @@ mod tests {
 }
 "#;
 
-        let n: SchemaMapping = serde_json::from_str(JSON).unwrap();
+        let _n: SchemaMapping = serde_json::from_str(JSON).unwrap();
         // assert_eq!("2020-07-14T14:17:01.163Z".parse::<DateTime<Utc>>().unwrap(), n.generated_at);
         // assert!(
         //     matches!(

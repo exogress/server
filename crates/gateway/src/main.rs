@@ -17,7 +17,7 @@ use async_compression::futures::write::GzipDecoder;
 use clap::{crate_version, App, Arg};
 use futures::io::BufWriter;
 use futures_util::io::AsyncWriteExt;
-use lazy_static::lazy_static;
+
 use mimalloc::MiMalloc;
 use progress_bar::progress_bar::ProgressBar;
 use reqwest::header;
@@ -28,7 +28,7 @@ use url::Url;
 use crate::clients::{spawn_tunnel, ClientTunnels};
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::stop_reasons::StopReason;
+
 use crate::url_mapping::client::Client;
 use crate::url_mapping::notification_listener::KafkaConsumer;
 use exogress_common_utils::termination::stop_signal_listener;

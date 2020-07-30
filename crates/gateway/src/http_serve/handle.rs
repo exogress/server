@@ -443,7 +443,7 @@ pub async fn server(
                             if let Some(ConnectedTunnel {
                                 connector,
                                 hyper,
-                                instance_id,
+                                instance_id: _,
                                 ..
                             }) = tunnels
                                 .retrieve_client_target(
