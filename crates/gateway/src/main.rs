@@ -1,0 +1,508 @@
+#![warn(rust_2018_idioms)]
+
+#[macro_use]
+extern crate shadow_clone;
+#[macro_use]
+extern crate serde_derive;
+#[macro_use]
+extern crate slog;
+
+use std::fs;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_compression::futures::write::GzipDecoder;
+use clap::{crate_version, App, Arg};
+use futures::io::BufWriter;
+use futures_util::io::AsyncWriteExt;
+use lazy_static::lazy_static;
+use mimalloc::MiMalloc;
+use progress_bar::progress_bar::ProgressBar;
+use reqwest::header;
+use stop_handle::stop_handle;
+use tempfile::NamedTempFile;
+use url::Url;
+
+use exogress_server_common::clap as clap_helpers;
+use exogress_server_common::termination::stop_signal_listener;
+
+use crate::clients::{spawn_tunnel, ClientTunnels};
+use crate::http_serve::auth::github::GithubOauth2Client;
+use crate::http_serve::auth::google::GoogleOauth2Client;
+use crate::stop_reasons::StopReason;
+use crate::url_mapping::client::Client;
+use crate::url_mapping::notification_listener::KafkaConsumer;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+mod clients;
+mod dbip;
+mod environments;
+mod http_serve;
+mod stop_reasons;
+mod url_mapping;
+mod webapp;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let args = App::new("Exogress Gateway")
+        .version(crate_version!())
+        .author("Exogress Team <team@exogress.com>")
+        .about("Load-balancing cloud gateway")
+        .arg(
+            Arg::with_name("public_base_url")
+                .long("public-base-url")
+                .value_name("URL")
+                .required(true)
+                .about("Public base URL")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("google_oauth2_client_id")
+                .long("google-oauth2-client-id")
+                .value_name("STRING")
+                .required(true)
+                .about("Google oAuth2 client ID")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("google_oauth2_client_secret")
+                .long("google-oauth2-client-secret")
+                .value_name("STRING")
+                .required(true)
+                .about("Google oAuth2 client Secret")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("github_oauth2_client_id")
+                .long("github-oauth2-client-id")
+                .value_name("STRING")
+                .required(true)
+                .about("Github oAuth2 client ID")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("github_oauth2_client_secret")
+                .long("github-oauth2-client-secret")
+                .value_name("STRING")
+                .required(true)
+                .about("Github oAuth2 client Secret")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("int_api_access_secret")
+                .long("int-api-access-secret")
+                .value_name("STRING")
+                .required(true)
+                .about("Internal API simple secret")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("listen_http")
+                .long("listen-http")
+                .value_name("SOCKET_ADDR")
+                .default_value("0.0.0.0:1337")
+                .required(true)
+                .about("Set HTTP listen address")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("listen_https")
+                .long("listen-https")
+                .value_name("SOCKET_ADDR")
+                .default_value("0.0.0.0:2443")
+                .required(true)
+                .about("Set HTTPS listen address")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("listen_tunnel")
+                .long("listen-tunnel")
+                .value_name("SOCKET_ADDR")
+                .default_value("0.0.0.0:10714")
+                .required(true)
+                .about("Tunnels listener")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("tunnel_tls_cert_path")
+                .long("tunnel-tls-cert-path")
+                .value_name("PATH")
+                .about("Certificate to use")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("tunnel_tls_key_path")
+                .long("tunnel-tls-key-path")
+                .value_name("PATH")
+                .about("Key file to use")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("individual_hostname")
+                .long("individual-hostname")
+                .value_name("INDIVIDUAL_HOSTNAME")
+                .about("Own hostname to use for client tunnel connections")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("external_https_port")
+                .long("external-https-port")
+                .value_name("PORT")
+                .about("Redefine external HTTPS port to use")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("kafka_bootstrap_servers")
+                .long("kafka-bootstrap-servers")
+                .value_name("HOSTNAME")
+                .default_value("localhost:9092")
+                .about("Set kafka bootstrap server")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("exg_gw_id")
+                .long("exg-gw-id")
+                .value_name("STRING")
+                .about("Use this exg_gw_id as identifier of kafka consumer")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("api_url")
+                .long("api-url")
+                .value_name("URL")
+                .required(true)
+                .about("Set API URL")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("cache_ttl_secs")
+                .long("cache-ttl")
+                .value_name("SECONDS")
+                .default_value("600") // 10 minutes
+                .about("Keep data upto the number of seconds")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("tls_cert_path")
+                .long("tls-cert-path")
+                .value_name("PATH")
+                .about("Certificate to use")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("tls_key_path")
+                .long("tls-key-path")
+                .value_name("PATH")
+                .about("Key file to use")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("download_dbip")
+                .long("download-dbip")
+                .about("Perform DBIP download")
+                .requires("isp_location_dbip_url"),
+        )
+        .arg(
+            Arg::with_name("isp_location_dbip_url")
+                .long("isp-location-dbip-url")
+                .env("ISP_LOCATION_DBIP_URL")
+                .value_name("URL")
+                .about("ISP DBIP Download URL")
+                .takes_value(true)
+                .default_value("https://repos.lancastr.net/dbip-mirror/stable/files/dbip-location-isp/latest/dbip-location-isp.gz"),
+        )
+        .arg(
+            Arg::with_name("dbip_download_dir")
+                .long("dbip-download-dir")
+                .env("DBIP_DOWNLOAD_DIR")
+                .value_name("PATH")
+                .about("ISP DBIP Download into this dir. If not set temporary directory will be created")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("dbip_path")
+                .long("dbip-path")
+                .conflicts_with("download_db")
+                .value_name("PATH")
+                .env("DBIP_PATH")
+                .about("Path to MMDB database")
+                .takes_value(true),
+        );
+
+    let args = clap_helpers::sentry::add_args(clap_helpers::log::add_args(args));
+
+    let matches = args.get_matches().clone();
+
+    let exg_gw_id = matches.value_of("exg_gw_id").expect("no exg_gw_id");
+
+    let maybe_sentry = clap_helpers::sentry::extract_matches(&matches);
+    let log =
+        clap_helpers::log::extract_matches(&matches, "gw", maybe_sentry.map(|(_, _, drain)| drain));
+
+    sentry::configure_scope(|scope| {
+        scope.set_tag("gw_id", &exg_gw_id[..]);
+    });
+
+    let (app_stop_handle, app_stop_wait) = stop_handle();
+
+    let public_base_url: Url = matches
+        .value_of("public_base_url")
+        .unwrap()
+        .parse()
+        .expect("bad URL format");
+
+    let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
+    let google_oauth2_client_secret = matches
+        .value_of("google_oauth2_client_secret")
+        .unwrap()
+        .into();
+
+    let github_oauth2_client_id = matches.value_of("github_oauth2_client_id").unwrap().into();
+    let github_oauth2_client_secret = matches
+        .value_of("github_oauth2_client_secret")
+        .unwrap()
+        .into();
+
+    let api_url = matches.value_of("api_url").unwrap().to_string();
+    let cache_ttl: Duration = Duration::from_secs(
+        matches
+            .value_of("cache_ttl_secs")
+            .unwrap()
+            .parse()
+            .expect("bad TTL value"),
+    );
+
+    let tunnel_tls_cert_path = matches.value_of("tunnel_tls_cert_path").unwrap();
+    let tunnel_tls_key_path = matches.value_of("tunnel_tls_key_path").unwrap();
+
+    let tls_cert_path = matches.value_of("tls_cert_path").unwrap();
+    let tls_key_path = matches.value_of("tls_key_path").unwrap();
+
+    let int_api_access_secret = matches
+        .value_of("int_api_access_secret")
+        .expect("no int_api_access_secret")
+        .into();
+
+    info!(log, "Use API url at {}", api_url);
+
+    let listen_http_addr = matches
+        .value_of("listen_http")
+        .map(|r| {
+            r.parse::<SocketAddr>()
+                .expect("Failed to parse listen HTTP address (ip:port)")
+        })
+        .unwrap();
+
+    let listen_https_addr = matches
+        .value_of("listen_https")
+        .map(|r| {
+            r.parse::<SocketAddr>()
+                .expect("Failed to parse listen HTTPS address (ip:port)")
+        })
+        .unwrap();
+
+    let listen_tunnel_addr = matches
+        .value_of("listen_tunnel")
+        .map(|r| {
+            r.parse::<SocketAddr>()
+                .expect("Failed to parse tunnel listen addr (ip:port)")
+        })
+        .unwrap();
+
+    let temp_db_file = NamedTempFile::new().expect("could not create named temp file");
+
+    let db_path = if matches.is_present("download_dbip") {
+        use tokio_util::compat::Tokio02AsyncReadCompatExt;
+
+        let (db_file, db_path) = match matches.value_of("dbip_download_dir") {
+            Some(download_dir) => {
+                let db_path = PathBuf::from(download_dir.to_string()).join("dbip.mmdb");
+
+                if db_path.exists() {
+                    fs::remove_file(&db_path).expect("Could not delete DB");
+                };
+
+                (
+                    tokio::fs::File::create(&db_path)
+                        .await
+                        .expect("Could not create dbip path"),
+                    db_path,
+                )
+            }
+            None => (
+                tokio::fs::File::from(temp_db_file.reopen().expect("could not reopen temp file")),
+                temp_db_file.path().to_path_buf(),
+            ),
+        };
+
+        let dbip_url = matches
+            .value_of("isp_location_dbip_url")
+            .unwrap()
+            .to_string();
+
+        let client = reqwest::Client::new();
+
+        let total_size = {
+            let resp = client
+                .head(dbip_url.as_str())
+                .send()
+                .await
+                .expect("could not get DB size");
+            if resp.status().is_success() {
+                resp.headers()
+                    .get(header::CONTENT_LENGTH)
+                    .and_then(|ct_len| ct_len.to_str().ok())
+                    .and_then(|ct_len| ct_len.parse().ok())
+                    .unwrap_or(0)
+            } else {
+                panic!("could not get DB size");
+            }
+        };
+
+        let mut pb = ProgressBar::new(total_size);
+
+        let mut compressed_csv_db = reqwest::get(&dbip_url)
+            .await
+            .expect("Could not download dbip DB");
+
+        let mut decoder = GzipDecoder::new(BufWriter::new(db_file.compat()));
+
+        println!(
+            "Downloading dbip mmdb file from {:?} to {:?}...",
+            dbip_url, db_path
+        );
+
+        let mut read_bytes: usize = 0;
+
+        while let Some(chunk) = compressed_csv_db.chunk().await? {
+            read_bytes += chunk.len();
+            pb.set_progression(read_bytes);
+            decoder.write_all(&chunk).await.expect("Error writing DB");
+        }
+
+        decoder.close().await.expect("Error writing DB");
+
+        println!("Download complete!");
+
+        Some(db_path)
+    } else {
+        matches
+            .value_of("dbip-path")
+            .map(|path| PathBuf::from(path.to_string()))
+    };
+
+    let dbip = db_path.map(|path| {
+        info!(log, "Opening maxminddb...");
+        let dbip = Arc::new(maxminddb::Reader::open_mmap(&path).expect("Failed to open dbip"));
+        info!(log, "maxminddb successfully opened");
+
+        let loc = dbip
+            .lookup::<dbip::LocationAndIsp>("123.33.22.123".parse().unwrap())
+            .unwrap();
+
+        info!(
+            log,
+            "{}/{}",
+            loc.country.and_then(|c| c.iso_code).unwrap_or_default(),
+            loc.city
+                .and_then(|c| c.names.and_then(|n| n.en))
+                .unwrap_or_default()
+        );
+
+        dbip
+    });
+
+    tokio::spawn(stop_signal_listener(app_stop_handle.clone(), log.clone()));
+
+    let external_https_port = matches
+        .value_of("external_https_port")
+        .map(|r| r.parse().expect("Could not parse external_https_port"))
+        .unwrap_or_else(|| listen_https_addr.port());
+
+    info!(log, "Listening HTTP on {}", listen_http_addr);
+    info!(
+        log,
+        "Listening HTTPS on {}, external_port is {}", listen_https_addr, external_https_port
+    );
+
+    let client_tunnels = ClientTunnels::new();
+
+    tokio::spawn(spawn_tunnel(
+        listen_tunnel_addr,
+        tunnel_tls_cert_path.into(),
+        tunnel_tls_key_path.into(),
+        client_tunnels.clone(),
+        log.clone(),
+    ));
+
+    let kafka_bootstrap_servers = matches
+        .value_of("kafka_bootstrap_servers")
+        .expect("Please provide --kafka-bootstrap-servers")
+        .to_string();
+
+    let individual_hostname = matches
+        .value_of("individual_hostname")
+        .expect("Please provide --individual-hostname")
+        .to_string();
+
+    let api_client = Client::new(cache_ttl, api_url.parse().unwrap(), int_api_access_secret)
+        .await
+        .expect("failed to create API client");
+
+    let kafka_consumer = KafkaConsumer::new(
+        &kafka_bootstrap_servers,
+        &exg_gw_id,
+        &api_client.mappings(),
+        &app_stop_handle,
+        &log,
+    )
+    .expect("Could not start kafka consumer");
+
+    tokio::spawn(kafka_consumer.spawn());
+
+    let google_oauth2_client = GoogleOauth2Client::new(
+        Duration::from_secs(60),
+        google_oauth2_client_id,
+        google_oauth2_client_secret,
+        public_base_url.clone(),
+    );
+
+    let github_oauth2_client = GithubOauth2Client::new(
+        Duration::from_secs(60),
+        github_oauth2_client_id,
+        github_oauth2_client_secret,
+        public_base_url.clone(),
+    );
+
+    http_serve::handle::server(
+        client_tunnels,
+        listen_http_addr,
+        listen_https_addr,
+        external_https_port,
+        api_client,
+        app_stop_wait,
+        tls_cert_path.into(),
+        tls_key_path.into(),
+        public_base_url,
+        individual_hostname,
+        google_oauth2_client,
+        github_oauth2_client,
+        dbip,
+        log.clone(),
+    )
+    .await;
+
+    info!(log, "Web server stopped");
+
+    Ok(())
+}

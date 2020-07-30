@@ -1,0 +1,100 @@
+#!/usr/bin/env groovy
+
+IMAGE_NAME = "exg-gw"
+IMAGE = "${IMAGE_NAME}-${env.BRANCH_NAME}"
+PUSH = false
+DOCKER_AUTH = "\$(cat ~/.docker/config.json |jq -r \".auths[] .auth\")"
+BASE_VERSION = ""
+
+node("linux-docker") {
+    stage("set_base_version") {
+        checkout([
+                $class           : 'GitSCM',
+                branches         : scm.branches,
+                extensions       : scm.extensions + [[$class: 'SubmoduleOption', recursiveSubmodules: true, parentCredentials: true]],
+                userRemoteConfigs: scm.userRemoteConfigs
+        ])
+        sh("rm -rf ~/bin/toml")
+        sh("mkdir -p ~/bin")
+        sh("cp -f ci/toml ~/bin/")
+        sh("chmod +x ~/bin/toml")
+        BASE_VERSION = sh(
+                script: "export PATH=\"$HOME/.cargo/bin:$HOME/bin:$PATH\" && ./lifecycle-scripts/spawn.sh current_version.sh",
+                returnStdout: true
+        ).trim()
+    }
+}
+TAG = "${BASE_VERSION}.dev.nopush"
+
+if (env.BRANCH_NAME == "master") {
+    IMAGE = "r.lancastr.net/${IMAGE_NAME}"
+    PUSH = true
+    TAG = "${BASE_VERSION}"
+} else if (env.BRANCH_NAME == "develop") {
+    IMAGE = "r.lancastr.net/${IMAGE_NAME}-${env.BRANCH_NAME}"
+    TAG = "${BASE_VERSION}.build.${env.BUILD_NUMBER}"
+    PUSH = true
+}
+
+node("linux-docker") {
+    ansiColor('xterm') {
+        try {
+            stage("checkout") {
+                checkout([
+                        $class           : 'GitSCM',
+                        branches         : scm.branches,
+                        extensions       : scm.extensions + [[$class: 'SubmoduleOption', recursiveSubmodules: true, parentCredentials: true]],
+                        userRemoteConfigs: scm.userRemoteConfigs
+                ])
+            }
+
+            stage('check_if_exist') {
+                if (PUSH == true) {
+                    def exists = sh(
+                            script: "curl -X GET -sH \"Authorization: Basic $DOCKER_AUTH\" https://r.lancastr.net/v2/${IMAGE_NAME}/tags/list | jq \"try .tags catch [] | try contains([\\\"$TAG\\\"])\"",
+                            returnStdout: true
+                    ).trim()
+                    if (exists == "true") {
+                        error('Tag is already exist')
+                    }
+                }
+            }
+
+            stage('build_project') {
+                sh "docker build -t ${IMAGE}:${TAG} ."
+            }
+
+            stage('tag') {
+                sh "docker tag ${IMAGE}:${TAG} ${IMAGE}:latest"
+            }
+
+            stage('save_artifacts') {
+                if (PUSH == true) {
+                    sh "docker push $IMAGE:$TAG"
+                    sh "docker push $IMAGE:latest"
+                }
+            }
+            if (currentBuild.getPreviousBuild()?.getResult() != "SUCCESS") {
+                slackSend channel: '#dev',
+                        color: 'good',
+                        message: "${IMAGE_NAME.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) has repaired and ready (<${env.JOB_URL}|Open>)"
+            }
+            // slackSend channel: '#core-services',
+            //           color: 'good',
+            //           message: "${IMAGE_NAME.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) is ready (<${env.JOB_URL}|Open>)"
+        } catch (e) {
+            if (currentBuild.getPreviousBuild()?.getResult() == "SUCCESS") {
+                slackSend channel: '#dev',
+                        color: 'danger',
+                        message: "${IMAGE_NAME.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) is now broken (<${env.JOB_URL}|Open>)"
+            }
+            currentBuild.result = "FAILED"
+            throw e
+        } finally {
+            stage("cleanup_docker_images") {
+                sh "docker rmi $IMAGE:$TAG || true"
+                sh "docker rmi $IMAGE:latest || true"
+            }
+        }
+    }
+}

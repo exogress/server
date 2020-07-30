@@ -1,0 +1,21 @@
+[package]
+name = "exogress-server-common"
+version = "0.1.0"
+authors = ["Gleb Pomykalov <gleb@lancastr.com>"]
+edition = "2018"
+
+[dependencies]
+clap = "3.0.0-beta.1"
+hostname = "0.1.5"
+sentry = { version = "0.19.0", features = ["backtrace", "slog", "panic", "anyhow"] }
+slog = { version = "2.2.3", features = ["max_level_trace", "release_max_level_trace"] }
+slog-async = "2.3.0"
+slog-term = "2.4.0"
+slog-gelf = "0.1.2"
+sloggers = "0.3.2"
+lazy_static = "1.4.0"
+stop-handle = "0.1"
+futures-util = "0.3.5"
+tokio = { version = "0.2", features = ["signal"] }
+num_cpus = "1.0"
+clap_generate = "3.0.0-beta.1"

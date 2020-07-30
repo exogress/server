@@ -1,0 +1,9 @@
+[submodule "exogress"]
+	path = deps/exogress
+	url = git@github.com:exogress/exogress.git
+[submodule "deps/hyper"]
+	path = deps/hyper
+	url = https://github.com/glebpom/hyper.git
+[submodule "deps/warp"]
+	path = deps/warp
+	url = https://github.com/glebpom/warp.git

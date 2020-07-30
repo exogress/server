@@ -1,0 +1,27 @@
+use std::fmt;
+use std::panic::UnwindSafe;
+
+use exogress_server_common::termination::StopSignal;
+
+#[derive(Debug, Clone)]
+pub enum StopReason {
+    SignalReceived,
+    PeriodicSenderTerminated,
+}
+
+impl UnwindSafe for StopReason {}
+
+impl fmt::Display for StopReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StopReason::SignalReceived => write!(f, "signal received"),
+            StopReason::PeriodicSenderTerminated => write!(f, "periodic sender terminated"),
+        }
+    }
+}
+
+impl StopSignal for StopReason {
+    fn signal_received() -> Self {
+        StopReason::SignalReceived
+    }
+}

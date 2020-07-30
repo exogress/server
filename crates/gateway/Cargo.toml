@@ -1,0 +1,70 @@
+[package]
+name = "exogress-gateway"
+version = "0.1.0"
+authors = ["Exogress Team <team@exogress.com>"]
+edition = "2018"
+
+[dependencies]
+slog = { version = "2.2.3", features = ["max_level_trace", "release_max_level_trace"] }
+sentry = "0.19.0"
+hashbrown = { version = "0.8", features = ["serde"] }
+thiserror = "1.0.13"
+serde_json = "1.0.48"
+serde = { version = "1.0.105", features = ["derive"] }
+serde_derive = "1.0.25"
+clap = "3.0.0-beta.1"
+tokio = { version = "0.2", features = ["rt-threaded", "macros", "signal", "fs", "tcp", "sync", "time"] }
+futures = "0.3"
+futures-util = { version = "0.3", features = ["io"] }
+chrono = "0.4.11"
+hyper = "0.13.6"
+http = "0.2.1"
+reqwest = { version = "0.10.6", features = ["gzip", "brotli", "trust-dns", "native-tls", "stream", "rustls-tls"] }
+bytes = "0.5"
+warp = { version = "=0.2.3", features = ["websocket", "tls", "compression"] }
+url = "2.1.1"
+rdkafka = { version = "0.23.1", features = ["ssl", "gssapi"] }
+rdkafka-sys = "1.3.1"
+lru_time_cache = "0.10.0"
+parking_lot = "0.10.2"
+governor = "0.2.0"
+nonzero_ext = "0.2.0"
+oauth2 = { version = "3.0.0", features = ["reqwest-010", "futures-03"], default-features = false }
+rand = { version = "0.7", features = ["small_rng"] }
+stop-handle = "0.1"
+lazy_static = "1.4.0"
+jwt = "0.5.0"
+sha2 = "0.8.1"
+tokio-tungstenite = { version = "0.10.1", features = ["stream", "tls"] }
+trust-dns-resolver = "0.19.5"
+httparse = "1.3.4"
+tokio-util = { version = "0.3.1", features = ["compat"] }
+patricia_tree = "0.1.9"
+cookie = "0.13.3"
+time = "0.2.15"
+futures-intrusive = "0.3.1"
+maxminddb = { version = "0.14.0", features = ["mmap"] }
+memmap = "0.7.0"
+progress_bar = "0.1.3"
+async-compression = { version = "0.2", features = ["gzip", "futures-write"]}
+tempfile = "3.1.0"
+#async_zmq = "0.3.1"
+libinjection = "0.2.2"
+percent-encoding = "2.1.0"
+tokio-rustls = "0.13.0"
+serde_qs = "0.5.2"
+serde_with = "1.4.0"
+tower = "0.3.1"
+mimalloc = "0.1.19"
+byteorder = "1.3.4"
+smartstring = "0.2.3"
+smallvec = { version = "1.4.1", features = ["serde"] }
+anyhow = "1.0.31"
+bincode = "1.3.1"
+shadow-clone = "1.2.1"
+
+exogress-server-common = { path = "../common" }
+exogress-tunnel = { path = "../../deps/exogress/crates/tunnel" }
+exogress-config-core = { path = "../../deps/exogress/crates/config-core" }
+exogress-entities = { path = "../../deps/exogress/crates/entities" }
+exogress-signaling = { path = "../../deps/exogress/crates/signaling", version = "0.1" }
