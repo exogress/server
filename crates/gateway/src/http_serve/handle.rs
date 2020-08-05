@@ -43,30 +43,27 @@ use hyper::header::{HeaderName, HeaderValue};
 use hyper::Body;
 
 use crate::clients::{ClientTunnels, ConnectedTunnel};
-use crate::http_serve::auth;
+// use crate::http_serve::auth;
 use crate::stop_reasons::AppStopWait;
-use crate::url_mapping::client::Client;
-use crate::url_mapping::mapping::{
-    AuthProviderConfig, MappingAction, Oauth2Provider, Oauth2SsoClient, Protocol, ProxyTarget,
-    UrlForRewriting,
-};
+use crate::url_mapping::mapping::{MappingAction, Protocol, ProxyTarget, UrlForRewriting};
 use crate::webapp;
+use crate::webapp::Client;
 
-pub const AUTH_COOKIE_NAME: &str = "exg_auth";
+// pub const AUTH_COOKIE_NAME: &str = "exg_auth";
 
 pub async fn server(
     tunnels: ClientTunnels,
     listen_http_addr: SocketAddr,
     listen_https_addr: SocketAddr,
     external_https_port: u16,
-    api_client: Client,
+    webapp_client: Client,
     app_stop_wait: AppStopWait,
     tls_cert_path: String,
     tls_key_path: String,
     public_base_url: Url,
     individual_hostname: String,
-    google_oauth2_client: auth::google::GoogleOauth2Client,
-    github_oauth2_client: auth::github::GithubOauth2Client,
+    // google_oauth2_client: auth::google::GoogleOauth2Client,
+    // github_oauth2_client: auth::github::GithubOauth2Client,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
 ) {
     let (https_stop_handle, https_stop_wait) = stop_handle();
@@ -103,8 +100,6 @@ pub async fn server(
             },
         );
 
-    let webapp_client = webapp::Client::new();
-
     let acme = warp::path!(".well-known" / "acme-challenge" / String)
         .and(filters::host::host())
         .and_then({
@@ -130,7 +125,7 @@ pub async fn server(
                         Ok(info) => {
                             info!("validation request succeeded for host {}", hostname);
                             Ok(Response::builder()
-                                .header(CONTENT_TYPE, info.content_type)
+                                .header(CONTENT_TYPE, info.content_type.as_str())
                                 .body(info.file_content)
                                 .unwrap())
                         }
@@ -169,9 +164,9 @@ pub async fn server(
         .unwrap(),
     );
 
-    let auth_finalizers = Arc::new(Mutex::new(LruCache::with_expiry_duration(
-        Duration::from_secs(10),
-    )));
+    // let auth_finalizers = Arc::new(Mutex::new(LruCache::with_expiry_duration(
+    //     Duration::from_secs(10),
+    // )));
 
     let client = reqwest::ClientBuilder::new()
         .gzip(true)
@@ -184,128 +179,128 @@ pub async fn server(
         .build()
         .unwrap();
 
-    let oauth2_callback = warp::path!("_exg" / String / "callback")
-        .and(filters::query::query::<HashMap<String, String>>())
-        .and_then({
-            shadow_clone!(google_oauth2_client);
-            shadow_clone!(github_oauth2_client);
-            shadow_clone!(auth_finalizers);
+    // let oauth2_callback = warp::path!("_exg" / String / "callback")
+    //     .and(filters::query::query::<HashMap<String, String>>())
+    //     .and_then({
+    //         shadow_clone!(google_oauth2_client);
+    //         shadow_clone!(github_oauth2_client);
+    //         shadow_clone!(auth_finalizers);
+    //
+    //         move |provider: String, params| {
+    //             shadow_clone!(google_oauth2_client);
+    //             shadow_clone!(github_oauth2_client);
+    //
+    //             shadow_clone!(auth_finalizers);
+    //
+    //             async move {
+    //                 let oauth2_result = match provider.as_str() {
+    //                     "google" => google_oauth2_client.process_callback(params).await,
+    //                     "github" => github_oauth2_client.process_callback(params).await,
+    //                     _ => fixme!("unsupported provider"),
+    //                 };
+    //
+    //                 let mut resp = Response::new("");
+    //
+    //                 match oauth2_result {
+    //                     Ok(res) => {
+    //                         info!("oauth2 result: {:?}", res);
+    //                         let secret: String =
+    //                             thread_rng().sample_iter(&Alphanumeric).take(30).collect();
+    //
+    //                         let mut redirect_to = res.oauth2_flow_data.requested_url.clone();
+    //
+    //                         {
+    //                             let mut segments = redirect_to.path_segments_mut().unwrap();
+    //                             segments.clear();
+    //                             segments.push("_exg").push("authorized").push(&secret);
+    //                         }
+    //
+    //                         redirect_to.set_query(None);
+    //                         redirect_to.set_fragment(None);
+    //                         redirect_to.set_scheme("https").unwrap();
+    //
+    //                         auth_finalizers.lock().insert(secret, res.oauth2_flow_data);
+    //
+    //                         resp.headers_mut()
+    //                             .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+    //
+    //                         resp.headers_mut()
+    //                             .insert(LOCATION, redirect_to.to_string().try_into().unwrap());
+    //
+    //                         *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+    //                     }
+    //                     Err(e) => {
+    //                         warn!("Error from Google: {:?}", e);
+    //
+    //                         *resp.status_mut() = StatusCode::FORBIDDEN;
+    //                         *resp.body_mut() = "Forbidden";
+    //                     }
+    //                 }
+    //
+    //                 Ok::<_, Rejection>(resp)
+    //             }
+    //         }
+    //     });
 
-            move |provider: String, params| {
-                shadow_clone!(google_oauth2_client);
-                shadow_clone!(github_oauth2_client);
-
-                shadow_clone!(auth_finalizers);
-
-                async move {
-                    let oauth2_result = match provider.as_str() {
-                        "google" => google_oauth2_client.process_callback(params).await,
-                        "github" => github_oauth2_client.process_callback(params).await,
-                        _ => panic!("unsupported provider"),
-                    };
-
-                    let mut resp = Response::new("");
-
-                    match oauth2_result {
-                        Ok(res) => {
-                            info!("oauth2 result: {:?}", res);
-                            let secret: String =
-                                thread_rng().sample_iter(&Alphanumeric).take(30).collect();
-
-                            let mut redirect_to = res.oauth2_flow_data.requested_url.clone();
-
-                            {
-                                let mut segments = redirect_to.path_segments_mut().unwrap();
-                                segments.clear();
-                                segments.push("_exg").push("authorized").push(&secret);
-                            }
-
-                            redirect_to.set_query(None);
-                            redirect_to.set_fragment(None);
-                            redirect_to.set_scheme("https").unwrap();
-
-                            auth_finalizers.lock().insert(secret, res.oauth2_flow_data);
-
-                            resp.headers_mut()
-                                .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-
-                            resp.headers_mut()
-                                .insert(LOCATION, redirect_to.to_string().try_into().unwrap());
-
-                            *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-                        }
-                        Err(e) => {
-                            warn!("Error from Google: {:?}", e);
-
-                            *resp.status_mut() = StatusCode::FORBIDDEN;
-                            *resp.body_mut() = "Forbidden";
-                        }
-                    }
-
-                    Ok::<_, Rejection>(resp)
-                }
-            }
-        });
-
-    let authorized_callback = warp::path!("_exg" / "authorized" / String).and_then({
-        shadow_clone!(auth_finalizers);
-
-        move |secret| {
-            shadow_clone!(auth_finalizers);
-
-            let mut resp = Response::new("");
-
-            async move {
-                match auth_finalizers.lock().remove(&secret) {
-                    Some(res) => {
-                        resp.headers_mut()
-                            .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-
-                        resp.headers_mut()
-                            .insert(LOCATION, res.requested_url.as_str().try_into().unwrap());
-
-                        *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-
-                        let header: jwt::Header = Default::default();
-                        let mut claims = jwt::Claims::new(jwt::claims::Registered {
-                            iss: None,
-                            sub: None,
-                            aud: None,
-                            exp: None,
-                            nbf: None,
-                            iat: None,
-                            jti: None,
-                        });
-
-                        claims
-                            .private
-                            .insert("idp".into(), serde_json::to_value(res.provider).unwrap());
-
-                        let token = jwt::Token::new(header, claims);
-                        let token_str = token
-                            .signed(res.jwt_secret.as_ref(), sha2::Sha256::new())
-                            .unwrap();
-
-                        let set_cookie = Cookie::build(AUTH_COOKIE_NAME, token_str)
-                            .path(res.base_url.path())
-                            .max_age(time::Duration::hours(24))
-                            .http_only(true)
-                            .secure(true)
-                            .finish();
-
-                        resp.headers_mut()
-                            .insert(SET_COOKIE, set_cookie.to_string().try_into().unwrap());
-                    }
-                    None => {
-                        *resp.status_mut() = StatusCode::FORBIDDEN;
-                        *resp.body_mut() = "Forbidden";
-                    }
-                }
-
-                Ok::<_, Rejection>(resp)
-            }
-        }
-    });
+    // let authorized_callback = warp::path!("_exg" / "authorized" / String).and_then({
+    //     shadow_clone!(auth_finalizers);
+    //
+    //     move |secret| {
+    //         shadow_clone!(auth_finalizers);
+    //
+    //         let mut resp = Response::new("");
+    //
+    //         async move {
+    //             match auth_finalizers.lock().remove(&secret) {
+    //                 Some(res) => {
+    //                     resp.headers_mut()
+    //                         .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+    //
+    //                     resp.headers_mut()
+    //                         .insert(LOCATION, res.requested_url.as_str().try_into().unwrap());
+    //
+    //                     *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+    //
+    //                     let header: jwt::Header = Default::default();
+    //                     let mut claims = jwt::Claims::new(jwt::claims::Registered {
+    //                         iss: None,
+    //                         sub: None,
+    //                         aud: None,
+    //                         exp: None,
+    //                         nbf: None,
+    //                         iat: None,
+    //                         jti: None,
+    //                     });
+    //
+    //                     claims
+    //                         .private
+    //                         .insert("idp".into(), serde_json::to_value(res.provider).unwrap());
+    //
+    //                     let token = jwt::Token::new(header, claims);
+    //                     let token_str = token
+    //                         .signed(res.jwt_secret.as_ref(), sha2::Sha256::new())
+    //                         .unwrap();
+    //
+    //                     let set_cookie = Cookie::build(AUTH_COOKIE_NAME, token_str)
+    //                         .path(res.base_url.path())
+    //                         .max_age(time::Duration::hours(24))
+    //                         .http_only(true)
+    //                         .secure(true)
+    //                         .finish();
+    //
+    //                     resp.headers_mut()
+    //                         .insert(SET_COOKIE, set_cookie.to_string().try_into().unwrap());
+    //                 }
+    //                 None => {
+    //                     *resp.status_mut() = StatusCode::FORBIDDEN;
+    //                     *resp.body_mut() = "Forbidden";
+    //                 }
+    //             }
+    //
+    //             Ok::<_, Rejection>(resp)
+    //         }
+    //     }
+    // });
 
     let server = warp::any()
         .and(filters::path::full())
@@ -345,7 +340,7 @@ pub async fn server(
         .and(filters::host::host())
         // find mapping
         .and_then({
-            shadow_clone!(api_client);
+            shadow_clone!(webapp_client);
             shadow_clone!(tunnels);
             shadow_clone!(individual_hostname);
 
@@ -353,7 +348,7 @@ pub async fn server(
                   ws_or_body,
                   headers: http::HeaderMap,
                   maybe_host: Option<String>| {
-                shadow_clone!(api_client);
+                shadow_clone!(webapp_client);
                 shadow_clone!(individual_hostname);
                 shadow_clone!(tunnels);
 
@@ -373,9 +368,8 @@ pub async fn server(
                         warp::Either::B(_) => Protocol::Http,
                     };
 
-                    let handle_result = api_client
-                        .resolve(
-                            individual_hostname.clone().into(),
+                    let handle_result = webapp_client
+                        .resolve_url(
                             url_for_rewriting.clone(),
                             external_https_port,
                             proto,
@@ -384,8 +378,8 @@ pub async fn server(
                         .await;
 
                     match handle_result {
-                        Ok(Some((mapping_action, rate_limiter))) => {
-                            Ok((ws_or_body, headers, path, rate_limiter, mapping_action))
+                        Ok(Some((mapping_action,))) => {
+                            Ok((ws_or_body, headers, path, mapping_action))
                         }
                         Ok(None) => Err(warp::reject::not_found()),
                         Err(e) => {
@@ -397,44 +391,42 @@ pub async fn server(
             }
         })
         // check rate limits
-        .and_then({
-            move |(ws_or_body, headers, path, maybe_rate_limiter, action): (
-                _,
-                http::HeaderMap,
-                warp::filters::path::FullPath,
-                Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
-                _,
-            )| {
-                async move {
-                    if let Some(rate_limiter) = maybe_rate_limiter {
-                        let locked = &*rate_limiter.lock();
-
-                        match locked.check() {
-                            Ok(_) => Ok((ws_or_body, headers, path, action)),
-                            Err(limited) => {
-                                let wait_time =
-                                    limited.wait_time_from(MonotonicClock::default().now());
-
-                                info!("rate limited! {:?}", wait_time);
-                                Err::<_, _>(warp::reject::custom(RateLimited { wait_time }))
-                            }
-                        }
-                    } else {
-                        Ok((ws_or_body, headers, path, action))
-                    }
-                }
-            }
-        })
+        // .and_then({
+        //     move |(ws_or_body, headers, path, action): (
+        //         _,
+        //         http::HeaderMap,
+        //         warp::filters::path::FullPath,
+        //         // Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
+        //         MappingAction,
+        //     )| {
+        //         async move {
+        //             // if let Some(rate_limiter) = maybe_rate_limiter {
+        //             //     let locked = &*rate_limiter.lock();
+        //             //
+        //             //     match locked.check() {
+        //             //         Ok(_) => Ok((ws_or_body, headers, path, action)),
+        //             //         Err(limited) => {
+        //             //             let wait_time =
+        //             //                 limited.wait_time_from(MonotonicClock::default().now());
+        //             //
+        //             //             info!("rate limited! {:?}", wait_time);
+        //             //             Err::<_, _>(warp::reject::custom(RateLimited { wait_time }))
+        //             //         }
+        //             //     }
+        //             // } else {
+        //             //     Ok::<_, warp::reject::Rejection>((ws_or_body, headers, path, action))
+        //             // }
+        //         }
+        //     }
+        // })
         .and(filters::query::query::<HashMap<String, String>>())
         // ...
         .and_then({
             shadow_clone!(individual_hostname);
-
             shadow_clone!(tunnels);
 
             move |(ws_or_body, headers, path, mapping_action): (_, _, _, MappingAction), _params| {
                 shadow_clone!(individual_hostname);
-
                 shadow_clone!(tunnels);
 
                 async move {
@@ -458,8 +450,8 @@ pub async fn server(
                                     path,
                                     url,
                                     mapping_action.external_base_url,
-                                    mapping_action.auth_type,
-                                    mapping_action.jwt_secret,
+                                    // mapping_action.auth_type,
+                                    // mapping_action.jwt_secret,
                                     Some((connector, hyper)),
                                 ))
                             } else {
@@ -471,16 +463,15 @@ pub async fn server(
                 }
             }
         })
-        // validate JWT token from cookies
-        .and_then({
+        .map(
             move |(
                 ws_or_body,
                 headers,
                 path,
                 proxy_to,
                 base_url,
-                auth_type,
-                jwt_secret,
+                // auth_type,
+                // jwt_secret,
                 connector,
             ): (
                 _,
@@ -488,100 +479,120 @@ pub async fn server(
                 warp::filters::path::FullPath,
                 Url,
                 Url,
-                AuthProviderConfig,
-                Vec<u8>,
+                // AuthProviderConfig,
+                // Vec<u8>,
                 _,
-            )| {
-                let cookies = headers.get_all(COOKIE);
-
-                let proto = match &ws_or_body {
-                    warp::Either::A(_) => Protocol::WebSockets,
-                    warp::Either::B(_) => Protocol::Http,
-                };
-
-                let jwt_token = cookies
-                    .iter()
-                    .map(|header| {
-                        header
-                            .to_str()
-                            .unwrap()
-                            .split(';')
-                            .map(|s| s.trim_start().trim_end().to_string())
-                    })
-                    .flatten()
-                    .filter_map(move |s| Cookie::parse(s).ok())
-                    .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
-
-                async move {
-                    if let Some(token) = jwt_token {
-                        match jwt::Token::<jwt::Header, jwt::Claims>::parse(&token.value()) {
-                            Ok(token) if token.verify(jwt_secret.as_ref(), sha2::Sha256::new()) => {
-                                info!("jwt-token parse and verified");
-                                Ok((ws_or_body, headers, path, proxy_to, token.claims, connector))
-                            }
-                            Ok(_token) => {
-                                info!(
-                                    "jwt-token parsed but not verified with secret {:?}",
-                                    jwt_secret
-                                );
-                                Err::<_, _>(warp::reject::custom(NotAuthorized {
-                                    auth_type: Some(auth_type),
-                                    requested_url: base_url.clone(),
-                                    base_url,
-                                    jwt_secret,
-                                    proto,
-                                    is_jwt_token_included: true,
-                                }))
-                            }
-                            Err(e) => {
-                                info!("JWT token error: {:?}. Token: {}", e, token.value());
-                                Err::<_, _>(warp::reject::custom(NotAuthorized {
-                                    auth_type: Some(auth_type),
-                                    requested_url: base_url.clone(),
-                                    base_url,
-                                    jwt_secret,
-                                    proto,
-                                    is_jwt_token_included: true,
-                                }))
-                            }
-                        }
-                    } else {
-                        info!("jwt-token not found");
-
-                        Err::<_, _>(warp::reject::custom(NotAuthorized {
-                            auth_type: Some(auth_type),
-                            requested_url: base_url.clone(),
-                            base_url,
-                            jwt_secret,
-                            proto,
-                            is_jwt_token_included: false,
-                        }))
-                    }
-                }
-            }
-        })
+            )| { (ws_or_body, headers, path, proxy_to, connector) },
+        )
+        // validate JWT token from cookies
+        // .and_then({
+        //     move |(
+        //         ws_or_body,
+        //         headers,
+        //         path,
+        //         proxy_to,
+        //         base_url,
+        //         auth_type,
+        //         jwt_secret,
+        //         connector,
+        //     ): (
+        //         _,
+        //         http::HeaderMap,
+        //         warp::filters::path::FullPath,
+        //         Url,
+        //         Url,
+        //         AuthProviderConfig,
+        //         Vec<u8>,
+        //         _,
+        //     )| {
+        //         let cookies = headers.get_all(COOKIE);
+        //
+        //         let proto = match &ws_or_body {
+        //             warp::Either::A(_) => Protocol::WebSockets,
+        //             warp::Either::B(_) => Protocol::Http,
+        //         };
+        //
+        //         let jwt_token = cookies
+        //             .iter()
+        //             .map(|header| {
+        //                 header
+        //                     .to_str()
+        //                     .unwrap()
+        //                     .split(';')
+        //                     .map(|s| s.trim_start().trim_end().to_string())
+        //             })
+        //             .flatten()
+        //             .filter_map(move |s| Cookie::parse(s).ok())
+        //             .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
+        //
+        //         async move {
+        //             if let Some(token) = jwt_token {
+        //                 match jwt::Token::<jwt::Header, jwt::Claims>::parse(&token.value()) {
+        //                     Ok(token) if token.verify(jwt_secret.as_ref(), sha2::Sha256::new()) => {
+        //                         info!("jwt-token parse and verified");
+        //                         Ok((ws_or_body, headers, path, proxy_to, token.claims, connector))
+        //                     }
+        //                     Ok(_token) => {
+        //                         info!(
+        //                             "jwt-token parsed but not verified with secret {:?}",
+        //                             jwt_secret
+        //                         );
+        //                         Err::<_, _>(warp::reject::custom(NotAuthorized {
+        //                             auth_type: Some(auth_type),
+        //                             requested_url: base_url.clone(),
+        //                             base_url,
+        //                             jwt_secret,
+        //                             proto,
+        //                             is_jwt_token_included: true,
+        //                         }))
+        //                     }
+        //                     Err(e) => {
+        //                         info!("JWT token error: {:?}. Token: {}", e, token.value());
+        //                         Err::<_, _>(warp::reject::custom(NotAuthorized {
+        //                             auth_type: Some(auth_type),
+        //                             requested_url: base_url.clone(),
+        //                             base_url,
+        //                             jwt_secret,
+        //                             proto,
+        //                             is_jwt_token_included: true,
+        //                         }))
+        //                     }
+        //                 }
+        //             } else {
+        //                 info!("jwt-token not found");
+        //
+        //                 Err::<_, _>(warp::reject::custom(NotAuthorized {
+        //                     auth_type: Some(auth_type),
+        //                     requested_url: base_url.clone(),
+        //                     base_url,
+        //                     jwt_secret,
+        //                     proto,
+        //                     is_jwt_token_included: false,
+        //                 }))
+        //             }
+        //         }
+        //     }
+        // })
         .and(warp::method())
         .and(filters::addr::remote())
         .and(filters::addr::local())
         .and_then({
             shadow_clone!(client);
-
             shadow_clone!(resolver);
             shadow_clone!(dbip);
 
-            move |(ws_or_body, headers, _path, proxy_to, _claims, connector): (
+            move |(ws_or_body, headers, _path, proxy_to, connector): (
                 _,
                 http::HeaderMap,
                 warp::filters::path::FullPath,
                 Url,
-                jwt::Claims,
+                // jwt::Claims,
                 _,
             ),
                   method: http::Method,
                   remote_addr: Option<SocketAddr>,
                   local_addr: Option<SocketAddr>| {
                 shadow_clone!(client);
-
                 shadow_clone!(resolver);
                 shadow_clone!(dbip);
 
@@ -631,23 +642,23 @@ pub async fn server(
             }
         })
         .recover({
-            shadow_clone!(google_oauth2_client);
-            shadow_clone!(github_oauth2_client);
+            // shadow_clone!(google_oauth2_client);
+            // shadow_clone!(github_oauth2_client);
 
             move |r| {
-                shadow_clone!(google_oauth2_client);
-                shadow_clone!(github_oauth2_client);
+                // shadow_clone!(google_oauth2_client);
+                // shadow_clone!(github_oauth2_client);
 
                 warn!("Error: {:?}", r);
 
-                handle_rejection(r, google_oauth2_client, github_oauth2_client)
+                handle_rejection(r)
             }
         });
 
     let (_, https_server) = warp::serve(
-        oauth2_callback
-            .or(health)
-            .or(authorized_callback)
+        // oauth2_callback
+        health
+            // .or(authorized_callback)
             .or(server),
     )
     .tls({
@@ -655,7 +666,6 @@ pub async fn server(
 
         move |hostname| {
             shadow_clone!(webapp_client);
-
             shadow_clone!(public_base_url);
             shadow_clone!(tls_cert_path);
             shadow_clone!(tls_key_path);
@@ -671,17 +681,17 @@ pub async fn server(
                     hostname
                 );
 
-                if Some(public_base_url.host().unwrap().to_string()) == hostname {
-                    builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
-                } else {
-                    shadow_clone!(webapp_client);
-
-                    let certs = webapp_client.retrieve_certificate(&hostname?).await.ok()?;
-
-                    builder = builder
-                        .cert(certs.certificate.as_bytes())
-                        .key(certs.private_key.as_bytes());
-                }
+                // if Some(public_base_url.host().unwrap().to_string()) == hostname {
+                builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                // } else {
+                //     shadow_clone!(webapp_client);
+                //
+                //     let certs = webapp_client.retrieve_certificate(&hostname?).await.ok()?;
+                //
+                //     builder = builder
+                //         .cert(certs.certificate.as_bytes())
+                //         .key(certs.private_key.as_bytes());
+                // }
 
                 builder.build().ok().map(Arc::new)
             })
@@ -702,8 +712,8 @@ pub async fn server(
 
 async fn handle_rejection(
     err: Rejection,
-    google_oauth2_client: auth::google::GoogleOauth2Client,
-    github_oauth2_client: auth::github::GithubOauth2Client,
+    // google_oauth2_client: auth::google::GoogleOauth2Client,
+    // github_oauth2_client: auth::github::GithubOauth2Client,
 ) -> Result<impl Reply, Infallible> {
     let mut resp = Response::new("");
 
@@ -728,47 +738,47 @@ async fn handle_rejection(
 
         *resp.status_mut() = StatusCode::TOO_MANY_REQUESTS;
         *resp.body_mut() = "Rate Limited"
-    } else if let Some(NotAuthorized {
-        auth_type: Some(AuthProviderConfig::Oauth2(Oauth2SsoClient { provider })),
-        requested_url,
-        jwt_secret,
-        base_url,
-        proto,
-        is_jwt_token_included,
-    }) = err.find::<NotAuthorized>()
-    {
-        let redirect_to = match provider {
-            Oauth2Provider::Google => {
-                google_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
-            }
-            Oauth2Provider::Github => {
-                github_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
-            }
-        };
-
-        let delete_cookie = Cookie::build(AUTH_COOKIE_NAME, "deleted")
-            .http_only(true)
-            .secure(true)
-            .path(base_url.path())
-            .expires(time::OffsetDateTime::unix_epoch())
-            .finish();
-
-        resp.headers_mut()
-            .insert(SET_COOKIE, delete_cookie.to_string().try_into().unwrap());
-
-        match proto {
-            Protocol::Http => {
-                resp.headers_mut()
-                    .insert(LOCATION, redirect_to.try_into().unwrap());
-                *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-            }
-            Protocol::WebSockets if *is_jwt_token_included => {
-                *resp.status_mut() = StatusCode::UNAUTHORIZED;
-            }
-            Protocol::WebSockets => {
-                *resp.status_mut() = StatusCode::FORBIDDEN;
-            }
-        }
+    // } else if let Some(NotAuthorized {
+    //     auth_type: Some(AuthProviderConfig::Oauth2(Oauth2SsoClient { provider })),
+    //     requested_url,
+    //     jwt_secret,
+    //     base_url,
+    //     proto,
+    //     is_jwt_token_included,
+    // }) = err.find::<NotAuthorized>()
+    // {
+    //     let redirect_to = match provider {
+    //         Oauth2Provider::Google => {
+    //             google_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
+    //         }
+    //         Oauth2Provider::Github => {
+    //             github_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
+    //         }
+    //     };
+    //
+    //     let delete_cookie = Cookie::build(AUTH_COOKIE_NAME, "deleted")
+    //         .http_only(true)
+    //         .secure(true)
+    //         .path(base_url.path())
+    //         .expires(time::OffsetDateTime::unix_epoch())
+    //         .finish();
+    //
+    //     resp.headers_mut()
+    //         .insert(SET_COOKIE, delete_cookie.to_string().try_into().unwrap());
+    //
+    //     match proto {
+    //         Protocol::Http => {
+    //             resp.headers_mut()
+    //                 .insert(LOCATION, redirect_to.try_into().unwrap());
+    //             *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+    //         }
+    //         Protocol::WebSockets if *is_jwt_token_included => {
+    //             *resp.status_mut() = StatusCode::UNAUTHORIZED;
+    //         }
+    //         Protocol::WebSockets => {
+    //             *resp.status_mut() = StatusCode::FORBIDDEN;
+    //         }
+    //     }
     } else if err.find::<NotSupported>().is_some() {
         *resp.status_mut() = StatusCode::NOT_IMPLEMENTED;
     } else if err.find::<InjectionFound>().is_some() {
@@ -1247,17 +1257,17 @@ struct RateLimited {
 
 impl Reject for RateLimited {}
 
-#[derive(Debug)]
-struct NotAuthorized {
-    auth_type: Option<AuthProviderConfig>,
-    base_url: Url,
-    requested_url: Url,
-    jwt_secret: Vec<u8>,
-    proto: Protocol,
-    is_jwt_token_included: bool,
-}
+// #[derive(Debug)]
+// struct NotAuthorized {
+//     auth_type: Option<AuthProviderConfig>,
+//     base_url: Url,
+//     requested_url: Url,
+//     jwt_secret: Vec<u8>,
+//     proto: Protocol,
+//     is_jwt_token_included: bool,
+// }
 
-impl Reject for NotAuthorized {}
+// impl Reject for NotAuthorized {}
 
 #[derive(Debug)]
 struct NotSupported {}

@@ -9,8 +9,8 @@ use std::net::SocketAddr;
 use std::panic;
 
 use clap::{crate_version, App, Arg};
+use futures::FutureExt;
 use futures::{pin_mut, select};
-use futures::{FutureExt};
 use lazy_static::lazy_static;
 use mimalloc::MiMalloc;
 use redis::Client;
@@ -19,6 +19,7 @@ use stop_handle::stop_handle;
 
 use crate::termination::StopReason;
 use exogress_common_utils::termination::stop_signal_listener;
+use exogress_entities::Ulid;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use tokio::runtime::Builder;
@@ -75,14 +76,6 @@ fn main() {
                 .required(true)
                 .about("Set webapp base URL")
                 .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("signaler_id")
-                .long("signaler-id")
-                .value_name("STRING")
-                .about("Use this signaler-id as an identifier for presence API")
-                .required(true)
-                .takes_value(true),
         );
 
     let spawn_args = exogress_common_utils::clap::threads::add_args(
@@ -114,11 +107,6 @@ fn main() {
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "signaler");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
-
-    let signaler_id: String = matches
-        .value_of("signaler_id")
-        .expect("no signaler_id provided")
-        .into();
 
     let redis_addr: String = matches
         .value_of("redis_addr")
@@ -153,6 +141,8 @@ fn main() {
         .thread_name("signaler-reactor")
         .build()
         .unwrap();
+
+    let signaler_id: String = Ulid::new().to_string().into();
 
     let maybe_panic = rt.block_on({
         shadow_clone!(webapp_base_url);
@@ -198,6 +188,7 @@ fn main() {
                 listen_public_http_addr,
                 presence_client.clone(),
                 redis_client.clone(),
+                app_stop_handle.clone(),
                 public_server_graceful_stop_wait,
             ));
 

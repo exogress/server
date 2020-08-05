@@ -26,11 +26,11 @@ use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::clients::{spawn_tunnel, ClientTunnels};
-use crate::http_serve::auth::github::GithubOauth2Client;
-use crate::http_serve::auth::google::GoogleOauth2Client;
+// use crate::http_serve::auth::github::GithubOauth2Client;
+// use crate::http_serve::auth::google::GoogleOauth2Client;
 
-use crate::url_mapping::client::Client;
 use crate::url_mapping::notification_listener::KafkaConsumer;
+use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
 use tokio::runtime::Builder;
 
@@ -46,14 +46,15 @@ mod url_mapping;
 mod webapp;
 
 fn main() {
-    let spawn_args = App::new("spawn")        .arg(
-        Arg::with_name("public_base_url")
-            .long("public-base-url")
-            .value_name("URL")
-            .required(true)
-            .about("Public base URL")
-            .takes_value(true),
-    )
+    let spawn_args = App::new("spawn")
+        .arg(
+            Arg::with_name("public_base_url")
+                .long("public-base-url")
+                .value_name("URL")
+                .required(true)
+                .about("Public base URL")
+                .takes_value(true),
+        )
         .arg(
             Arg::with_name("google_oauth2_client_id")
                 .long("google-oauth2-client-id")
@@ -84,14 +85,6 @@ fn main() {
                 .value_name("STRING")
                 .required(true)
                 .about("Github oAuth2 client Secret")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("int_api_access_secret")
-                .long("int-api-access-secret")
-                .value_name("STRING")
-                .required(true)
-                .about("Internal API simple secret")
                 .takes_value(true),
         )
         .arg(
@@ -169,11 +162,11 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("api_url")
-                .long("api-url")
+            Arg::with_name("webapp_base_url")
+                .long("webapp-base-url")
                 .value_name("URL")
                 .required(true)
-                .about("Set API URL")
+                .about("Set Webapp Base URL")
                 .takes_value(true),
         )
         .arg(
@@ -284,19 +277,19 @@ fn main() {
         .parse()
         .expect("bad URL format");
 
-    let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
-    let google_oauth2_client_secret = matches
-        .value_of("google_oauth2_client_secret")
-        .unwrap()
-        .into();
+    // let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
+    // let google_oauth2_client_secret = matches
+    //     .value_of("google_oauth2_client_secret")
+    //     .unwrap()
+    //     .into();
 
-    let github_oauth2_client_id = matches.value_of("github_oauth2_client_id").unwrap().into();
-    let github_oauth2_client_secret = matches
-        .value_of("github_oauth2_client_secret")
-        .unwrap()
-        .into();
+    // let github_oauth2_client_id = matches.value_of("github_oauth2_client_id").unwrap().into();
+    // let github_oauth2_client_secret = matches
+    //     .value_of("github_oauth2_client_secret")
+    //     .unwrap()
+    //     .into();
 
-    let api_url = matches.value_of("api_url").unwrap().to_string();
+    let webapp_base_url = matches.value_of("webapp_base_url").unwrap().to_string();
     let cache_ttl: Duration = Duration::from_secs(
         matches
             .value_of("cache_ttl_secs")
@@ -311,12 +304,7 @@ fn main() {
     let tls_cert_path = matches.value_of("tls_cert_path").unwrap();
     let tls_key_path = matches.value_of("tls_key_path").unwrap();
 
-    let int_api_access_secret = matches
-        .value_of("int_api_access_secret")
-        .expect("no int_api_access_secret")
-        .into();
-
-    info!("Use API url at {}", api_url);
+    info!("Use Webapp url at {}", webapp_base_url);
 
     let listen_http_addr = matches
         .value_of("listen_http")
@@ -483,9 +471,7 @@ fn main() {
             .expect("Please provide --individual-hostname")
             .to_string();
 
-        let api_client = Client::new(cache_ttl, api_url.parse().unwrap(), int_api_access_secret)
-            .await
-            .expect("failed to create API client");
+        let api_client = Client::new(cache_ttl, webapp_base_url);
 
         let kafka_consumer = KafkaConsumer::new(
             &kafka_bootstrap_servers,
@@ -497,19 +483,19 @@ fn main() {
 
         tokio::spawn(kafka_consumer.spawn());
 
-        let google_oauth2_client = GoogleOauth2Client::new(
-            Duration::from_secs(60),
-            google_oauth2_client_id,
-            google_oauth2_client_secret,
-            public_base_url.clone(),
-        );
-
-        let github_oauth2_client = GithubOauth2Client::new(
-            Duration::from_secs(60),
-            github_oauth2_client_id,
-            github_oauth2_client_secret,
-            public_base_url.clone(),
-        );
+        // let google_oauth2_client = GoogleOauth2Client::new(
+        //     Duration::from_secs(60),
+        //     google_oauth2_client_id,
+        //     google_oauth2_client_secret,
+        //     public_base_url.clone(),
+        // );
+        //
+        // let github_oauth2_client = GithubOauth2Client::new(
+        //     Duration::from_secs(60),
+        //     github_oauth2_client_id,
+        //     github_oauth2_client_secret,
+        //     public_base_url.clone(),
+        // );
 
         http_serve::handle::server(
             client_tunnels,
@@ -522,8 +508,8 @@ fn main() {
             tls_key_path.into(),
             public_base_url,
             individual_hostname,
-            google_oauth2_client,
-            github_oauth2_client,
+            // google_oauth2_client,
+            // github_oauth2_client,
             dbip,
         )
         .await;

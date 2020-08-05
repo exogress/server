@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::http_serve::auth::{CallbackResult, FlowData, Oauth2FlowError};
-use crate::url_mapping::mapping::Oauth2Provider;
+use crate::http_serve::auth::FlowData;
+// use crate::url_mapping::mapping::Oauth2Provider;
 use hashbrown::HashMap;
 use lru_time_cache::LruCache;
 use oauth2::basic::BasicClient;
@@ -44,7 +44,7 @@ pub struct Oauth2FlowData {
 }
 
 pub struct Inner {
-    verifiers: LruCache<String, Oauth2FlowData>,
+    // verifiers: LruCache<String, Oauth2FlowData>,
 }
 
 #[derive(Clone)]
@@ -94,17 +94,17 @@ impl GithubOauth2Client {
             .add_scope(Scope::new("user:email".into()))
             .url();
 
-        self.inner.lock().verifiers.insert(
-            csrf_state.secret().clone(),
-            Oauth2FlowData {
-                data: FlowData {
-                    requested_url: requested_url.clone(),
-                    jwt_secret: jwt_secret.to_vec(),
-                    base_url: base_url.clone(),
-                    provider: Oauth2Provider::Github,
-                },
-            },
-        );
+        // self.inner.lock().verifiers.insert(
+        //     csrf_state.secret().clone(),
+        //     Oauth2FlowData {
+        //         data: FlowData {
+        //             requested_url: requested_url.clone(),
+        //             jwt_secret: jwt_secret.to_vec(),
+        //             base_url: base_url.clone(),
+        //             provider: Oauth2Provider::Github,
+        //         },
+        //     },
+        // );
 
         authorize_url.to_string()
     }

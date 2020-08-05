@@ -1,6 +1,3 @@
-
-
-
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
@@ -10,19 +7,19 @@ use rdkafka::consumer::{Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::KafkaResult;
 use rdkafka::{ClientContext, Message};
 
-
 use exogress_entities::MountPointId;
 
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Mappings;
+use smartstring::alias::*;
 
 pub struct CustomContext {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum Action {
-    #[serde(rename = "invalidate")]
-    Invalidate { mount_point_ids: Vec<MountPointId> },
+    #[serde(rename = "invalidate_url_prefixes")]
+    InvalidateUrlPrefixes { url_prefixes: Vec<String> },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,7 +29,7 @@ pub struct Notification {
     action: Action,
 }
 
-const KAFKA_GUARDIAN_NOTIFICATIONS_TOPIC: &str = "exg_notifications";
+const KAFKA_INVALIDATION_TOPIC: &str = "invalidations";
 
 impl ClientContext for CustomContext {}
 
@@ -89,7 +86,7 @@ impl KafkaConsumer {
         info!("spawning kafka consumer...");
 
         self.consumer
-            .subscribe(&[&KAFKA_GUARDIAN_NOTIFICATIONS_TOPIC])
+            .subscribe(&[&KAFKA_INVALIDATION_TOPIC])
             .expect("Can't subscribe to notifications topic");
         info!("subscribed to topic successfully");
 
@@ -102,11 +99,13 @@ impl KafkaConsumer {
                     self.stop_handle.stop(StopReason::KafkaConsumeError(e));
                 }
                 Ok(msg) => {
+                    info!("Received kafka message: {:?}", msg);
+
                     let owned_message = msg.detach();
                     let maybe_payload = owned_message.payload();
 
                     if let Some(payload) = maybe_payload {
-                        if msg.topic() == KAFKA_GUARDIAN_NOTIFICATIONS_TOPIC {
+                        if msg.topic() == KAFKA_INVALIDATION_TOPIC {
                             self.handle_notification(payload);
                         }
                     } else {
@@ -122,13 +121,13 @@ impl KafkaConsumer {
             Ok(msg) => {
                 info!("Process kafka notification {:?}", msg);
                 match msg.action {
-                    Action::Invalidate { mount_point_ids: _ } => {
-                        // self.mappings.remove_by_notification_if_time_applicable(
-                        //     url_prefix,
-                        //     generated_at,
-                        // );
-
-                        todo!("handle notification")
+                    Action::InvalidateUrlPrefixes { url_prefixes } => {
+                        for url_prefix in url_prefixes.into_iter() {
+                            self.mappings.remove_by_notification_if_time_applicable(
+                                url_prefix,
+                                msg.generated_at,
+                            );
+                        }
                     }
                 }
             }
@@ -150,8 +149,8 @@ mod test {
         static JSON: &'static str = r#"{
     "generated_at": 1594736221163,
     "action": {
-        "type": "invalidate",
-        "mount_point_ids": ["01ED93DMR0WKD4E7ZESZRJVSTK"]
+        "type": "invalidate_url_prefixes",
+        "url_prefixes": ["test.exg.link/prefix"]
     }
 }
 "#;
@@ -163,8 +162,8 @@ mod test {
         );
         assert!(matches!(
             n.action,
-            Action::Invalidate { mount_point_ids }
-                if mount_point_ids.as_slice() == [MountPointId::from_str("01ED93DMR0WKD4E7ZESZRJVSTK").unwrap()]
+            Action::InvalidateUrlPrefixes { url_prefixes }
+                if url_prefixes.as_slice() == [String::from("test.exg.link/prefix")]
         ));
     }
 }

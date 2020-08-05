@@ -10,7 +10,9 @@ use warp::Filter;
 
 use crate::presence;
 use crate::termination::StopReason;
-use stop_handle::StopWait;
+use exogress_common_utils::backoff::Backoff;
+use shadow_clone::shadow_clone;
+use stop_handle::{StopHandle, StopWait};
 
 const CONFIG_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
@@ -19,6 +21,7 @@ pub async fn server(
     listen_addr: SocketAddr,
     presence_client: presence::Client,
     redis: redis::Client,
+    stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<stop_handle::StopReason<StopReason>>,
 ) {
     let presence = warp::path!("channel" / String)
@@ -32,8 +35,9 @@ pub async fn server(
         .and(warp::header("authorization"))
         .map({
             move |instance_id: InstanceId, ws: warp::ws::Ws, authorization: String| {
-                let redis = redis.clone();
-                let presence_client = presence_client.clone();
+                shadow_clone!(redis);
+                shadow_clone!(presence_client);
+                shadow_clone!(stop_handle);
 
                 ws.on_upgrade(move |mut websocket| async move {
                     let wait_first = async move {
@@ -221,19 +225,32 @@ pub async fn server(
                             info!("config error: {}", e);
                         }
                     }
-                    if let Err(e) = presence_client
-                        .set_offline(&instance_id, &authorization)
-                        .await
-                    {
-                        error!("could not unset presence: {}", e);
+
+                    let mut set_offline_backoff =
+                        Backoff::new(Duration::from_millis(100), Duration::from_secs(1));
+
+                    for _ in 0..10 {
+                        if let Err(e) = presence_client
+                            .set_offline(&instance_id, &authorization)
+                            .await
+                        {
+                            error!("could not unset presence: {}", e);
+                        } else {
+                            return;
+                        }
+                        set_offline_backoff.next().await;
                     }
+
+                    stop_handle.stop(StopReason::SetOfflineError);
+
+                    futures::future::pending::<()>().await;
                 })
             }
         });
 
     let (_, server) = warp::serve(presence).bind_with_graceful_shutdown(
         listen_addr,
-        stop_wait.map( move |r| info!("public HTTP server stop request received: {}", r) ),
+        stop_wait.map(move |r| info!("public HTTP server stop request received: {}", r)),
     );
 
     server.await;

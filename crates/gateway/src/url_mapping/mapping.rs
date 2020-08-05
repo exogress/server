@@ -14,46 +14,31 @@ use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
 
-use exogress_config_core::{ConfigVersion, Revision, Target};
+use exogress_config_core::{Config, ConfigVersion, Revision, Target};
 use exogress_entities::{ConfigName, InstanceId, MountPointId};
 
 use crate::clients::ClientTunnels;
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PathPrefixes {
-    domain: String,
-    path_prefix: String,
-    tls_certificate: String,
-    tls_private_key: String,
+pub struct TlsConfig {
+    cn: String,
+    certificate: String,
+    private_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct SchemaTarget {
-    definition: Target,
-    config_name: ConfigName,
-    instance_ids: Vec<InstanceId>,
-    name: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SchemaRevision {
-    revision: Revision,
-    targets: Vec<SchemaTarget>,
-    version: ConfigVersion,
+pub struct InstanceSchema {
+    config: Config,
+    instance_id: InstanceId,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SchemaMapping {
     #[serde(with = "ts_milliseconds")]
     generated_at: DateTime<Utc>,
-    mount_point_id: MountPointId,
-    destination_path_prefix: String,
-    path_prefixes: SmallVec<[PathPrefixes; 4]>,
-
-    revisions: Vec<SchemaRevision>,
-    // jwt_secret
-    // rate_limiter
-    // auth_providers
+    url_prefix: String,
+    tls: TlsConfig,
+    instances: SmallVec<[InstanceSchema; 8]>,
 }
 
 /// UrlForRewriting
@@ -361,32 +346,34 @@ impl ProxyMatchedTo {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Oauth2SsoClient {
-    pub provider: Oauth2Provider,
-}
+// #[derive(Debug, Clone)]
+// pub struct Oauth2SsoClient {
+//     pub provider: Oauth2Provider,
+// }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Oauth2Provider {
-    #[serde(rename = "google")]
-    Google,
-    #[serde(rename = "github")]
-    Github,
-}
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// pub enum Oauth2Provider {
+//     #[serde(rename = "google")]
+//     Google,
+//     #[serde(rename = "github")]
+//     Github,
+// }
 
-#[derive(Debug, Clone)]
-pub enum AuthProviderConfig {
-    Oauth2(Oauth2SsoClient),
-}
+// #[derive(Debug, Clone)]
+// pub enum AuthProviderConfig {
+//     Oauth2(Oauth2SsoClient),
+// }
 
 #[derive(Clone)]
 pub struct Mapping {
     pub match_pattern: MatchPattern,
     pub proxy_matched_to: ProxyMatchedTo,
     pub generated_at: DateTime<Utc>,
-    pub jwt_secret: Vec<u8>,
-    pub auth_type: AuthProviderConfig,
-    pub rate_limiter: Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
+
+    pub targets: SmallVec<[Target; 8]>,
+    // pub jwt_secret: Vec<u8>,
+    // pub auth_type: AuthProviderConfig,
+    // pub rate_limiter: Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -409,8 +396,8 @@ pub enum ProxyTarget {
 #[derive(Clone)]
 pub struct MappingAction {
     pub target: ProxyTarget,
-    pub auth_type: AuthProviderConfig,
-    pub jwt_secret: Vec<u8>,
+    // pub auth_type: AuthProviderConfig,
+    // pub jwt_secret: Vec<u8>,
     pub external_base_url: Url,
 }
 
@@ -439,7 +426,7 @@ impl Mapping {
     ) -> Result<
         (
             MappingAction,
-            Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
+            // Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
         ),
         UrlMappingError,
     > {
@@ -453,11 +440,11 @@ impl Mapping {
             Ok((
                 MappingAction {
                     target,
-                    auth_type: self.auth_type.clone(),
-                    jwt_secret: self.jwt_secret.clone(),
+                    // auth_type: self.auth_type.clone(),
+                    // jwt_secret: self.jwt_secret.clone(),
                     external_base_url: base_url,
                 },
-                self.rate_limiter.clone(),
+                // self.rate_limiter.clone(),
             ))
         } else {
             Err(UrlMappingError::DoesNotBelongToPrefix {
@@ -468,300 +455,300 @@ impl Mapping {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    pub fn schema() {
-        static JSON: &'static str = r#"{
-    "generated_at": 1594736221163,
-    "mount_point_id": "01ED925W8DK8W7G0Q6TP5MS6SD",
-    "path_prefixes": [],
-    "destination_path_prefix": "asd",
-    "revisions": [
-        {
-            "revision": 12345,
-            "version": "0.0.1",
-            "targets": [
-                {
-                    "definition": {
-                        "type": "static_app",
-                        "app": "swagger-ui",
-                        "version": "3.28.0",
-                        "base_path": ["a", "b"],
-                        "priority": 10
-                    },
-                    "config_name": "01ED9C7EJV2BK4Z24WW26TZAVP",
-                    "instance_ids": ["01ED9C74GHBAECTRYZD3D8X6B5", "01ED9C794H75XKT27683ME02V6"],
-                    "name": "static-assets"
-                }
-            ]
-        }
-    ]
-}
-"#;
-
-        let _n: SchemaMapping = serde_json::from_str(JSON).unwrap();
-        // assert_eq!("2020-07-14T14:17:01.163Z".parse::<DateTime<Utc>>().unwrap(), n.generated_at);
-        // assert!(
-        //     matches!(
-        //         n.action,
-        //         Action::Invalidate { mount_point_ids } if mount_point_ids.as_slice() == [String::from("mpid")]
-        //     )
-        // );
-    }
-
-    #[test]
-    pub fn check_matching() {
-        let pattern = MatchPattern::new("example.exg.co", "/asd").unwrap();
-
-        let url1 = UrlForRewriting::from_components("example.exg.co", "/asdfgh", "").unwrap();
-        assert!(url1.matches(pattern.clone()).is_none());
-
-        let url2 = UrlForRewriting::from_components("example.exg.co", "/asd/fgh", "").unwrap();
-        assert!(url2.matches(pattern.clone()).is_some());
-
-        let url3 = UrlForRewriting::from_components("example.exg.co", "/asd?a=2", "").unwrap();
-        assert!(url3.matches(pattern.clone()).is_some());
-
-        let url4 = UrlForRewriting::from_components("example.exg.co", "/asd", "").unwrap();
-        assert!(url4.matches(pattern.clone()).is_some());
-
-        let url5 = UrlForRewriting::from_components("example.exg.co", "/asd/", "").unwrap();
-        assert!(url5.matches(pattern.clone()).is_some());
-
-        let pattern2 = MatchPattern::new("example.exg.co", "/").unwrap();
-        let url6 = UrlForRewriting::from_components("example.exg.co", "/", "").unwrap();
-        assert!(url6.matches(pattern2.clone()).is_some());
-
-        let url7 = UrlForRewriting::from_components("example.exg.co", "/admin", "").unwrap();
-        assert!(url7.matches(pattern2.clone()).is_some());
-
-        let pattern3 = MatchPattern::new("example.exg.co", "").unwrap();
-        let url8 = UrlForRewriting::from_components("example.exg.co", "/", "").unwrap();
-        assert!(url8.matches(pattern3.clone()).is_some());
-    }
-
-    #[test]
-    pub fn incorrect() {
-        let mapping = Mapping {
-            match_pattern: MatchPattern::new("example.exg.co", "/").unwrap(),
-            proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", "test-config".parse().unwrap())
-                .unwrap(),
-            generated_at: Utc::now(),
-            jwt_secret: vec![],
-            auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
-                provider: Oauth2Provider::Google,
-            }),
-            rate_limiter: None,
-        };
-
-        assert!(mapping
-            .handle(
-                UrlForRewriting::from_components("bad.com", "/", "").unwrap(),
-                ClientTunnels::new(),
-                443,
-                Protocol::Http,
-            )
-            .is_err())
-    }
-
-    // #[test]
-    // pub fn domain_rewrite() {
-    //     let mapping = Mapping {
-    //         match_pattern: MatchPattern::new("example.exg.co", "/").unwrap(),
-    //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", Default::default()).unwrap(),
-    //         generated_at: Utc::now(),
-    //         jwt_secret: vec![],
-    //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //             provider: Oauth2Provider::Google,
-    //         }),
-    //         rate_limiter: None,
-    //     };
-    //
-    //     assert_eq!(
-    //         Url::parse("https://lancastr.com/").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/", "").unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::Http,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     )
-    // }
-
-    // #[test]
-    // pub fn domain_and_path_rewrite() {
-    //     let mapping = Mapping {
-    //         match_pattern: MatchPattern::new("example.exg.co", "/from/url").unwrap(),
-    //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to/newurl", Default::default()).unwrap(),
-    //         generated_at: Utc::now(),
-    //         jwt_secret: vec![],
-    //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //             provider: Oauth2Provider::Google,
-    //         }),
-    //         rate_limiter: None,
-    //     };
-    //
-    //     assert_eq!(
-    //         Url::parse("https://lancastr.com/to/newurl/path?a=2").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/from/url/path", "a=2")
-    //                     .unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::Http,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     )
-    // }
-
-    // #[test]
-    // pub fn port_rewrite() {
-    //     let mapping = Mapping {
-    //         match_pattern: MatchPattern::new("example.exg.co", "/from/url").unwrap(),
-    //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", Default::default()).unwrap(),
-    //         generated_at: Utc::now(),
-    //         jwt_secret: vec![],
-    //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //             provider: Oauth2Provider::Google,
-    //         }),
-    //         rate_limiter: None,
-    //     };
-    //
-    //     assert_eq!(
-    //         Url::parse("https://lancastr.com:5567/to/newurl/path").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/from/url/path", "")
-    //                     .unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::Http,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     )
-    // }
-
-    // #[test]
-    // pub fn websockets_rewrite() {
-    //     let mapping = Mapping {
-    //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
-    //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
-    //         generated_at: Utc::now(),
-    //         jwt_secret: vec![],
-    //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //             provider: Oauth2Provider::Google,
-    //         }),
-    //         rate_limiter: None,
-    //     };
-    //
-    //     assert_eq!(
-    //         Url::parse("wss://lancastr.com/to/path").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::WebSockets,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     )
-    // }
-
-    // #[test]
-    // pub fn rewrite_tls_to_plain() {
-    //     let mapping = Mapping {
-    //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
-    //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
-    //         generated_at: Utc::now(),
-    //         jwt_secret: vec![],
-    //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //             provider: Oauth2Provider::Google,
-    //         }),
-    //         rate_limiter: None,
-    //     };
-    //
-    //     assert_eq!(
-    //         Url::parse("http://lancastr.com/to/path").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::Http,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     );
-    //
-    //     assert_eq!(
-    //         Url::parse("ws://lancastr.com/to/path").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::WebSockets,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     );
-    // }
-
-    // #[test]
-    // pub fn rewrite_plain_to_tls() {
-    //     let mapping = Mapping {
-    //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
-    //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
-    //         generated_at: Utc::now(),
-    //         jwt_secret: vec![],
-    //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //             provider: Oauth2Provider::Google,
-    //         }),
-    //         rate_limiter: None,
-    //     };
-    //
-    //     assert_eq!(
-    //         Url::parse("https://lancastr.com/to/path").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::Http,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     );
-    //
-    //     assert_eq!(
-    //         Url::parse("wss://lancastr.com/to/path").unwrap(),
-    //         mapping
-    //             .handle(
-    //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
-    //                 ClientTunnels::new(),
-    //                 443,
-    //                 Protocol::WebSockets,
-    //             )
-    //             .unwrap()
-    //             .0
-    //             .rewrite_to_url()
-    //     );
-    // }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//
+//     #[test]
+//     pub fn schema() {
+//         static JSON: &'static str = r#"{
+//     "generated_at": 1594736221163,
+//     "mount_point_id": "01ED925W8DK8W7G0Q6TP5MS6SD",
+//     "path_prefixes": [],
+//     "destination_path_prefix": "asd",
+//     "revisions": [
+//         {
+//             "revision": 12345,
+//             "version": "0.0.1",
+//             "targets": [
+//                 {
+//                     "definition": {
+//                         "type": "static_app",
+//                         "app": "swagger-ui",
+//                         "version": "3.28.0",
+//                         "base_path": ["a", "b"],
+//                         "priority": 10
+//                     },
+//                     "config_name": "01ED9C7EJV2BK4Z24WW26TZAVP",
+//                     "instance_ids": ["01ED9C74GHBAECTRYZD3D8X6B5", "01ED9C794H75XKT27683ME02V6"],
+//                     "name": "static-assets"
+//                 }
+//             ]
+//         }
+//     ]
+// }
+// "#;
+//
+//         let _n: SchemaMapping = serde_json::from_str(JSON).unwrap();
+//         // assert_eq!("2020-07-14T14:17:01.163Z".parse::<DateTime<Utc>>().unwrap(), n.generated_at);
+//         // assert!(
+//         //     matches!(
+//         //         n.action,
+//         //         Action::Invalidate { mount_point_ids } if mount_point_ids.as_slice() == [String::from("mpid")]
+//         //     )
+//         // );
+//     }
+//
+//     #[test]
+//     pub fn check_matching() {
+//         let pattern = MatchPattern::new("example.exg.co", "/asd").unwrap();
+//
+//         let url1 = UrlForRewriting::from_components("example.exg.co", "/asdfgh", "").unwrap();
+//         assert!(url1.matches(pattern.clone()).is_none());
+//
+//         let url2 = UrlForRewriting::from_components("example.exg.co", "/asd/fgh", "").unwrap();
+//         assert!(url2.matches(pattern.clone()).is_some());
+//
+//         let url3 = UrlForRewriting::from_components("example.exg.co", "/asd?a=2", "").unwrap();
+//         assert!(url3.matches(pattern.clone()).is_some());
+//
+//         let url4 = UrlForRewriting::from_components("example.exg.co", "/asd", "").unwrap();
+//         assert!(url4.matches(pattern.clone()).is_some());
+//
+//         let url5 = UrlForRewriting::from_components("example.exg.co", "/asd/", "").unwrap();
+//         assert!(url5.matches(pattern.clone()).is_some());
+//
+//         let pattern2 = MatchPattern::new("example.exg.co", "/").unwrap();
+//         let url6 = UrlForRewriting::from_components("example.exg.co", "/", "").unwrap();
+//         assert!(url6.matches(pattern2.clone()).is_some());
+//
+//         let url7 = UrlForRewriting::from_components("example.exg.co", "/admin", "").unwrap();
+//         assert!(url7.matches(pattern2.clone()).is_some());
+//
+//         let pattern3 = MatchPattern::new("example.exg.co", "").unwrap();
+//         let url8 = UrlForRewriting::from_components("example.exg.co", "/", "").unwrap();
+//         assert!(url8.matches(pattern3.clone()).is_some());
+//     }
+//
+//     #[test]
+//     pub fn incorrect() {
+//         let mapping = Mapping {
+//             match_pattern: MatchPattern::new("example.exg.co", "/").unwrap(),
+//             proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", "test-config".parse().unwrap())
+//                 .unwrap(),
+//             generated_at: Utc::now(),
+//             // jwt_secret: vec![],
+//             // auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
+//             //     provider: Oauth2Provider::Google,
+//             // }),
+//             // rate_limiter: None,
+//         };
+//
+//         assert!(mapping
+//             .handle(
+//                 UrlForRewriting::from_components("bad.com", "/", "").unwrap(),
+//                 ClientTunnels::new(),
+//                 443,
+//                 Protocol::Http,
+//             )
+//             .is_err())
+//     }
+//
+//     // #[test]
+//     // pub fn domain_rewrite() {
+//     //     let mapping = Mapping {
+//     //         match_pattern: MatchPattern::new("example.exg.co", "/").unwrap(),
+//     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", Default::default()).unwrap(),
+//     //         generated_at: Utc::now(),
+//     //         jwt_secret: vec![],
+//     //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
+//     //             provider: Oauth2Provider::Google,
+//     //         }),
+//     //         rate_limiter: None,
+//     //     };
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("https://lancastr.com/").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/", "").unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::Http,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     )
+//     // }
+//
+//     // #[test]
+//     // pub fn domain_and_path_rewrite() {
+//     //     let mapping = Mapping {
+//     //         match_pattern: MatchPattern::new("example.exg.co", "/from/url").unwrap(),
+//     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to/newurl", Default::default()).unwrap(),
+//     //         generated_at: Utc::now(),
+//     //         jwt_secret: vec![],
+//     //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
+//     //             provider: Oauth2Provider::Google,
+//     //         }),
+//     //         rate_limiter: None,
+//     //     };
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("https://lancastr.com/to/newurl/path?a=2").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/from/url/path", "a=2")
+//     //                     .unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::Http,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     )
+//     // }
+//
+//     // #[test]
+//     // pub fn port_rewrite() {
+//     //     let mapping = Mapping {
+//     //         match_pattern: MatchPattern::new("example.exg.co", "/from/url").unwrap(),
+//     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/", Default::default()).unwrap(),
+//     //         generated_at: Utc::now(),
+//     //         jwt_secret: vec![],
+//     //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
+//     //             provider: Oauth2Provider::Google,
+//     //         }),
+//     //         rate_limiter: None,
+//     //     };
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("https://lancastr.com:5567/to/newurl/path").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/from/url/path", "")
+//     //                     .unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::Http,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     )
+//     // }
+//
+//     // #[test]
+//     // pub fn websockets_rewrite() {
+//     //     let mapping = Mapping {
+//     //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
+//     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
+//     //         generated_at: Utc::now(),
+//     //         jwt_secret: vec![],
+//     //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
+//     //             provider: Oauth2Provider::Google,
+//     //         }),
+//     //         rate_limiter: None,
+//     //     };
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("wss://lancastr.com/to/path").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::WebSockets,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     )
+//     // }
+//
+//     // #[test]
+//     // pub fn rewrite_tls_to_plain() {
+//     //     let mapping = Mapping {
+//     //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
+//     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
+//     //         generated_at: Utc::now(),
+//     //         jwt_secret: vec![],
+//     //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
+//     //             provider: Oauth2Provider::Google,
+//     //         }),
+//     //         rate_limiter: None,
+//     //     };
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("http://lancastr.com/to/path").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::Http,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     );
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("ws://lancastr.com/to/path").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::WebSockets,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     );
+//     // }
+//
+//     // #[test]
+//     // pub fn rewrite_plain_to_tls() {
+//     //     let mapping = Mapping {
+//     //         match_pattern: MatchPattern::new("example.exg.co", "/from").unwrap(),
+//     //         proxy_matched_to: ProxyMatchedTo::new("lancastr.com/to", Default::default()).unwrap(),
+//     //         generated_at: Utc::now(),
+//     //         jwt_secret: vec![],
+//     //         auth_type: AuthProviderConfig::Oauth2(Oauth2SsoClient {
+//     //             provider: Oauth2Provider::Google,
+//     //         }),
+//     //         rate_limiter: None,
+//     //     };
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("https://lancastr.com/to/path").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::Http,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     );
+//     //
+//     //     assert_eq!(
+//     //         Url::parse("wss://lancastr.com/to/path").unwrap(),
+//     //         mapping
+//     //             .handle(
+//     //                 UrlForRewriting::from_components("example.exg.co", "/from/path", "").unwrap(),
+//     //                 ClientTunnels::new(),
+//     //                 443,
+//     //                 Protocol::WebSockets,
+//     //             )
+//     //             .unwrap()
+//     //             .0
+//     //             .rewrite_to_url()
+//     //     );
+//     // }
+// }
