@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping;
-use crate::url_mapping::mapping::{MappingAction, Protocol, UrlForRewriting};
-use crate::url_mapping::registry::Mappings;
+use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::registry::Configs;
 use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
@@ -12,6 +12,7 @@ use exogress_entities::InstanceId;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
+use http::StatusCode;
 use percent_encoding::NON_ALPHANUMERIC;
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ pub struct Client {
     reqwest: reqwest::Client,
     retrieve_configs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
     retrieving_certs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
-    configs: Mappings,
+    configs: Configs,
     base_url: String,
 }
 
@@ -102,8 +103,8 @@ pub struct AcmeHttpChallengeVerificationQueryParams {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct InstanceData {
-    instance_id: InstanceId,
-    config: Config,
+    pub instance_id: InstanceId,
+    pub config: Config,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -213,7 +214,7 @@ impl url_mapping::mapping::Mapping {
 impl Client {
     pub fn new(ttl: Duration, base_url: String) -> Self {
         Client {
-            configs: Mappings::new(ttl),
+            configs: Configs::new(ttl),
             reqwest: reqwest::ClientBuilder::new()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
@@ -227,7 +228,7 @@ impl Client {
         }
     }
 
-    pub fn mappings(&self) -> Mappings {
+    pub fn mappings(&self) -> Configs {
         self.configs.clone()
     }
 
@@ -314,7 +315,7 @@ impl Client {
 
                 let base_url = self.base_url.clone();
                 let reqwest = self.reqwest.clone();
-                let _mappings = self.configs.clone();
+                let configs = self.configs.clone();
 
                 move || {
                     let ready_event = Arc::new(ManualResetEvent::new(false));
@@ -354,51 +355,24 @@ impl Client {
                                 Ok(res) => {
                                     if res.status().is_success() {
                                         match res.json::<ConfigsResponse>().await {
-                                            Ok(cofig_response) => {
+                                            Ok(config_response) => {
                                                 info!(
-                                                    "Mapping retrieved successfully: `{:?}`",
-                                                    cofig_response
+                                                    "Configs retrieved successfully: `{:?}`",
+                                                    config_response
                                                 );
 
-                                                // match mapping_response.response {
-                                                //     Some(
-                                                //         resolve_url_mapping_response::Response::FoundMapping(
-                                                //             mapping,
-                                                //         ),
-                                                //     ) => {
-                                                //         info!("Mapping found: {:?}", mapping);
-                                                //
-                                                //         let mapping = Mapping::try_from_message(
-                                                //             mapping,
-                                                //         );
-                                                //
-                                                //         match mapping {
-                                                //             Ok(mapping) => {
-                                                //                 mappings.
-                                                //                     upsert(
-                                                //                         &url_prefix,
-                                                //                         Some(mapping))
-                                                //             }
-                                                //             Err(e) => {
-                                                //                 error!("Could not parse incoming mapping: {}. Save None to prevent queries on each request", e);
-                                                //                 mappings.upsert(&url_prefix, None);
-                                                //             }
-                                                //         }
-                                                //     }
-                                                //     Some(
-                                                //         resolve_url_mapping_response::Response::MappingNotFound(
-                                                //             _,
-                                                //         ),
-                                                //     ) => {
-                                                //         info!("Mapping not found");
-                                                //         mappings.upsert(&url_prefix, None);
-                                                //     }
-                                                //     None => {
-                                                //         error!(
-                                                //             "unexpected empty response from gRPC mapping api"
-                                                //         );
-                                                //     }
-                                                // }
+                                                configs.upsert(
+                                                    &url_prefix,
+                                                    Some(Mapping {
+                                                        match_pattern: config_response
+                                                            .url_prefix
+                                                            .as_str()
+                                                            .parse()
+                                                            .expect("FIXME"),
+                                                        generated_at: config_response.generated_at,
+                                                        instances: config_response.instances,
+                                                    }),
+                                                );
                                             }
                                             Err(e) => {
                                                 error!(
@@ -407,6 +381,8 @@ impl Client {
                                                 );
                                             }
                                         }
+                                    } else if res.status() == StatusCode::NOT_FOUND {
+                                        configs.upsert(&url_prefix, None);
                                     } else {
                                         error!(
                                             "Bad status on configs retrieving: {}",

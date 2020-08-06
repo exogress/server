@@ -26,16 +26,17 @@ pub async fn request_connection(hostname: String, config_name: ConfigName) -> Re
 
     let msg = TunnelRequest { hostname };
 
-    info!("requesting connection for instance {}", config_name);
+    info!("requesting connection for config_name {}", config_name);
 
     let resp = client
-        .post(
+        .put(
             format!(
-                "http://localhost:2999/api/v1/instances/{}/tunnels",
+                "http://localhost:2999/api/v1/configs/{}/tunnels",
                 config_name
             )
             .as_str(),
         )
+        .header("authorization", "FIXME")
         .json(&msg)
         .send()
         .await?;

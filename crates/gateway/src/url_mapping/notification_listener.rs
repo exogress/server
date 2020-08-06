@@ -8,7 +8,7 @@ use rdkafka::error::KafkaResult;
 use rdkafka::{ClientContext, Message};
 
 use crate::stop_reasons::{AppStopHandle, StopReason};
-use crate::url_mapping::registry::Mappings;
+use crate::url_mapping::registry::Configs;
 use smartstring::alias::*;
 
 pub struct CustomContext {}
@@ -52,14 +52,14 @@ impl ConsumerContext for CustomContext {
 pub struct KafkaConsumer {
     consumer: StreamConsumer<CustomContext>,
     stop_handle: AppStopHandle,
-    mappings: Mappings,
+    mappings: Configs,
 }
 
 impl KafkaConsumer {
     pub fn new(
         kafka_bootstrap_servers: &str,
         exg_gw_id: &str,
-        mappings: &Mappings,
+        mappings: &Configs,
         app_stop_handle: &AppStopHandle,
     ) -> KafkaResult<KafkaConsumer> {
         shadow_clone!(mappings);

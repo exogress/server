@@ -74,9 +74,8 @@ pub async fn server(
                             }
 
                             let r = {
-                                let presence_client = presence_client.clone();
-
-                                let authorization = authorization.clone();
+                                shadow_clone!(presence_client);
+                                shadow_clone!(authorization);
 
                                 async move {
                                     let mut pubsub =
@@ -85,7 +84,7 @@ pub async fn server(
                                         format!("signaler.config.{}", config.name);
                                     info!("subscribe to {}", redis_subscription);
                                     pubsub.subscribe(redis_subscription).await?;
-                                    let mut messages = pubsub.on_message();
+                                    let mut from_redis_messages = pubsub.on_message();
 
                                     let (mut tx, mut rx) = websocket.split();
 
@@ -101,10 +100,10 @@ pub async fn server(
                                     .fuse();
 
                                     let forward_from_redis_to_ws_channel = {
-                                        let mut to_ws_tx = to_ws_tx.clone();
+                                        shadow_clone!(mut to_ws_tx);
 
                                         async move {
-                                            while let Some(msg) = messages.next().await {
+                                            while let Some(msg) = from_redis_messages.next().await {
                                                 let payload: String = msg.get_payload()?;
                                                 to_ws_tx
                                                     .send(warp::filters::ws::Message::text(payload))
@@ -119,9 +118,9 @@ pub async fn server(
                                     let (mut incoming_ping_tx, incoming_ping_rx) = mpsc::channel(2);
 
                                     let process_incoming = {
-                                        let mut to_ws_tx = to_ws_tx.clone();
-                                        let presence_client = presence_client.clone();
-                                        let authorization = authorization.clone();
+                                        shadow_clone!(mut to_ws_tx);
+                                        shadow_clone!(presence_client);
+                                        shadow_clone!(authorization);
 
                                         async move {
                                             while let Some(msg_res) = rx.next().await {

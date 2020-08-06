@@ -17,28 +17,34 @@ pub async fn server(
         .await
         .expect("redis connection error");
 
-    let tunnels_api = warp::path!("api" / "v1" / "instances" / ConfigName / "tunnels")
+    let tunnels_api = warp::path!("api" / "v1" / "configs" / ConfigName / "tunnels")
         .and(warp::filters::method::put())
         .and(warp::header("authorization"))
         .and(warp::body::json())
         .and_then({
             move |config_name: ConfigName, _authorization: String, body: TunnelRequest| {
-                let mut connection_manager = connection_manager.clone();
+                shadow_clone!(mut connection_manager);
 
                 async move {
                     let serialized = serde_json::to_string_pretty(&body).unwrap();
 
-                    let num_recipients: u16 = connection_manager
+                    match connection_manager
                         .publish(format!("signaler.config.{}", config_name), serialized)
                         .await
-                        .expect("redis error");
+                    {
+                        Ok(num_recipients) => {
+                            debug!("delivered to {} recipients", num_recipients);
 
-                    debug!("delivered to {} recipients", num_recipients);
-
-                    if num_recipients == 0 {
-                        Err(warp::reject::not_found())
-                    } else {
-                        Ok(warp::reply::json(&TunnelRequestResponse { num_recipients }))
+                            if num_recipients == 0 {
+                                Err(warp::reject::not_found())
+                            } else {
+                                Ok(warp::reply::json(&TunnelRequestResponse { num_recipients }))
+                            }
+                        }
+                        Err(e) => {
+                            error!("redis server error: {}", e);
+                            Err(warp::reject::custom(InternalServerError {}))
+                        }
                     }
                 }
             }
@@ -58,3 +64,8 @@ pub async fn server(
 pub struct BadInstanceId {}
 
 impl warp::reject::Reject for BadInstanceId {}
+
+#[derive(Debug)]
+pub struct InternalServerError {}
+
+impl warp::reject::Reject for InternalServerError {}

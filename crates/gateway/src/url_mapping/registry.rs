@@ -1,11 +1,3 @@
-// GoogleOauth2Client {
-//      inner: Arc::new(Mutex::new(
-//          Inner {
-//              verifiers: LruCache::with_expiry_duration(ttl)
-//          }
-//      ))
-//  }
-
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -94,13 +86,13 @@ impl Inner {
 }
 
 #[derive(Clone)]
-pub struct Mappings {
+pub struct Configs {
     inner: Arc<Mutex<Inner>>,
 }
 
-impl Mappings {
+impl Configs {
     pub fn new(ttl: Duration) -> Self {
-        Mappings {
+        Configs {
             inner: Arc::new(Mutex::new(Inner {
                 lru_storage: LruCache::with_expiry_duration(ttl),
                 from_prefix_lookup_tree: Default::default(),

@@ -418,7 +418,11 @@ pub async fn server(
 
                 async move {
                     match mapping_action.target {
-                        ProxyTarget::Client { config_name, url } => {
+                        ProxyTarget::Client {
+                            config_name,
+                            url,
+                            upstream,
+                        } => {
                             if let Some(ConnectedTunnel {
                                 connector,
                                 hyper,
@@ -668,17 +672,26 @@ pub async fn server(
                     hostname
                 );
 
-                // if Some(public_base_url.host().unwrap().to_string()) == hostname {
-                builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
-                // } else {
-                //     shadow_clone!(webapp_client);
-                //
-                //     let certs = webapp_client.retrieve_certificate(&hostname?).await.ok()?;
-                //
-                //     builder = builder
-                //         .cert(certs.certificate.as_bytes())
-                //         .key(certs.private_key.as_bytes());
-                // }
+                if Some(public_base_url.host().unwrap().to_string()) == hostname {
+                    builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                } else {
+                    shadow_clone!(webapp_client);
+
+                    match webapp_client.retrieve_certificate(&hostname?).await {
+                        Ok(certs) => {
+                            builder = builder
+                                .cert(certs.certificate.as_bytes())
+                                .key(certs.private_key.as_bytes());
+                        }
+                        Err(_) if cfg!(debug_assertions) => {
+                            info!("fallback to default certificates on developmet");
+                            builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                        }
+                        Err(_) => {
+                            return None;
+                        }
+                    };
+                }
 
                 builder.build().ok().map(Arc::new)
             })
