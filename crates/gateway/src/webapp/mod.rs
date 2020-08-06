@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping;
-use crate::url_mapping::mapping::{
-    MappingAction, MatchPatternError, Protocol, RewriteMatchedToError, UrlForRewriting,
-};
+use crate::url_mapping::mapping::{MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::registry::Mappings;
 use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;

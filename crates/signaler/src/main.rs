@@ -10,7 +10,6 @@ use std::panic;
 
 use clap::{crate_version, App, Arg};
 use futures::FutureExt;
-use futures::{pin_mut, select};
 use lazy_static::lazy_static;
 use mimalloc::MiMalloc;
 use redis::Client;
@@ -98,7 +97,7 @@ fn main() {
         "exogress-signaler",
     );
 
-    let (app_stop_handle, mut app_stop_wait) = stop_handle::<StopReason>();
+    let (app_stop_handle, app_stop_wait) = stop_handle::<StopReason>();
 
     let matches = matches
         .subcommand_matches("spawn")
@@ -200,9 +199,7 @@ fn main() {
                 private_server_graceful_stop_wait,
             ));
 
-            pin_mut!(periodic_send_alive);
-
-            let http_termination_reason = select! {
+            let http_termination_reason = tokio::select! {
                 r = periodic_send_alive => {
                     match r {
                         Err(e) => {

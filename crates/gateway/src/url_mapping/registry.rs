@@ -10,9 +10,6 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use governor::clock::MonotonicClock;
-use governor::state::{InMemoryState, NotKeyed};
-use governor::RateLimiter;
 use lru_time_cache::LruCache;
 use parking_lot::Mutex;
 use patricia_tree::PatriciaMap;
@@ -20,8 +17,6 @@ use smartstring::alias::*;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
-use exogress_entities::MountPointId;
-use smallvec::SmallVec;
 
 struct Inner {
     // List of prefix with expiration according to policies

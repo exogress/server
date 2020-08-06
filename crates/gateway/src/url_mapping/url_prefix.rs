@@ -2,7 +2,6 @@ use core::fmt;
 use futures_util::core_reexport::str::FromStr;
 use url::Url;
 
-use futures_util::core_reexport::fmt::Formatter;
 use serde::de::Visitor;
 use serde::{de, Deserialize, Deserializer};
 use smartstring::alias::*;
@@ -97,7 +96,7 @@ struct UrlPrefixVisitor;
 impl<'de> Visitor<'de> for UrlPrefixVisitor {
     type Value = UrlPrefix;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("URL prefix")
     }
 

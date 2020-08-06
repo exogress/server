@@ -1,4 +1,4 @@
-use exogress_entities::{ConfigName};
+use exogress_entities::ConfigName;
 use exogress_signaling::TunnelRequest;
 use smartstring::alias::*;
 use std::time::Duration;
@@ -24,10 +24,7 @@ pub async fn request_connection(hostname: String, config_name: ConfigName) -> Re
         .build()
         .expect("could not create reqwest client");
 
-    let msg = TunnelRequest {
-        hostname,
-        num_connections: 1,
-    };
+    let msg = TunnelRequest { hostname };
 
     info!("requesting connection for instance {}", config_name);
 

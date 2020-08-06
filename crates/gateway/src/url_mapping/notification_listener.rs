@@ -7,8 +7,6 @@ use rdkafka::consumer::{Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::KafkaResult;
 use rdkafka::{ClientContext, Message};
 
-use exogress_entities::MountPointId;
-
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Mappings;
 use smartstring::alias::*;

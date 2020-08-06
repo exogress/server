@@ -1,21 +1,16 @@
 use std::fmt;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
-use governor::clock::MonotonicClock;
-use governor::state::{InMemoryState, NotKeyed};
-use governor::RateLimiter;
 
 use http::Uri;
-use parking_lot::Mutex;
 use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
 
-use exogress_config_core::{Config, ConfigVersion, Revision, Target};
-use exogress_entities::{ConfigName, InstanceId, MountPointId};
+use exogress_config_core::{Config, Target};
+use exogress_entities::{ConfigName, InstanceId};
 
 use crate::clients::ClientTunnels;
 

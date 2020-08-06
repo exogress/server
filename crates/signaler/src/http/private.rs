@@ -1,5 +1,5 @@
 use crate::termination::StopReason;
-use exogress_entities::{ConfigName};
+use exogress_entities::ConfigName;
 use exogress_signaling::{TunnelRequest, TunnelRequestResponse};
 use futures::FutureExt;
 use redis::AsyncCommands;
@@ -46,7 +46,7 @@ pub async fn server(
 
     let (_, server) = warp::serve(tunnels_api).bind_with_graceful_shutdown(
         listen_addr,
-        stop_wait.map( move |r| info!("private HTTP server stop request received: {}", r) ),
+        stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),
     );
 
     server.await;

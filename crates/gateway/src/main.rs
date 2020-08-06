@@ -39,7 +39,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 mod clients;
 mod dbip;
-mod environments;
+// mod environments;
 mod http_serve;
 mod stop_reasons;
 mod url_mapping;

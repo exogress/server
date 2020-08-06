@@ -4,29 +4,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Buf, Bytes};
-use cookie::Cookie;
 use futures_util::future::Either;
 use futures_util::sink::SinkExt;
 use futures_util::stream::{Stream, StreamExt};
-use futures_util::{select, TryStreamExt};
-use governor::clock::{Clock, MonotonicClock};
-use governor::state::{InMemoryState, NotKeyed};
-use governor::RateLimiter;
+use futures_util::TryStreamExt;
 use hashbrown::HashMap;
-use http::header::{
-    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE,
-    UPGRADE,
-};
+use http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, HOST, UPGRADE};
 use http::status::StatusCode;
 use http::{Response, Uri};
-use lru_time_cache::LruCache;
 use memmap::Mmap;
-use parking_lot::Mutex;
 use percent_encoding::percent_decode_str;
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
 use reqwest::header::Entry;
-use sha2::digest::Digest;
 use stop_handle::stop_handle;
 use tokio::net::TcpStream;
 use tokio::runtime::Handle;
@@ -46,7 +34,6 @@ use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{MappingAction, Protocol, ProxyTarget, UrlForRewriting};
-use crate::webapp;
 use crate::webapp::Client;
 
 // pub const AUTH_COOKIE_NAME: &str = "exg_auth";
@@ -469,7 +456,7 @@ pub async fn server(
                 headers,
                 path,
                 proxy_to,
-                base_url,
+                _base_url,
                 // auth_type,
                 // jwt_secret,
                 connector,
@@ -893,7 +880,7 @@ async fn proxy_ws(
                 let (server_sink, server_stream) = ws.split();
                 let (proxied_sink, proxied_stream) = proxied_ws.split();
 
-                let mut forward1 = server_stream
+                let forward1 = server_stream
                     .map({
                         move |warp_msg| {
                             warp_msg.map(move |r| {
@@ -929,7 +916,7 @@ async fn proxy_ws(
                         }
                     }));
 
-                let mut forward2 = proxied_stream
+                let forward2 = proxied_stream
                     .map({
                         move |tungstenite_msg| {
                             tungstenite_msg.map(move |r| {
@@ -968,7 +955,7 @@ async fn proxy_ws(
                         }
                     }));
 
-                select! {
+                tokio::select! {
                     _ = forward1 => {},
                     _ = forward2 => {},
                 }
