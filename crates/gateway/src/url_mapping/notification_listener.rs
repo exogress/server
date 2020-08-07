@@ -7,6 +7,7 @@ use rdkafka::consumer::{Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::KafkaResult;
 use rdkafka::{ClientContext, Message};
 
+use crate::clients::ClientTunnels;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
 use smartstring::alias::*;
@@ -51,6 +52,7 @@ impl ConsumerContext for CustomContext {
 
 pub struct KafkaConsumer {
     consumer: StreamConsumer<CustomContext>,
+    client_tunnels: ClientTunnels,
     stop_handle: AppStopHandle,
     mappings: Configs,
 }
@@ -60,6 +62,7 @@ impl KafkaConsumer {
         kafka_bootstrap_servers: &str,
         exg_gw_id: &str,
         mappings: &Configs,
+        client_tunnels: &ClientTunnels,
         app_stop_handle: &AppStopHandle,
     ) -> KafkaResult<KafkaConsumer> {
         shadow_clone!(mappings);
@@ -74,6 +77,7 @@ impl KafkaConsumer {
             .create_with_context::<_, StreamConsumer<_>>(CustomContext {})?;
 
         Ok(KafkaConsumer {
+            client_tunnels: client_tunnels.clone(),
             consumer,
             stop_handle: app_stop_handle.clone(),
             mappings,
@@ -125,6 +129,8 @@ impl KafkaConsumer {
                                 url_prefix,
                                 msg.generated_at,
                             );
+                            // FIXME: should rely on invalidation message
+                            self.client_tunnels.close_all();
                         }
                     }
                 }

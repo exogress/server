@@ -1111,6 +1111,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "trust-dns-resolver",
  "ulid",
 ]
 

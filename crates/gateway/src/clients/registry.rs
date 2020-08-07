@@ -43,6 +43,10 @@ impl ClientTunnels {
         }
     }
 
+    pub fn close_all(&self) {
+        self.inner.lock().clear();
+    }
+
     pub async fn retrieve_client_target(
         &self,
         config_name: ConfigName,

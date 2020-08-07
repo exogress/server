@@ -477,6 +477,7 @@ fn main() {
             &kafka_bootstrap_servers,
             &exg_gw_id,
             &api_client.mappings(),
+            &client_tunnels,
             &app_stop_handle,
         )
         .expect("Could not start kafka consumer");
