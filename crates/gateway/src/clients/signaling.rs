@@ -2,6 +2,7 @@ use exogress_entities::ConfigName;
 use exogress_signaling::TunnelRequest;
 use smartstring::alias::*;
 use std::time::Duration;
+use url::Url;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -15,7 +16,12 @@ pub enum Error {
     HttpCall(#[from] reqwest::Error),
 }
 
-pub async fn request_connection(hostname: String, config_name: ConfigName) -> Result<(), Error> {
+// signaler_private_base_url =
+pub async fn request_connection(
+    mut signaler_private_base_url: Url,
+    hostname: String,
+    config_name: ConfigName,
+) -> Result<(), Error> {
     let client = reqwest::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
@@ -28,14 +34,17 @@ pub async fn request_connection(hostname: String, config_name: ConfigName) -> Re
 
     info!("requesting connection for config_name {}", config_name);
 
+    {
+        let mut segments = signaler_private_base_url.path_segments_mut().unwrap();
+        segments.push("api");
+        segments.push("v1");
+        segments.push("configs");
+        segments.push(config_name.as_ref());
+        segments.push("tunnels");
+    }
+
     let resp = client
-        .put(
-            format!(
-                "http://localhost:2999/api/v1/configs/{}/tunnels",
-                config_name
-            )
-            .as_str(),
-        )
+        .put(signaler_private_base_url)
         .header("authorization", "FIXME")
         .json(&msg)
         .send()

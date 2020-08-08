@@ -14,6 +14,7 @@ use exogress_tunnel::Connector;
 
 use crate::clients::signaling::request_connection;
 use exogress_entities::{ConfigName, InstanceId};
+use url::Url;
 
 #[derive(Clone)]
 pub struct ConnectedTunnel {
@@ -32,14 +33,16 @@ pub enum TunnelConnectionState {
 #[derive(Clone)]
 pub struct ClientTunnels {
     pub inner: Arc<Mutex<HashMap<ConfigName, TunnelConnectionState>>>,
+    pub signaler_private_base_url: Url,
 }
 
 const WAIT_TIME: Duration = Duration::from_secs(10);
 
 impl ClientTunnels {
-    pub fn new() -> Self {
+    pub fn new(signaler_private_base_url: Url) -> Self {
         ClientTunnels {
             inner: Arc::new(Mutex::new(Default::default())),
+            signaler_private_base_url,
         }
     }
 
@@ -80,7 +83,13 @@ impl ClientTunnels {
         };
 
         if should_request {
-            match request_connection(individual_hostname, config_name.clone()).await {
+            match request_connection(
+                self.signaler_private_base_url.clone(),
+                individual_hostname,
+                config_name.clone(),
+            )
+            .await
+            {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error requesting connection: {}", e);
