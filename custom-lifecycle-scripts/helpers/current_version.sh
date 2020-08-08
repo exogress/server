@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-toml get ./Cargo.toml package.version|jq -r .
+toml get ./crates/common/Cargo.toml package.version|jq -r .
