@@ -92,16 +92,16 @@ node("linux-docker") {
             if (currentBuild.getPreviousBuild()?.getResult() != "SUCCESS") {
                 slackSend channel: '#dev',
                         color: 'good',
-                        message: "${IMAGE_NAME.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) has repaired and ready (<${env.JOB_URL}|Open>)"
+                        message: "${IMAGE.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) has repaired and ready (<${env.JOB_URL}|Open>)"
             }
             // slackSend channel: '#core-services',
             //           color: 'good',
-            //           message: "${IMAGE_NAME.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) is ready (<${env.JOB_URL}|Open>)"
+            //           message: "${IMAGE.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) is ready (<${env.JOB_URL}|Open>)"
         } catch (e) {
             if (currentBuild.getPreviousBuild()?.getResult() == "SUCCESS") {
                 slackSend channel: '#dev',
                         color: 'danger',
-                        message: "${IMAGE_NAME.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) is now broken (<${env.JOB_URL}|Open>)"
+                        message: "${IMAGE.capitalize()} branch ${env.BRANCH_NAME} (${env.BUILD_NUMBER}) is now broken (<${env.JOB_URL}|Open>)"
             }
             currentBuild.result = "FAILED"
             throw e
