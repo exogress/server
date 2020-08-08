@@ -15,8 +15,8 @@ ENV SCCACHE_GCS_KEY_PATH=/gcs.json
 COPY . /code
 WORKDIR /code/crates
 RUN cargo build --release && sccache --show-stats && \
-    cp /code/target/release/exogress-gateway /usr/local/bin/ && \
-    cp /code/target/release/exogress-signaler /usr/local/bin/ && \
+    cp /code/crates/target/release/exogress-gateway /usr/local/bin/ && \
+    cp /code/crates/target/release/exogress-signaler /usr/local/bin/ && \
     rm -rf ../target
 
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
