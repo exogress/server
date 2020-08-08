@@ -1,11 +1,8 @@
 #!/usr/bin/env groovy
 
-IMAGE_NAME = "servers"
-IMAGE_SIGNALER_NAME = "signaler"
-IMAGE_GATEWAY_NAME = "gateway"
-IMAGE = "${IMAGE_NAME}-${env.BRANCH_NAME}"
-IMAGE_SIGNALER = "${IMAGE_SIGNALER_NAME}-${env.BRANCH_NAME}"
-IMAGE_GATEWAY = "${IMAGE_GATEWAY_NAME}-${env.BRANCH_NAME}"
+IMAGE = "servers"
+IMAGE_SIGNALER = "signaler"
+IMAGE_GATEWAY = "gateway"
 PUSH = false
 DOCKER_AUTH = "\$(cat ~/.docker/config.json |jq -r \".auths[] .auth\")"
 BASE_VERSION = ""
@@ -31,15 +28,15 @@ node("linux-docker") {
 TAG = "${BASE_VERSION}.dev.nopush"
 
 if (env.BRANCH_NAME == "master") {
-    IMAGE = "r.lancastr.net/${IMAGE_NAME}"
-    IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}"
-    IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}"
+    IMAGE = "r.lancastr.net/${IMAGE}"
+    IMAGE_SIGNALER = "r.lancastr.net/${IMAGE}"
+    IMAGE_GATEWAY = "r.lancastr.net/${IMAGE}"
     PUSH = true
     TAG = "${BASE_VERSION}"
 } else if (env.BRANCH_NAME == "develop") {
-    IMAGE = "r.lancastr.net/${IMAGE_NAME}-${env.BRANCH_NAME}"
-    IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}-${env.BRANCH_NAME}"
-    IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}-${env.BRANCH_NAME}"
+    IMAGE = "r.lancastr.net/${IMAGE}-${env.BRANCH_NAME}"
+    IMAGE_SIGNALER = "r.lancastr.net/${IMAGE}-${env.BRANCH_NAME}"
+    IMAGE_GATEWAY = "r.lancastr.net/${IMAGE}-${env.BRANCH_NAME}"
     TAG = "${BASE_VERSION}.build.${env.BUILD_NUMBER}"
     PUSH = true
 }
