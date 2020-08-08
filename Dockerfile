@@ -20,14 +20,14 @@ RUN cargo test && sccache --show-stats
 RUN cargo build --release && sccache --show-stats
 
 FROM debian:buster as signaler
-RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev
+RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
 RUN exogress-signaler autocompletion bash > /etc/profile.d/exogress-signaler.sh && \
     echo "source /etc/profile.d/exogress-signaler.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-signaler"]
 
 FROM debian:buster as gateway
-RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev
+RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
