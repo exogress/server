@@ -7,3 +7,6 @@
 [submodule "deps/warp"]
 	path = deps/warp
 	url = https://github.com/glebpom/warp.git
+[submodule "lifecycle-scripts"]
+	path = lifecycle-scripts
+	url = git@github.com:lancastr/lifecycle-scripts.git
