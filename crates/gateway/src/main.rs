@@ -154,10 +154,10 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("exg_gw_id")
-                .long("exg-gw-id")
+            Arg::with_name("gateway_id")
+                .long("gateway-id")
                 .value_name("STRING")
-                .about("Use this exg_gw_id as identifier of kafka consumer")
+                .about("Use this gateway_id as identifier of kafka consumer")
                 .required(true)
                 .takes_value(true),
         )
@@ -245,7 +245,7 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let exg_gw_id = matches.value_of("exg_gw_id").expect("no exg_gw_id");
+    let gateway_id = matches.value_of("gateway_id").expect("no gateway_id");
 
     let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
@@ -261,7 +261,7 @@ fn main() {
         .unwrap();
 
     sentry::configure_scope(|scope| {
-        scope.set_tag("gw_id", &exg_gw_id[..]);
+        scope.set_tag("gw_id", &gateway_id[..]);
     });
 
     let (app_stop_handle, app_stop_wait) = stop_handle();
@@ -469,7 +469,7 @@ fn main() {
 
         let kafka_consumer = KafkaConsumer::new(
             &kafka_bootstrap_servers,
-            &exg_gw_id,
+            &gateway_id,
             &api_client.mappings(),
             &client_tunnels,
             &app_stop_handle,
