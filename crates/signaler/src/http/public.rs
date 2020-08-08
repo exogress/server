@@ -24,7 +24,7 @@ pub async fn server(
     stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<stop_handle::StopReason<StopReason>>,
 ) {
-    let presence = warp::path!("channel" / String)
+    let presence = warp::path!("api" / "channel" / String)
         .and_then(|instance_id: String| async move {
             match instance_id.parse::<InstanceId>() {
                 Err(_e) => Err(warp::reject::custom(BadInstanceId {})),
