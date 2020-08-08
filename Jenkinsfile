@@ -1,9 +1,11 @@
 #!/usr/bin/env groovy
 
 IMAGE_NAME = "servers"
+IMAGE_SIGNALER_NAME = "signaler"
+IMAGE_GATEWAY_NAME = "gateway"
 IMAGE = "${IMAGE_NAME}-${env.BRANCH_NAME}"
-IMAGE_SIGNALER = "${IMAGE_NAME}-signaler-${env.BRANCH_NAME}"
-IMAGE_GATEWAY = "${IMAGE_NAME}-gateway-${env.BRANCH_NAME}"
+IMAGE_SIGNALER = "${IMAGE_SIGNALER_NAME}-${env.BRANCH_NAME}"
+IMAGE_GATEWAY = "${IMAGE_GATEWAY_NAME}-${env.BRANCH_NAME}"
 PUSH = false
 DOCKER_AUTH = "\$(cat ~/.docker/config.json |jq -r \".auths[] .auth\")"
 BASE_VERSION = ""
