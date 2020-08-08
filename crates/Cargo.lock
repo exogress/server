@@ -922,11 +922,11 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-native-tls",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.11.0",
  "tracing",
  "tracing-futures",
  "trust-dns-resolver",
- "tungstenite",
+ "tungstenite 0.11.1",
  "url",
 ]
 
@@ -1044,7 +1044,7 @@ dependencies = [
  "time 0.2.16",
  "tokio",
  "tokio-rustls 0.13.1",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.11.0",
  "tokio-util",
  "tower",
  "tracing",
@@ -3927,6 +3927,19 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8b8fe88007ebc363512449868d7da4389c9400072a3f666f212c7280082882a"
+dependencies = [
+ "futures",
+ "log 0.4.11",
+ "pin-project",
+ "tokio",
+ "tungstenite 0.10.1",
+]
+
+[[package]]
+name = "tokio-tungstenite"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d9e878ad426ca286e4dcae09cbd4e1973a7f8987d97570e2469703dd7f5720c"
@@ -3937,7 +3950,7 @@ dependencies = [
  "pin-project",
  "tokio",
  "tokio-native-tls",
- "tungstenite",
+ "tungstenite 0.11.1",
 ]
 
 [[package]]
@@ -4227,6 +4240,25 @@ checksum = "59547bce71d9c38b83d9c0e92b6066c4253371f15005def0c30d9657f50c7642"
 
 [[package]]
 name = "tungstenite"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfea31758bf674f990918962e8e5f07071a3161bd7c4138ed23e416e1ac4264e"
+dependencies = [
+ "base64 0.11.0",
+ "byteorder",
+ "bytes 0.5.6",
+ "http 0.2.1",
+ "httparse",
+ "input_buffer",
+ "log 0.4.11",
+ "rand 0.7.3",
+ "sha-1 0.8.2",
+ "url",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0308d80d86700c5878b9ef6321f020f29b1bb9d5ff3cab25e75e23f3a492a23"
@@ -4443,7 +4475,7 @@ dependencies = [
  "tls-parser",
  "tokio",
  "tokio-rustls 0.13.1",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.10.1",
  "tower-service",
  "urlencoding",
 ]
