@@ -33,16 +33,16 @@ pub enum TunnelConnectionState {
 #[derive(Clone)]
 pub struct ClientTunnels {
     pub inner: Arc<Mutex<HashMap<ConfigName, TunnelConnectionState>>>,
-    pub signaler_int_base_url: Url,
+    pub int_base_url: Url,
 }
 
 const WAIT_TIME: Duration = Duration::from_secs(10);
 
 impl ClientTunnels {
-    pub fn new(signaler_int_base_url: Url) -> Self {
+    pub fn new(int_base_url: Url) -> Self {
         ClientTunnels {
             inner: Arc::new(Mutex::new(Default::default())),
-            signaler_int_base_url,
+            int_base_url,
         }
     }
 
@@ -84,7 +84,7 @@ impl ClientTunnels {
 
         if should_request {
             match request_connection(
-                self.signaler_int_base_url.clone(),
+                self.int_base_url.clone(),
                 individual_hostname,
                 config_name.clone(),
             )

@@ -154,8 +154,8 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("signaler_int_base_url")
-                .long("signaler-int-base-url")
+            Arg::with_name("int_base_url")
+                .long("int-base-url")
                 .value_name("URL")
                 .default_value("http://localhost:2999")
                 .about("Set private signaler base URL")
@@ -308,11 +308,11 @@ fn main() {
 
     info!("Use Webapp url at {}", webapp_base_url);
 
-    let signaler_int_base_url: Url = matches
-        .value_of("signaler_int_base_url")
-        .expect("no signaler_int_base_url")
+    let int_base_url: Url = matches
+        .value_of("int_base_url")
+        .expect("no int_base_url")
         .parse()
-        .expect("bad signaler_int_base_url");
+        .expect("bad int_base_url");
 
     let listen_http_addr = matches
         .value_of("listen_http")
@@ -460,7 +460,7 @@ fn main() {
             listen_https_addr, external_https_port
         );
 
-        let client_tunnels = ClientTunnels::new(signaler_int_base_url);
+        let client_tunnels = ClientTunnels::new(int_base_url);
 
         tokio::spawn(spawn_tunnel(
             listen_tunnel_addr,
