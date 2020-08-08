@@ -17,6 +17,11 @@ WORKDIR /code/crates
 RUN cargo build --release && sccache --show-stats && \
     cp /code/crates/target/release/exogress-gateway /usr/local/bin/ && \
     cp /code/crates/target/release/exogress-signaler /usr/local/bin/ && \
-    rm -rf ../target
+    rm -rf /code
+
+RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
+    exogress-signaler autocompletion bash > /etc/profile.d/exogress-signaler.sh && \
+    echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc && \
+    echo "source /etc/profile.d/exogress-signaler.sh" >> ~/.bashrc
 
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
