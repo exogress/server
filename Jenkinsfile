@@ -30,10 +30,14 @@ TAG = "${BASE_VERSION}.dev.nopush"
 
 if (env.BRANCH_NAME == "master") {
     IMAGE = "r.lancastr.net/${IMAGE_NAME}"
+    IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}"
+    IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}"
     PUSH = true
     TAG = "${BASE_VERSION}"
 } else if (env.BRANCH_NAME == "develop") {
     IMAGE = "r.lancastr.net/${IMAGE_NAME}-${env.BRANCH_NAME}"
+    IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}-${env.BRANCH_NAME}"
+    IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}-${env.BRANCH_NAME}"
     TAG = "${BASE_VERSION}.build.${env.BUILD_NUMBER}"
     PUSH = true
 }
