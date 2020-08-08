@@ -256,7 +256,7 @@ fn main() {
         .threaded_scheduler()
         .enable_all()
         .core_threads(num_threads)
-        .thread_name("signaler-reactor")
+        .thread_name("gateway-reactor")
         .build()
         .unwrap();
 

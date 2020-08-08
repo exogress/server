@@ -56,7 +56,7 @@ node("linux-docker") {
             stage('check_if_exist') {
                 if (PUSH == true) {
                     def exists = sh(
-                            script: "curl -X GET -sH \"Authorization: Basic $DOCKER_AUTH\" https://r.lancastr.net/v2/${IMAGE_NAME}/tags/list | jq \"try .tags catch [] | try contains([\\\"$TAG\\\"])\"",
+                            script: "curl -X GET -sH \"Authorization: Basic $DOCKER_AUTH\" https://r.lancastr.net/v2/${IMAGE_SIGNALER}/tags/list | jq \"try .tags catch [] | try contains([\\\"$TAG\\\"])\"",
                             returnStdout: true
                     ).trim()
                     if (exists == "true") {
