@@ -24,7 +24,7 @@ pub struct Client {
     retrieve_configs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
     retrieving_certs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
     configs: Configs,
-    base_url: String,
+    base_url: Url,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -212,7 +212,7 @@ impl url_mapping::mapping::Mapping {
 }
 
 impl Client {
-    pub fn new(ttl: Duration, base_url: String) -> Self {
+    pub fn new(ttl: Duration, base_url: Url) -> Self {
         Client {
             configs: Configs::new(ttl),
             reqwest: reqwest::ClientBuilder::new()
@@ -237,7 +237,7 @@ impl Client {
         domain: &str,
         path: &str,
     ) -> Result<AcmeHttpChallengeVerificationResponse, Error> {
-        let mut url = Url::parse(self.base_url.as_str()).unwrap();
+        let mut url = self.base_url.clone();
         url.path_segments_mut()
             .unwrap()
             .push("int")
@@ -333,7 +333,7 @@ impl Client {
                                 url_prefix
                             );
 
-                            let mut url = Url::parse(base_url.as_str()).unwrap();
+                            let mut url = base_url.clone();
                             url.path_segments_mut()
                                 .unwrap()
                                 .push("int")
@@ -428,7 +428,7 @@ impl Client {
     }
 
     pub async fn retrieve_certificate(&self, domain: &str) -> Result<CertificateResponse, Error> {
-        let mut url = Url::parse(self.base_url.as_str()).unwrap();
+        let mut url = self.base_url.clone();
         url.path_segments_mut()
             .unwrap()
             .push("int")

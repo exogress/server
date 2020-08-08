@@ -2,6 +2,8 @@
 
 IMAGE_NAME = "servers"
 IMAGE = "${IMAGE_NAME}-${env.BRANCH_NAME}"
+IMAGE_SIGNALER = "${IMAGE_NAME}-signaler-${env.BRANCH_NAME}"
+IMAGE_GATEWAY = "${IMAGE_NAME}-gateway-${env.BRANCH_NAME}"
 PUSH = false
 DOCKER_AUTH = "\$(cat ~/.docker/config.json |jq -r \".auths[] .auth\")"
 BASE_VERSION = ""
@@ -60,18 +62,28 @@ node("linux-docker") {
                 }
             }
 
-            stage('build_project') {
-                sh "docker build -t ${IMAGE}:${TAG} ."
+            stage('build_base') {
+                sh "docker build --target=builder -t ${IMAGE}:${TAG} ."
+                sh "docker tag ${IMAGE}:${TAG} ${IMAGE}:latest"
             }
 
-            stage('tag') {
-                sh "docker tag ${IMAGE}:${TAG} ${IMAGE}:latest"
+            stage('build_signaler') {
+                sh "docker build --target=signaler -t ${IMAGE_SIGNALER}:${TAG} ."
+                sh "docker tag ${IMAGE_SIGNALER}:${TAG} ${IMAGE_SIGNALER}:latest"
+            }
+
+            stage('build_gateway') {
+                sh "docker build --target=gateway -t ${IMAGE_GATEWAY}:${TAG} ."
+                sh "docker tag ${IMAGE_GATEWAY}:${TAG} ${IMAGE_GATEWAY}:latest"
             }
 
             stage('save_artifacts') {
                 if (PUSH == true) {
-                    sh "docker push $IMAGE:$TAG"
-                    sh "docker push $IMAGE:latest"
+                    sh "docker push $IMAGE_SIGNALER:$TAG"
+                    sh "docker push $IMAGE_SIGNALER:latest"
+
+                    sh "docker push $IMAGE_GATEWAY:$TAG"
+                    sh "docker push $IMAGE_GATEWAY:latest"
                 }
             }
             if (currentBuild.getPreviousBuild()?.getResult() != "SUCCESS") {
@@ -92,8 +104,11 @@ node("linux-docker") {
             throw e
         } finally {
             stage("cleanup_docker_images") {
-                sh "docker rmi $IMAGE:$TAG || true"
-                sh "docker rmi $IMAGE:latest || true"
+                sh "docker rmi $IMAGE_SIGNALER:$TAG || true"
+                sh "docker rmi $IMAGE_SIGNALER:latest || true"
+
+                sh "docker rmi $IMAGE_GATEWAY:$TAG || true"
+                sh "docker rmi $IMAGE_GATEWAY:latest || true"
             }
         }
     }

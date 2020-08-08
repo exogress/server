@@ -1,7 +1,7 @@
-FROM rust:1.45.1
+FROM rust:1.45.1 as builder
 
 RUN rustup component add clippy rustfmt
-RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev libzmq3-dev libzmq5 llvm-dev llvm libclang1-7 \
+RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
     build-essential clang cmake build-essential
 
 ADD ci/gcs.json /gcs.json
@@ -14,14 +14,21 @@ ENV SCCACHE_GCS_KEY_PATH=/gcs.json
 
 COPY . /code
 WORKDIR /code/crates
-RUN cargo build --release && sccache --show-stats && \
-    cp /code/crates/target/release/exogress-gateway /usr/local/bin/ && \
-    cp /code/crates/target/release/exogress-signaler /usr/local/bin/ && \
-    rm -rf /code
 
-RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
-    exogress-signaler autocompletion bash > /etc/profile.d/exogress-signaler.sh && \
-    echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc && \
+RUN cargo test && sccache --show-stats
+
+RUN cargo build --release && sccache --show-stats
+
+FROM debian:buster as signaler
+RUN apt-get update && apt-get install -y libssl1.1
+COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
+RUN exogress-signaler autocompletion bash > /etc/profile.d/exogress-signaler.sh && \
     echo "source /etc/profile.d/exogress-signaler.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-signaler"]
 
+FROM debian:buster as gateway
+RUN apt-get update && apt-get install -y libssl1.1
+COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
+RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
+    echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]

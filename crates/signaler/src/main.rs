@@ -66,21 +66,14 @@ fn main() {
                 .required(true)
                 .about("Set redis addr")
                 .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("webapp_base_url")
-                .long("webapp-base-url")
-                .value_name("URL")
-                .default_value("http://localhost:3000")
-                .required(true)
-                .about("Set webapp base URL")
-                .takes_value(true),
         );
 
-    let spawn_args = exogress_common_utils::clap::threads::add_args(
-        exogress_server_common::clap::sentry::add_args(exogress_common_utils::clap::log::add_args(
-            spawn_args,
-        )),
+    let spawn_args = exogress_server_common::clap::webapp::add_args(
+        exogress_common_utils::clap::threads::add_args(
+            exogress_server_common::clap::sentry::add_args(
+                exogress_common_utils::clap::log::add_args(spawn_args),
+            ),
+        ),
     );
 
     let args = App::new("Exogress Signaler Server")
@@ -103,6 +96,7 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
+    let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "signaler");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
@@ -110,11 +104,6 @@ fn main() {
     let redis_addr: String = matches
         .value_of("redis_addr")
         .expect("no redis addr provided")
-        .into();
-
-    let webapp_base_url: String = matches
-        .value_of("webapp_base_url")
-        .expect("no webapp base url provided")
         .into();
 
     let listen_public_http_addr = matches

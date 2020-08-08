@@ -162,14 +162,6 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("webapp_base_url")
-                .long("webapp-base-url")
-                .value_name("URL")
-                .required(true)
-                .about("Set Webapp Base URL")
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("cache_ttl_secs")
                 .long("cache-ttl")
                 .value_name("SECONDS")
@@ -226,10 +218,12 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_common_utils::clap::threads::add_args(
-        exogress_server_common::clap::sentry::add_args(exogress_common_utils::clap::log::add_args(
-            spawn_args,
-        )),
+    let spawn_args = exogress_server_common::clap::webapp::add_args(
+        exogress_common_utils::clap::threads::add_args(
+            exogress_server_common::clap::sentry::add_args(
+                exogress_common_utils::clap::log::add_args(spawn_args),
+            ),
+        ),
     );
 
     let args = App::new("Exogress Gateway")
@@ -253,6 +247,7 @@ fn main() {
 
     let exg_gw_id = matches.value_of("exg_gw_id").expect("no exg_gw_id");
 
+    let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "gw");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
@@ -289,7 +284,6 @@ fn main() {
     //     .unwrap()
     //     .into();
 
-    let webapp_base_url = matches.value_of("webapp_base_url").unwrap().to_string();
     let cache_ttl: Duration = Duration::from_secs(
         matches
             .value_of("cache_ttl_secs")

@@ -34,10 +34,7 @@ pub enum Error {
 }
 
 impl Client {
-    pub fn new(webapp_base_url: String, name: String) -> Self {
-        let mut webapp_base_url: Url = webapp_base_url
-            .parse()
-            .expect("Bad webapp_base_url provided");
+    pub fn new(mut webapp_base_url: Url, name: String) -> Self {
         {
             let mut segments = webapp_base_url.path_segments_mut().unwrap();
             segments.push("int");
