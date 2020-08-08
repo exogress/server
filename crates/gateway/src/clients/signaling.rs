@@ -16,9 +16,9 @@ pub enum Error {
     HttpCall(#[from] reqwest::Error),
 }
 
-// signaler_private_base_url =
+// signaler_int_base_url =
 pub async fn request_connection(
-    mut signaler_private_base_url: Url,
+    mut signaler_int_base_url: Url,
     hostname: String,
     config_name: ConfigName,
 ) -> Result<(), Error> {
@@ -35,7 +35,7 @@ pub async fn request_connection(
     info!("requesting connection for config_name {}", config_name);
 
     {
-        let mut segments = signaler_private_base_url.path_segments_mut().unwrap();
+        let mut segments = signaler_int_base_url.path_segments_mut().unwrap();
         segments.push("api");
         segments.push("v1");
         segments.push("configs");
@@ -44,7 +44,7 @@ pub async fn request_connection(
     }
 
     let resp = client
-        .put(signaler_private_base_url)
+        .put(signaler_int_base_url)
         .header("authorization", "FIXME")
         .json(&msg)
         .send()
