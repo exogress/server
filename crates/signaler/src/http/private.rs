@@ -51,7 +51,7 @@ pub async fn server(
             }
         });
 
-    info!("Spawning...", listen_addr);
+    info!("Spawning...");
     let (_, server) = warp::serve(tunnels_api).bind_with_graceful_shutdown(
         listen_addr,
         stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),

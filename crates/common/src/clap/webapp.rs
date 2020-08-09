@@ -1,6 +1,4 @@
 use clap::{Arg, ArgMatches};
-use sentry::integrations::panic::PanicIntegration;
-use sentry::{ClientInitGuard, ScopeGuard};
 use url::Url;
 
 pub fn add_args(app: clap::App) -> clap::App {
