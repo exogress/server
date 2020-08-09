@@ -12,6 +12,7 @@ pub async fn server(
     redis: redis::Client,
     stop_wait: StopWait<stop_handle::StopReason<StopReason>>,
 ) {
+    info!("Will spawn private HTTP server on {}", listen_addr);
     let connection_manager = redis
         .get_tokio_connection_manager()
         .await
@@ -50,6 +51,7 @@ pub async fn server(
             }
         });
 
+    info!("Spawning...", listen_addr);
     let (_, server) = warp::serve(tunnels_api).bind_with_graceful_shutdown(
         listen_addr,
         stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),

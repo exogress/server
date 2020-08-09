@@ -387,6 +387,7 @@ fn main() {
                         .and_then(|ct_len| ct_len.parse().ok())
                         .unwrap_or(0)
                 } else {
+                    error!("error getting geo DB size: {:?}", resp.status());
                     panic!("could not get DB size");
                 }
             };
