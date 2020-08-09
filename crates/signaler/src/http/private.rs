@@ -13,10 +13,6 @@ pub async fn server(
     stop_wait: StopWait<stop_handle::StopReason<StopReason>>,
 ) {
     info!("Will spawn private HTTP server on {}", listen_addr);
-    let connection_manager = redis
-        .get_tokio_connection_manager()
-        .await
-        .expect("redis connection error");
 
     let tunnels_api = warp::path!("api" / "v1" / "configs" / ConfigName / "tunnels")
         .and(warp::filters::method::put())
@@ -24,26 +20,36 @@ pub async fn server(
         .and(warp::body::json())
         .and_then({
             move |config_name: ConfigName, _authorization: String, body: TunnelRequest| {
-                shadow_clone!(mut connection_manager);
+                shadow_clone!(mut redis);
 
                 async move {
                     let serialized = serde_json::to_string_pretty(&body).unwrap();
 
-                    match connection_manager
-                        .publish(format!("signaler.config.{}", config_name), serialized)
-                        .await
-                    {
-                        Ok(num_recipients) => {
-                            debug!("delivered to {} recipients", num_recipients);
+                    match redis.get_async_connection().await {
+                        Ok(mut conn) => {
+                            match conn
+                                .publish(format!("signaler.config.{}", config_name), serialized)
+                                .await
+                            {
+                                Ok(num_recipients) => {
+                                    debug!("delivered to {} recipients", num_recipients);
 
-                            if num_recipients == 0 {
-                                Err(warp::reject::not_found())
-                            } else {
-                                Ok(warp::reply::json(&TunnelRequestResponse { num_recipients }))
+                                    if num_recipients == 0 {
+                                        Err(warp::reject::not_found())
+                                    } else {
+                                        Ok(warp::reply::json(&TunnelRequestResponse {
+                                            num_recipients,
+                                        }))
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("redis server error: {}", e);
+                                    Err(warp::reject::custom(InternalServerError {}))
+                                }
                             }
                         }
                         Err(e) => {
-                            error!("redis server error: {}", e);
+                            error!("redis server connection  error: {}", e);
                             Err(warp::reject::custom(InternalServerError {}))
                         }
                     }
