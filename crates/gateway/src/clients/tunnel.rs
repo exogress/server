@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
-use tokio_rustls::rustls::internal::pemfile::{certs, rsa_private_keys};
+use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 
@@ -24,8 +24,26 @@ fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
 }
 
 fn load_keys(path: &str) -> io::Result<Vec<PrivateKey>> {
-    rsa_private_keys(&mut BufReader::new(File::open(path)?))
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
+    use std::io::Read;
+
+    let mut content = Vec::new();
+    let mut f = File::open(path)?;
+    f.read_to_end(&mut content)?;
+
+    match pkcs8_private_keys(&mut content.as_slice()) {
+        Ok(pkcs8) if !pkcs8.is_empty() => {
+            info!("using PKCS8 tunnel certificate");
+            return Ok(pkcs8);
+        }
+        _ => {}
+    }
+
+    let rsa = rsa_private_keys(&mut content.as_slice())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))?;
+
+    info!("using RSA tunnel certificate");
+
+    Ok(rsa)
 }
 
 pub async fn spawn(
