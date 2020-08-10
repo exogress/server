@@ -35,6 +35,10 @@ use crate::clients::{ClientTunnels, ConnectedTunnel};
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{MappingAction, Protocol, ProxyTarget, UrlForRewriting};
 use crate::webapp::Client;
+use std::io;
+use std::path::PathBuf;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 
 // pub const AUTH_COOKIE_NAME: &str = "exg_auth";
 
@@ -49,6 +53,7 @@ pub async fn server(
     tls_key_path: String,
     public_base_url: Url,
     individual_hostname: String,
+    webroot: PathBuf,
     // google_oauth2_client: auth::google::GoogleOauth2Client,
     // github_oauth2_client: auth::github::GithubOauth2Client,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
@@ -91,34 +96,59 @@ pub async fn server(
         .and(filters::host::host())
         .and_then({
             shadow_clone!(webapp_client);
+            shadow_clone!(webroot);
 
             move |token: String, host: Option<String>| {
                 shadow_clone!(webapp_client);
+                shadow_clone!(webroot);
 
                 async move {
                     let filename = format!(".well-known/acme-challenge/{}", token);
-                    let hostname = host.expect("no host in request");
 
-                    info!(
-                        "ACME HTTP challenge verification request: {} on {}",
-                        filename, hostname
-                    );
+                    let read_local_file = async {
+                        let full_path = webroot.clone().join(&filename);
 
-                    let res = webapp_client
-                        .acme_http_challenge_verification(&hostname, filename.as_str())
-                        .await;
+                        info!("check ACME challenges in {}", full_path.display());
+                        let mut file = File::open(full_path).await?;
+                        let mut content = String::new();
+                        file.read_to_string(&mut content).await?;
 
-                    match res {
-                        Ok(info) => {
-                            info!("validation request succeeded for host {}", hostname);
+                        Ok::<_, io::Error>(content)
+                    };
+
+                    match read_local_file.await {
+                        Ok(content) => {
+                            info!("validation request successfully served from local filder");
                             Ok(Response::builder()
-                                .header(CONTENT_TYPE, info.content_type.as_str())
-                                .body(info.file_content)
+                                .header(CONTENT_TYPE, "text/plain")
+                                .body(content)
                                 .unwrap())
                         }
                         Err(e) => {
-                            warn!("error in ACME verification: {}", e);
-                            Err(warp::reject::not_found())
+                            let hostname = host.expect("no host in request");
+
+                            info!(
+                                "ACME HTTP challenge verification request: {} on {}",
+                                filename, hostname
+                            );
+
+                            let res = webapp_client
+                                .acme_http_challenge_verification(&hostname, filename.as_str())
+                                .await;
+
+                            match res {
+                                Ok(info) => {
+                                    info!("validation request succeeded for host {}", hostname);
+                                    Ok(Response::builder()
+                                        .header(CONTENT_TYPE, info.content_type.as_str())
+                                        .body(info.file_content)
+                                        .unwrap())
+                                }
+                                Err(e) => {
+                                    warn!("error in ACME verification: {}", e);
+                                    Err(warp::reject::not_found())
+                                }
+                            }
                         }
                     }
                 }

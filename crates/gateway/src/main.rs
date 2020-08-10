@@ -154,6 +154,13 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("webroot")
+                .long("webroot")
+                .value_name("PATH")
+                .about("Set webroot path for certbot interaction")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("int_base_url")
                 .long("int-base-url")
                 .value_name("URL")
@@ -307,6 +314,15 @@ fn main() {
     let tls_key_path = matches.value_of("tls_key_path").unwrap();
 
     info!("Use Webapp url at {}", webapp_base_url);
+
+    let webroot: PathBuf = fs::canonicalize(
+        matches
+            .value_of("webroot")
+            .expect("no webroot defined")
+            .to_string(),
+    )
+    .expect("error in webroot");
+    info!("Use certbot webroot at {}", webroot.display());
 
     let int_base_url: Url = matches
         .value_of("int_base_url")
@@ -518,6 +534,7 @@ fn main() {
             tls_key_path.into(),
             public_base_url,
             individual_hostname,
+            webroot,
             // google_oauth2_client,
             // github_oauth2_client,
             dbip,
