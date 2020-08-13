@@ -26,7 +26,7 @@ use warp::reject::Reject;
 use warp::{filters, Filter, Rejection, Reply};
 
 use exogress_entities::Upstream;
-use exogress_tunnel::{Conn, Connector};
+use exogress_tunnel::{Conn, ConnectTarget, Connector};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::Body;
 
@@ -158,16 +158,20 @@ pub async fn server(
     let health = warp::path!("_exg" / "health")
         .and_then(move || async move { Ok::<_, warp::Rejection>("Healthy") });
 
-    let (_, http_server) = warp::serve(acme.or(health).or(redirect_http_server))
-        .bind_with_graceful_shutdown(listen_http_addr, {
-            async move {
-                let reason = https_stop_wait.await;
-                info!(
-                    "Triggering graceful shutdown of HTTP by request: {}",
-                    reason
-                );
-            }
-        });
+    let (_, http_server) = warp::serve(
+        acme.or(health)
+            .or(redirect_http_server)
+            .with(warp::trace::request()),
+    )
+    .bind_with_graceful_shutdown(listen_http_addr, {
+        async move {
+            let reason = https_stop_wait.await;
+            info!(
+                "Triggering graceful shutdown of HTTP by request: {}",
+                reason
+            );
+        }
+    });
 
     tokio::spawn(http_server);
 
@@ -259,7 +263,7 @@ pub async fn server(
     //         }
     //     });
 
-    // let authorized_callback = warp::path!("_exg" / "authorized" / String).and_then({
+    // let authorized_callback = warp::path!("_exg" / "authorized" / String).with(warp::trace::request()).and_then({
     //     shadow_clone!(auth_finalizers);
     //
     //     move |secret| {
@@ -373,6 +377,8 @@ pub async fn server(
                     let host = maybe_host.expect("unknown host");
                     let host_without_port = host.split(':').next().unwrap();
 
+                    let is_internal = headers.get("X-Int").is_some();
+
                     let url_for_rewriting = UrlForRewriting::from_components(
                         host_without_port,
                         path.as_str(),
@@ -391,6 +397,7 @@ pub async fn server(
                             external_https_port,
                             proto,
                             tunnels,
+                            is_internal,
                         )
                         .await;
 
@@ -449,6 +456,8 @@ pub async fn server(
                 async move {
                     match mapping_action.target {
                         ProxyTarget::Client {
+                            account_name,
+                            project_name,
                             config_name,
                             url,
                             upstream,
@@ -460,6 +469,8 @@ pub async fn server(
                                 ..
                             }) = tunnels
                                 .retrieve_client_target(
+                                    account_name.clone(),
+                                    project_name.clone(),
                                     config_name.clone(),
                                     individual_hostname.into(),
                                 )
@@ -680,7 +691,8 @@ pub async fn server(
         // oauth2_callback
         health
             // .or(authorized_callback)
-            .or(server),
+            .or(server)
+            .with(warp::trace::request()),
     )
     .tls({
         shadow_clone!(webapp_client);
@@ -897,7 +909,13 @@ async fn proxy_ws(
                     .expect("FIXME"),
             )
         }
-        Some((connector, _)) => Box::new(connector.get_connection(upstream).await.expect("FIXME")),
+        Some((connector, _)) => Box::new(
+            connector
+                // FIXME: check upstream or internal!
+                .get_connection(ConnectTarget::Upstream(upstream))
+                .await
+                .expect("FIXME"),
+        ),
     };
 
     info!("connected");

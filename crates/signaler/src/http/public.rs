@@ -5,10 +5,11 @@ use tokio::sync::mpsc;
 use tokio::time::Duration;
 
 use exogress_config_core::Config;
-use exogress_entities::InstanceId;
+use exogress_entities::{AccountName, InstanceId, ProjectName};
 use warp::Filter;
 
 use crate::presence;
+use crate::presence::Error;
 use crate::termination::StopReason;
 use exogress_common_utils::backoff::Backoff;
 use shadow_clone::shadow_clone;
@@ -16,6 +17,12 @@ use stop_handle::{StopHandle, StopWait};
 
 const CONFIG_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Deserialize)]
+struct Workspace {
+    project: ProjectName,
+    account: AccountName,
+}
 
 pub async fn server(
     listen_addr: SocketAddr,
@@ -31,10 +38,14 @@ pub async fn server(
                 Ok(instance_id) => Ok(instance_id),
             }
         })
+        .and(warp::query::query::<Workspace>())
         .and(warp::ws())
         .and(warp::header("authorization"))
         .map({
-            move |instance_id: InstanceId, ws: warp::ws::Ws, authorization: String| {
+            move |instance_id: InstanceId,
+                  workspace: Workspace,
+                  ws: warp::ws::Ws,
+                  authorization: String| {
                 shadow_clone!(redis);
                 shadow_clone!(presence_client);
                 shadow_clone!(stop_handle);
@@ -64,14 +75,39 @@ pub async fn server(
                     };
 
                     match tokio::time::timeout(CONFIG_WAIT_TIMEOUT, wait_first).await {
-                        Ok(Ok((config, websocket))) => {
-                            if let Err(e) = presence_client
-                                .set_online(&instance_id, &authorization, &config)
+                        Ok(Ok((config, mut websocket))) => {
+                            match presence_client
+                                .set_online(
+                                    &instance_id,
+                                    &authorization,
+                                    &workspace.project,
+                                    &workspace.account,
+                                    &config,
+                                )
                                 .await
                             {
-                                info!("could not set presence: {}", e);
-                                return;
-                            }
+                                Err(Error::Unauthorized) => {
+                                    info!("Closing connection with unauthorized message");
+                                    let _ = websocket
+                                        .send(warp::filters::ws::Message::close_with(
+                                            4001u16,
+                                            "unauthorized",
+                                        ))
+                                        .await;
+                                    return;
+                                }
+                                Err(e) => {
+                                    info!("could not set presence: {}", e);
+                                    let _ = websocket
+                                        .send(warp::filters::ws::Message::close_with(
+                                            1011u16,
+                                            "server error",
+                                        ))
+                                        .await;
+                                    return;
+                                }
+                                Ok(_) => {}
+                            };
 
                             let r = {
                                 shadow_clone!(presence_client);
@@ -80,8 +116,10 @@ pub async fn server(
                                 async move {
                                     let mut pubsub =
                                         redis.get_tokio_connection_tokio().await?.into_pubsub();
-                                    let redis_subscription =
-                                        format!("signaler.config.{}", config.name);
+                                    let redis_subscription = format!(
+                                        "signaler.{}.{}.{}",
+                                        workspace.account, workspace.project, config.name
+                                    );
                                     info!("subscribe to {}", redis_subscription);
                                     pubsub.subscribe(redis_subscription).await?;
                                     let mut from_redis_messages = pubsub.on_message();
@@ -94,6 +132,12 @@ pub async fn server(
                                         while let Some(msg) = to_ws_rx.next().await {
                                             tx.send(msg).await?;
                                         }
+
+                                        let _ = tx
+                                            .send(warp::filters::ws::Message::close_with(
+                                                1000u16, "finished",
+                                            ))
+                                            .await;
 
                                         Ok::<_, anyhow::Error>(())
                                     }

@@ -1,18 +1,12 @@
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use rdkafka::config::ClientConfig;
-use rdkafka::consumer::StreamConsumer;
-use rdkafka::consumer::{Consumer, ConsumerContext, Rebalance};
-use rdkafka::error::KafkaResult;
-use rdkafka::{ClientContext, Message};
 
 use crate::clients::ClientTunnels;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
+use redis::RedisError;
 use smartstring::alias::*;
-
-pub struct CustomContext {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
@@ -28,115 +22,74 @@ pub struct Notification {
     action: Action,
 }
 
-const KAFKA_INVALIDATION_TOPIC: &str = "invalidations";
-
-impl ClientContext for CustomContext {}
-
-impl ConsumerContext for CustomContext {
-    fn pre_rebalance(&self, rebalance: &Rebalance<'_>) {
-        info!("Pre rebalance {:?}", rebalance);
-    }
-
-    fn post_rebalance(&self, rebalance: &Rebalance<'_>) {
-        info!("Post rebalance {:?}", rebalance);
-    }
-
-    fn commit_callback(
-        &self,
-        result: KafkaResult<()>,
-        _offsets: &rdkafka::topic_partition_list::TopicPartitionList,
-    ) {
-        info!("Committing offsets: {:?}", result);
-    }
-}
-
-pub struct KafkaConsumer {
-    consumer: StreamConsumer<CustomContext>,
+pub struct RedisConsumer {
+    consumer: redis::aio::PubSub,
     client_tunnels: ClientTunnels,
     stop_handle: AppStopHandle,
     mappings: Configs,
 }
 
-impl KafkaConsumer {
-    pub fn new(
-        kafka_bootstrap_servers: &str,
-        exg_gw_id: &str,
+impl RedisConsumer {
+    pub async fn new(
+        redis_client: redis::Client,
         mappings: &Configs,
         client_tunnels: &ClientTunnels,
         app_stop_handle: &AppStopHandle,
-    ) -> KafkaResult<KafkaConsumer> {
+    ) -> Result<RedisConsumer, RedisError> {
         shadow_clone!(mappings);
 
-        let consumer = ClientConfig::new()
-            .set("group.id", &format!("exg_gw:{}", exg_gw_id))
-            .set("bootstrap.servers", kafka_bootstrap_servers)
-            .set("enable.partition.eof", "false")
-            .set("session.timeout.ms", "6000")
-            .set("enable.auto.commit", "true")
-            .set("auto.offset.reset", "latest")
-            .create_with_context::<_, StreamConsumer<_>>(CustomContext {})?;
+        let mut pubsub = redis_client
+            .get_tokio_connection_tokio()
+            .await?
+            .into_pubsub();
 
-        Ok(KafkaConsumer {
+        pubsub.subscribe("invalidations").await?;
+
+        Ok(RedisConsumer {
             client_tunnels: client_tunnels.clone(),
-            consumer,
+            consumer: pubsub,
             stop_handle: app_stop_handle.clone(),
             mappings,
         })
     }
 
-    pub async fn spawn(self) {
-        info!("spawning kafka consumer...");
+    pub async fn spawn(mut self) {
+        info!("spawning redis consumer...");
 
-        self.consumer
-            .subscribe(&[&KAFKA_INVALIDATION_TOPIC])
-            .expect("Can't subscribe to notifications topic");
-        info!("subscribed to topic successfully");
+        let stop_handle = self.stop_handle.clone();
 
-        let mut message_stream = self.consumer.start();
+        let mut message_stream = self.consumer.on_message();
 
-        while let Some(res) = message_stream.next().await {
-            match res {
+        while let Some(msg) = message_stream.next().await {
+            match msg.get_payload::<std::string::String>() {
                 Err(e) => {
-                    warn!("Error while receiving from Kafka: {}", e);
-                    self.stop_handle.stop(StopReason::KafkaConsumeError(e));
+                    warn!("Error while receiving from Redis: {}", e);
+                    stop_handle.stop(StopReason::RedisConsumeError);
                 }
                 Ok(msg) => {
-                    info!("Received kafka message: {:?}", msg);
+                    info!("Received invalidation message: {:?}", msg);
 
-                    let owned_message = msg.detach();
-                    let maybe_payload = owned_message.payload();
-
-                    if let Some(payload) = maybe_payload {
-                        if msg.topic() == KAFKA_INVALIDATION_TOPIC {
-                            self.handle_notification(payload);
+                    match serde_json::from_str::<Notification>(msg.as_str()) {
+                        Ok(msg) => {
+                            info!("Process redis notification {:?}", msg);
+                            match msg.action {
+                                Action::InvalidateUrlPrefixes { url_prefixes } => {
+                                    for url_prefix in url_prefixes.into_iter() {
+                                        self.mappings.remove_by_notification_if_time_applicable(
+                                            url_prefix,
+                                            msg.generated_at,
+                                        );
+                                        // FIXME: should rely on invalidation message
+                                        self.client_tunnels.close_all();
+                                    }
+                                }
+                            }
                         }
-                    } else {
-                        error!("Couldn't process notification message {:?}", maybe_payload);
-                    }
-                }
-            }
-        }
-    }
-
-    fn handle_notification(&self, payload: &[u8]) {
-        match serde_json::from_slice::<Notification>(payload) {
-            Ok(msg) => {
-                info!("Process kafka notification {:?}", msg);
-                match msg.action {
-                    Action::InvalidateUrlPrefixes { url_prefixes } => {
-                        for url_prefix in url_prefixes.into_iter() {
-                            self.mappings.remove_by_notification_if_time_applicable(
-                                url_prefix,
-                                msg.generated_at,
-                            );
-                            // FIXME: should rely on invalidation message
-                            self.client_tunnels.close_all();
+                        Err(e) => {
+                            error!("error parsing notification in redis: {}", e);
                         }
                     }
                 }
-            }
-            Err(e) => {
-                error!("error parsing notification in kafka: {}", e);
             }
         }
     }

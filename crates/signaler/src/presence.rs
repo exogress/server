@@ -1,6 +1,6 @@
 //! Presence API
 use exogress_config_core::Config;
-use exogress_entities::InstanceId;
+use exogress_entities::{AccountName, InstanceId, ProjectName};
 use reqwest::{Method, StatusCode, Url};
 use serde::Serialize;
 use smartstring::alias::String;
@@ -39,6 +39,7 @@ impl Client {
             let mut segments = webapp_base_url.path_segments_mut().unwrap();
             segments.push("int");
             segments.push("api");
+            segments.push("v1");
             segments.push("signalers");
             segments.push(name.as_str());
         }
@@ -86,6 +87,7 @@ impl Client {
         method: Method,
         instance_id: &InstanceId,
         authorization: &str,
+        params: Option<&str>,
         config: &T,
     ) -> Result<(), Error> {
         let mut url: Url = self.base_url.clone();
@@ -94,6 +96,8 @@ impl Client {
             segments.push("instances");
             segments.push(instance_id.to_string().as_str());
         }
+
+        url.set_query(params);
 
         self.execute_url(url, method, Some(authorization), config)
             .await
@@ -111,10 +115,20 @@ impl Client {
         &self,
         instance_id: &InstanceId,
         authorization: &str,
+        project: &ProjectName,
+        account: &AccountName,
         config: &Config,
     ) -> Result<(), Error> {
-        self.execute_presence(Method::POST, instance_id, authorization, config)
-            .await
+        let args = format!("project={}&account={}", project, account);
+
+        self.execute_presence(
+            Method::POST,
+            instance_id,
+            authorization,
+            Some(args.as_str()),
+            config,
+        )
+        .await
     }
 
     pub async fn signaler_alive(&self) -> Result<(), Error> {
@@ -132,7 +146,7 @@ impl Client {
         instance_id: &InstanceId,
         authorization: &str,
     ) -> Result<(), Error> {
-        self.execute_presence(Method::DELETE, instance_id, authorization, &())
+        self.execute_presence(Method::DELETE, instance_id, authorization, None, &())
             .await
     }
 
@@ -142,7 +156,7 @@ impl Client {
         authorization: &str,
         config: &Config,
     ) -> Result<(), Error> {
-        self.execute_presence(Method::PUT, instance_id, authorization, config)
+        self.execute_presence(Method::PUT, instance_id, authorization, None, config)
             .await
     }
 }

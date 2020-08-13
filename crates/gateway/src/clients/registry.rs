@@ -13,7 +13,8 @@ use tokio::time::timeout;
 use exogress_tunnel::Connector;
 
 use crate::clients::signaling::request_connection;
-use exogress_entities::{ConfigName, InstanceId};
+use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
+use futures::channel::oneshot;
 use url::Url;
 
 #[derive(Clone)]
@@ -22,6 +23,7 @@ pub struct ConnectedTunnel {
     pub hyper: hyper::client::Client<Connector>,
     pub config_name: ConfigName,
     pub instance_id: InstanceId,
+    pub stop_tx: Arc<oneshot::Sender<()>>,
 }
 
 pub enum TunnelConnectionState {
@@ -52,6 +54,8 @@ impl ClientTunnels {
 
     pub async fn retrieve_client_target(
         &self,
+        account_name: AccountName,
+        project_name: ProjectName,
         config_name: ConfigName,
         individual_hostname: String,
     ) -> Option<ConnectedTunnel> {
@@ -86,6 +90,8 @@ impl ClientTunnels {
             match request_connection(
                 self.int_base_url.clone(),
                 individual_hostname,
+                account_name.clone(),
+                project_name.clone(),
                 config_name.clone(),
             )
             .await

@@ -29,7 +29,7 @@ use crate::clients::{spawn_tunnel, ClientTunnels};
 // use crate::http_serve::auth::github::GithubOauth2Client;
 // use crate::http_serve::auth::google::GoogleOauth2Client;
 
-use crate::url_mapping::notification_listener::KafkaConsumer;
+use crate::url_mapping::notification_listener::RedisConsumer;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
 use tokio::runtime::Builder;
@@ -53,6 +53,15 @@ fn main() {
                 .value_name("URL")
                 .required(true)
                 .about("Public base URL")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("redis_addr")
+                .long("redis-addr")
+                .value_name("URL")
+                .default_value("redis://127.0.0.1")
+                .required(true)
+                .about("Set redis addr")
                 .takes_value(true),
         )
         .arg(
@@ -146,14 +155,6 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("kafka_bootstrap_servers")
-                .long("kafka-bootstrap-servers")
-                .value_name("HOSTNAME")
-                .default_value("localhost:9092")
-                .about("Set kafka bootstrap server")
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("webroot")
                 .long("webroot")
                 .value_name("PATH")
@@ -166,14 +167,6 @@ fn main() {
                 .value_name("URL")
                 .default_value("http://localhost:2999")
                 .about("Set private signaler base URL")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("gateway_id")
-                .long("gateway-id")
-                .value_name("STRING")
-                .about("Use this gateway_id as identifier of kafka consumer")
-                .required(true)
                 .takes_value(true),
         )
         .arg(
@@ -260,7 +253,11 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let gateway_id = matches.value_of("gateway_id").expect("no gateway_id");
+    let redis_addr: String = matches
+        .value_of("redis_addr")
+        .expect("no redis addr provided")
+        .into();
+    let redis_client = redis::Client::open(redis_addr.as_str()).unwrap();
 
     let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
@@ -275,9 +272,7 @@ fn main() {
         .build()
         .unwrap();
 
-    sentry::configure_scope(|scope| {
-        scope.set_tag("gw_id", &gateway_id[..]);
-    });
+    sentry::configure_scope(|scope| {});
 
     let (app_stop_handle, app_stop_wait) = stop_handle();
 
@@ -486,11 +481,6 @@ fn main() {
             client_tunnels.clone(),
         ));
 
-        let kafka_bootstrap_servers = matches
-            .value_of("kafka_bootstrap_servers")
-            .expect("Please provide --kafka-bootstrap-servers")
-            .to_string();
-
         let individual_hostname = matches
             .value_of("individual_hostname")
             .expect("Please provide --individual-hostname")
@@ -498,16 +488,15 @@ fn main() {
 
         let api_client = Client::new(cache_ttl, webapp_base_url);
 
-        let kafka_consumer = KafkaConsumer::new(
-            &kafka_bootstrap_servers,
-            &gateway_id,
+        let redis_consumer = RedisConsumer::new(
+            redis_client,
             &api_client.mappings(),
             &client_tunnels,
             &app_stop_handle,
         )
-        .expect("Could not start kafka consumer");
-
-        tokio::spawn(kafka_consumer.spawn());
+        .await
+        .expect("Could not start redis consumer");
+        tokio::spawn(redis_consumer.spawn());
 
         // let google_oauth2_client = GoogleOauth2Client::new(
         //     Duration::from_secs(60),

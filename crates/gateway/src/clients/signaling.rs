@@ -1,4 +1,4 @@
-use exogress_entities::ConfigName;
+use exogress_entities::{AccountName, ConfigName, ProjectName};
 use exogress_signaling::TunnelRequest;
 use smartstring::alias::*;
 use std::time::Duration;
@@ -16,10 +16,11 @@ pub enum Error {
     HttpCall(#[from] reqwest::Error),
 }
 
-// int_base_url =
 pub async fn request_connection(
     mut int_base_url: Url,
     hostname: String,
+    account: AccountName,
+    project: ProjectName,
     config_name: ConfigName,
 ) -> Result<(), Error> {
     let client = reqwest::ClientBuilder::new()
@@ -38,6 +39,10 @@ pub async fn request_connection(
         let mut segments = int_base_url.path_segments_mut().unwrap();
         segments.push("api");
         segments.push("v1");
+        segments.push("accounts");
+        segments.push(account.as_str());
+        segments.push("projects");
+        segments.push(project.as_str());
         segments.push("configs");
         segments.push(config_name.as_ref());
         segments.push("tunnels");

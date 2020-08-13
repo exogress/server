@@ -10,7 +10,7 @@ use smartstring::alias::String;
 use url::Url;
 
 use exogress_config_core::{Config, Proxy, Target, TargetVariant};
-use exogress_entities::{ConfigName, InstanceId, Upstream};
+use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName, Upstream};
 
 use crate::clients::ClientTunnels;
 use crate::webapp::InstanceData;
@@ -138,7 +138,7 @@ impl UrlForRewriting {
             Some(Matched {
                 url: self,
                 pattern,
-                client: None,
+                config_name: None,
             })
         } else {
             None
@@ -159,7 +159,7 @@ impl AsRef<[u8]> for UrlForRewriting {
 pub struct Matched {
     url: UrlForRewriting,
     pattern: MatchPattern,
-    client: Option<ConfigName>,
+    config_name: Option<ConfigName>,
 }
 
 impl Matched {
@@ -171,11 +171,7 @@ impl Matched {
         let mut rewritten_str = self.url.inner.clone();
 
         match rewrite_to {
-            ProxyMatchedTo::Client {
-                upstream,
-                dst_path: _,
-                config_name: _,
-            } => {
+            ProxyMatchedTo::Client { upstream, .. } => {
                 let dst = upstream.to_string();
                 rewritten_str.replace_range(0..self.pattern.matchable_prefix.len() - 1, &dst);
             }
@@ -199,11 +195,15 @@ impl Matched {
             ProxyMatchedTo::Client {
                 upstream,
                 config_name,
+                account_name,
+                project_name,
                 ..
             } => Ok(ProxyTarget::Client {
+                account_name: account_name.clone(),
                 upstream: upstream.clone(),
                 config_name: config_name.clone(),
                 url,
+                project_name: project_name.clone(),
             }),
         }
     }
@@ -334,6 +334,8 @@ pub enum RewriteMatchedToError {
 pub enum ProxyMatchedTo {
     Client {
         upstream: Upstream,
+        account_name: AccountName,
+        project_name: ProjectName,
         config_name: ConfigName,
         dst_path: String,
     },
@@ -343,6 +345,8 @@ impl ProxyMatchedTo {
     // FIXME: stupid call
     pub fn new(
         dst_prefix: &str,
+        account_name: AccountName,
+        project_name: ProjectName,
         config_name: ConfigName,
         upstream: Upstream,
     ) -> Result<Self, RewriteMatchedToError> {
@@ -350,6 +354,8 @@ impl ProxyMatchedTo {
 
         Ok(ProxyMatchedTo::Client {
             upstream,
+            account_name,
+            project_name,
             config_name,
             dst_path: url.path().into(),
         })
@@ -400,6 +406,8 @@ pub enum UrlMappingError {
 #[derive(Clone, Debug)]
 pub enum ProxyTarget {
     Client {
+        account_name: AccountName,
+        project_name: ProjectName,
         config_name: ConfigName,
         upstream: Upstream,
         url: Url,
@@ -436,6 +444,7 @@ impl Mapping {
         _tunnels: ClientTunnels,
         external_port: u16,
         proto: Protocol,
+        is_internal: bool,
     ) -> Result<
         (
             MappingAction,
@@ -468,10 +477,12 @@ impl Mapping {
                 .match_pattern
                 .generate_url(proto, Some(external_port), "");
 
-            let target = m
+            let mut target = m
                 .proxy_to_url(
                     &ProxyMatchedTo::new(
                         "localhost/",
+                        instance_config.account.clone(),
+                        instance_config.project.clone(),
                         instance_config.config.name.clone(),
                         upstream.clone(),
                     )
@@ -479,6 +490,11 @@ impl Mapping {
                     proto,
                 )
                 .unwrap();
+
+            if is_internal {
+                let ProxyTarget::Client { ref mut url, .. } = target;
+                url.set_host(Some("temp.int")).unwrap();
+            }
 
             info!("target = {:?}", target);
 
@@ -508,7 +524,7 @@ impl Mapping {
 //     pub fn schema() {
 //         static JSON: &'static str = r#"{
 //     "generated_at": 1594736221163,
-//     "mount_point_id": "01ED925W8DK8W7G0Q6TP5MS6SD",
+//     "mount_point": "01ED925W8DK8W7G0Q6TP5MS6SD",
 //     "path_prefixes": [],
 //     "destination_path_prefix": "asd",
 //     "revisions": [
@@ -539,7 +555,7 @@ impl Mapping {
 //         // assert!(
 //         //     matches!(
 //         //         n.action,
-//         //         Action::Invalidate { mount_point_ids } if mount_point_ids.as_slice() == [String::from("mpid")]
+//         //         Action::Invalidate { mount_points } if mount_points.as_slice() == [String::from("mpid")]
 //         //     )
 //         // );
 //     }

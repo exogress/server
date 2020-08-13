@@ -106,6 +106,7 @@ impl Configs {
         tunnels: ClientTunnels,
         external_port: u16,
         proto: Protocol,
+        is_internal: bool,
     ) -> Option<
         //first option indicate, if the data exist in registrty
         (
@@ -123,7 +124,7 @@ impl Configs {
             .map(move |(maybe_mapping, matched_prefix)| {
                 (
                     maybe_mapping.and_then(|r| {
-                        match r.handle(url_prefix, tunnels, external_port, proto) {
+                        match r.handle(url_prefix, tunnels, external_port, proto, is_internal) {
                             Ok(r) => Some(r),
                             Err(e) => {
                                 error!("error handling URL: {:?}", e);

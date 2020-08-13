@@ -8,7 +8,7 @@ use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use exogress_config_core::Config;
-use exogress_entities::InstanceId;
+use exogress_entities::{AccountName, InstanceId, ProjectName};
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
@@ -104,6 +104,8 @@ pub struct AcmeHttpChallengeVerificationQueryParams {
 #[derive(Deserialize, Clone, Debug)]
 pub struct InstanceData {
     pub instance_id: InstanceId,
+    pub account: AccountName,
+    pub project: ProjectName,
     pub config: Config,
 }
 
@@ -242,6 +244,7 @@ impl Client {
             .unwrap()
             .push("int")
             .push("api")
+            .push("v1")
             .push("acme_http_challenge_verification");
 
         let rec_params = serde_qs::to_string(&AcmeHttpChallengeVerificationQueryParams {
@@ -269,6 +272,7 @@ impl Client {
         external_port: u16,
         proto: Protocol,
         tunnels: ClientTunnels,
+        is_internal: bool,
     ) -> Result<
         Option<(
             MappingAction,
@@ -277,10 +281,13 @@ impl Client {
         Error,
     > {
         // Try to read from cache
-        if let Some((cached, matched_prefix)) =
-            self.configs
-                .resolve(url_prefix.clone(), tunnels.clone(), external_port, proto)
-        {
+        if let Some((cached, matched_prefix)) = self.configs.resolve(
+            url_prefix.clone(),
+            tunnels.clone(),
+            external_port,
+            proto,
+            is_internal,
+        ) {
             match cached {
                 Some(data) => {
                     // mapping exist
@@ -338,6 +345,7 @@ impl Client {
                                 .unwrap()
                                 .push("int")
                                 .push("api")
+                                .push("v1")
                                 .push("configs");
 
                             url.set_query(Some(
@@ -416,9 +424,9 @@ impl Client {
             }
         }
 
-        if let Some((cached, _)) = self
-            .configs
-            .resolve(url_prefix, tunnels, external_port, proto)
+        if let Some((cached, _)) =
+            self.configs
+                .resolve(url_prefix, tunnels, external_port, proto, is_internal)
         {
             Ok(cached)
         } else {
@@ -433,6 +441,7 @@ impl Client {
             .unwrap()
             .push("int")
             .push("api")
+            .push("v1")
             .push("domains")
             .push(domain)
             .push("certificate");

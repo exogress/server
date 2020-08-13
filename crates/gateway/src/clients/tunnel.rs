@@ -17,6 +17,7 @@ use exogress_tunnel::{server_connection, server_framed, TunnelHello};
 use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
+use futures::channel::oneshot;
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))
@@ -105,6 +106,7 @@ pub async fn spawn(
                             }
                         };
 
+                        let (stop_tx, stop_rx) = oneshot::channel();
                         let (bg, connector) = server_connection(server_framed(tls_conn));
 
                         let instance_id = tunnel_hello.instance_id;
@@ -122,6 +124,7 @@ pub async fn spawn(
                                     connector,
                                     config_name: config_name.clone(),
                                     instance_id,
+                                    stop_tx: Arc::new(stop_tx),
                                 };
 
                                 let c = match rec.get_mut() {
@@ -148,15 +151,20 @@ pub async fn spawn(
                             }
                         }
 
-                        let res = bg.await;
-
-                        match res {
-                            Ok(()) => {
-                                info!("instance connection closed successfully");
-                            }
-                            Err(e) => {
-                                info!("instance connection closed with error {:?}", e);
-                            }
+                        tokio::select! {
+                            res = bg => {
+                                match res {
+                                    Ok(()) => {
+                                        info!("instance connection closed successfully");
+                                    }
+                                    Err(e) => {
+                                        info!("instance connection closed with error {:?}", e);
+                                    }
+                                }
+                            },
+                            _ = stop_rx => {
+                                info!("tunnel terminated by request");
+                            },
                         }
 
                         if let Entry::Occupied(mut client) = tunnels.inner.lock().entry(config_name)
