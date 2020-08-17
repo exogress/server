@@ -460,7 +460,7 @@ pub async fn server(
                             project_name,
                             config_name,
                             url,
-                            upstream,
+                            target,
                         } => {
                             if let Some(ConnectedTunnel {
                                 connector,

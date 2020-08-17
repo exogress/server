@@ -7,7 +7,7 @@ use crate::url_mapping::registry::Configs;
 use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
-use exogress_config_core::Config;
+use exogress_config_core::{Config, Target};
 use exogress_entities::{AccountName, InstanceId, ProjectName};
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;
@@ -106,7 +106,7 @@ pub struct InstanceData {
     pub instance_id: InstanceId,
     pub account: AccountName,
     pub project: ProjectName,
-    pub config: Config,
+    pub targets: SmallVec<[Target; 4]>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
