@@ -5,8 +5,10 @@ use futures::StreamExt;
 use crate::clients::ClientTunnels;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
+use crate::webapp;
 use redis::RedisError;
 use smartstring::alias::*;
+use url::Url;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
@@ -26,6 +28,7 @@ pub struct RedisConsumer {
     consumer: redis::aio::PubSub,
     client_tunnels: ClientTunnels,
     stop_handle: AppStopHandle,
+    webapp_client: webapp::Client,
     mappings: Configs,
 }
 
@@ -34,6 +37,7 @@ impl RedisConsumer {
         redis_client: redis::Client,
         mappings: &Configs,
         client_tunnels: &ClientTunnels,
+        webapp_client: &webapp::Client,
         app_stop_handle: &AppStopHandle,
     ) -> Result<RedisConsumer, RedisError> {
         shadow_clone!(mappings);
@@ -48,6 +52,7 @@ impl RedisConsumer {
         Ok(RedisConsumer {
             client_tunnels: client_tunnels.clone(),
             consumer: pubsub,
+            webapp_client: webapp_client.clone(),
             stop_handle: app_stop_handle.clone(),
             mappings,
         })
@@ -76,9 +81,21 @@ impl RedisConsumer {
                                 Action::InvalidateUrlPrefixes { url_prefixes } => {
                                     for url_prefix in url_prefixes.into_iter() {
                                         self.mappings.remove_by_notification_if_time_applicable(
-                                            url_prefix,
+                                            url_prefix.clone(),
                                             msg.generated_at,
                                         );
+                                        match Url::parse(format!("http://{}", url_prefix).as_str())
+                                        {
+                                            Ok(url) if url.host_str().is_some() => {
+                                                let host = url.host_str().unwrap().to_string();
+                                                info!("invalidate certificate for: {}", host);
+                                                self.webapp_client.forget_certificate(host)
+                                            }
+                                            r => {
+                                                warn!("could not invalidate certificate: {:?}", r);
+                                            }
+                                        };
+
                                         // FIXME: should rely on invalidation message
                                         self.client_tunnels.close_all();
                                     }

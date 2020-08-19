@@ -13,7 +13,8 @@ use exogress_config_core::{Config, Proxy, Target, TargetVariant};
 use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 
 use crate::clients::ClientTunnels;
-use crate::webapp::InstanceData;
+use crate::url_mapping::targets::TargetsProcessor;
+use crate::webapp::ConfigData;
 use exogress_tunnel::ConnectTarget;
 use rand::prelude::*;
 
@@ -157,6 +158,7 @@ impl AsRef<[u8]> for UrlForRewriting {
     }
 }
 
+#[derive(Debug)]
 pub struct Matched {
     url: UrlForRewriting,
     pattern: MatchPattern,
@@ -164,19 +166,14 @@ pub struct Matched {
 }
 
 impl Matched {
-    pub fn proxy_to_url(
+    pub fn resolve_target(
         self,
         rewrite_to: &ProxyMatchedTo,
         protocol: Protocol,
-    ) -> Result<ProxyTarget, url::ParseError> {
+    ) -> Result<ClientTarget, url::ParseError> {
         let mut rewritten_str = self.url.inner.clone();
 
-        match rewrite_to {
-            ProxyMatchedTo::Client { target, .. } => {
-                let dst = target.to_string();
-                rewritten_str.replace_range(0..self.pattern.matchable_prefix.len() - 1, &dst);
-            }
-        };
+        rewritten_str.replace_range(0..self.pattern.matchable_prefix.len() - 1, "localhost");
 
         let parsable = format!("http://{}", rewritten_str);
 
@@ -194,14 +191,14 @@ impl Matched {
 
         match rewrite_to {
             ProxyMatchedTo::Client {
-                target,
+                targets_processor,
                 config_name,
                 account_name,
                 project_name,
                 ..
-            } => Ok(ProxyTarget::Client {
+            } => Ok(ClientTarget {
                 account_name: account_name.clone(),
-                target: target.clone(),
+                targets_processor: targets_processor.clone(),
                 config_name: config_name.clone(),
                 url,
                 project_name: project_name.clone(),
@@ -334,31 +331,25 @@ pub enum RewriteMatchedToError {
 #[derive(Clone)]
 pub enum ProxyMatchedTo {
     Client {
-        target: ConnectTarget,
+        targets_processor: TargetsProcessor,
         account_name: AccountName,
         project_name: ProjectName,
         config_name: ConfigName,
-        dst_path: String,
     },
 }
 
 impl ProxyMatchedTo {
-    // FIXME: stupid call
     pub fn new(
-        dst_prefix: &str,
         account_name: AccountName,
         project_name: ProjectName,
         config_name: ConfigName,
-        target: ConnectTarget,
+        targets_processor: &TargetsProcessor,
     ) -> Result<Self, RewriteMatchedToError> {
-        let url = Url::parse(format!("http://{}", dst_prefix).as_str())?;
-
         Ok(ProxyMatchedTo::Client {
-            target,
+            targets_processor: targets_processor.clone(),
             account_name,
             project_name,
             config_name,
-            dst_path: url.path().into(),
         })
     }
 }
@@ -381,12 +372,14 @@ impl ProxyMatchedTo {
 //     Oauth2(Oauth2SsoClient),
 // }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Mapping {
     pub match_pattern: MatchPattern,
     pub generated_at: DateTime<Utc>,
-
-    pub instances: SmallVec<[InstanceData; 8]>,
+    pub targets_processor: TargetsProcessor,
+    pub account: AccountName,
+    pub project: ProjectName,
+    pub config_name: ConfigName,
     // pub jwt_secret: Vec<u8>,
     // pub auth_type: AuthProviderConfig,
     // pub rate_limiter: Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>
@@ -405,19 +398,17 @@ pub enum UrlMappingError {
 }
 
 #[derive(Clone, Debug)]
-pub enum ProxyTarget {
-    Client {
-        account_name: AccountName,
-        project_name: ProjectName,
-        config_name: ConfigName,
-        target: ConnectTarget,
-        url: Url,
-    },
+pub struct ClientTarget {
+    pub account_name: AccountName,
+    pub project_name: ProjectName,
+    pub config_name: ConfigName,
+    pub targets_processor: TargetsProcessor,
+    pub url: Url,
 }
 
 #[derive(Clone)]
 pub struct MappingAction {
-    pub target: ProxyTarget,
+    pub target: ClientTarget,
     // pub auth_type: AuthProviderConfig,
     // pub jwt_secret: Vec<u8>,
     pub external_base_url: Url,
@@ -426,9 +417,7 @@ pub struct MappingAction {
 impl MappingAction {
     #[allow(dead_code)]
     pub fn rewrite_to_url(&self) -> Url {
-        match &self.target {
-            ProxyTarget::Client { url, .. } => url.clone(),
-        }
+        self.target.url.clone()
     }
 }
 
@@ -445,7 +434,6 @@ impl Mapping {
         _tunnels: ClientTunnels,
         external_port: u16,
         proto: Protocol,
-        is_internal: bool,
     ) -> Result<
         (
             MappingAction,
@@ -454,65 +442,37 @@ impl Mapping {
         UrlMappingError,
     > {
         if let Some(m) = url.clone().matches(self.match_pattern.clone()) {
-            todo!()
-        // let mut rng = thread_rng();
-        // let instance_config = self.instances.choose(&mut rng).expect("FIXME");
-        // info!("use instance_config = {:?}", instance_config);
-        // let first = instance_config
-        //     .config
-        //     .exposes
-        //     .iter()
-        //     .next()
-        //     .as_ref()
-        //     .expect("FIXME")
-        //     .1
-        //     .targets
-        //     .iter()
-        //     .next()
-        //     .as_ref()
-        //     .expect("FIXME")
-        //     .1
-        //     .variant
-        //     .clone();
-        // let upstream = match &first {
-        //     TargetVariant::Proxy(Proxy { upstream }) => upstream,
-        //     TargetVariant::StaticDir(_) => todo!(),
-        // };
-        //
-        // let base_url = self
-        //     .match_pattern
-        //     .generate_url(proto, Some(external_port), "");
-        //
-        // let mut target = m
-        //     .proxy_to_url(
-        //         &ProxyMatchedTo::new(
-        //             "localhost/",
-        //             instance_config.account.clone(),
-        //             instance_config.project.clone(),
-        //             instance_config.config.name.clone(),
-        //             upstream.clone().into(),
-        //         )
-        //         .expect("FIXME"),
-        //         proto,
-        //     )
-        //     .expect("FIXME");
-        //
-        // if is_internal {
-        //     let ProxyTarget::Client { ref mut url, .. } = target;
-        //     url.set_host(Some("temp.int")).unwrap();
-        // }
-        //
-        // info!("target = {:?}", target);
-        //
-        // Ok((
-        //     MappingAction {
-        //         target,
-        //         // auth_type: self.auth_type.clone(),
-        //         // jwt_secret: self.jwt_secret.clone(),
-        //         external_base_url: base_url,
-        //     },
-        //     // self.rate_limiter.clone(),
-        // ))
+            info!("matched = {:?}", m);
+            info!("self = {:?}", self);
+            let base_url = self
+                .match_pattern
+                .generate_url(proto, Some(external_port), "");
+            info!("base_url = {:?}", base_url);
+
+            let mut target = m
+                .resolve_target(
+                    &ProxyMatchedTo::new(
+                        self.account.clone(),
+                        self.project.clone(),
+                        self.config_name.clone(),
+                        &self.targets_processor,
+                    )
+                    .expect("FIXME"),
+                    proto,
+                )
+                .expect("FIXME");
+
+            info!("proxy_target = {:?}", target);
+
+            Ok((
+                MappingAction {
+                    target,
+                    // auth_type: self.auth_type.clone(),
+                    // jwt_secret: self.jwt_secret.clone(),
+                    external_base_url: base_url,
+                },
+                // self.rate_limiter.clone(),
+            ))
         } else {
             Err(UrlMappingError::DoesNotBelongToPrefix {
                 pattern: self.match_pattern.clone(),

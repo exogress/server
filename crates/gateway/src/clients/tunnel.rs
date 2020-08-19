@@ -115,41 +115,43 @@ pub async fn spawn(
                         info!("new instance connected");
 
                         {
+                            let new_connected_tunnel = ConnectedTunnel {
+                                hyper: hyper::Client::builder().build::<_, Body>(connector.clone()),
+                                connector,
+                                config_name: config_name.clone(),
+                                instance_id,
+                                stop_tx: Arc::new(stop_tx),
+                            };
+
                             let locked = &mut *tunnels.inner.lock();
 
-                            if let Entry::Occupied(mut rec) = locked.entry(config_name.clone()) {
-                                let new_connected_tunnel = ConnectedTunnel {
-                                    hyper: hyper::Client::builder()
-                                        .build::<_, Body>(connector.clone()),
-                                    connector,
-                                    config_name: config_name.clone(),
-                                    instance_id,
-                                    stop_tx: Arc::new(stop_tx),
-                                };
-
-                                let c = match rec.get_mut() {
-                                    TunnelConnectionState::Requested(reset_event) => {
-                                        let mut c = HashMap::new();
-                                        c.insert(instance_id, new_connected_tunnel);
-
-                                        reset_event.set();
-
-                                        c
-                                    }
-                                    TunnelConnectionState::Connected(c) => {
-                                        if c.contains_key(&instance_id) {
-                                            // TODO: allow multiple connections
-                                        } else {
+                            match locked.entry(config_name.clone()) {
+                                Entry::Occupied(mut rec) => {
+                                    match rec.get_mut() {
+                                        TunnelConnectionState::Requested(reset_event) => {
+                                            let mut c = HashMap::new();
                                             c.insert(instance_id, new_connected_tunnel);
-                                        };
-
-                                        return;
-                                    }
-                                };
-
-                                rec.insert(TunnelConnectionState::Connected(c));
+                                            reset_event.set();
+                                            rec.insert(TunnelConnectionState::Connected(c));
+                                        }
+                                        TunnelConnectionState::Connected(c) => {
+                                            if c.contains_key(&instance_id) {
+                                                // TODO: allow multiple connections
+                                            } else {
+                                                c.insert(instance_id, new_connected_tunnel);
+                                            };
+                                        }
+                                    };
+                                }
+                                Entry::Vacant(rec) => {
+                                    let mut c = HashMap::new();
+                                    c.insert(instance_id, new_connected_tunnel);
+                                    rec.insert(TunnelConnectionState::Connected(c));
+                                }
                             }
                         }
+
+                        info!("tunnels = {:?}", &*tunnels.inner.lock());
 
                         tokio::select! {
                             res = bg => {

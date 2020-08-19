@@ -96,6 +96,25 @@ pub async fn server(
                                         .await;
                                     return;
                                 }
+                                Err(Error::Forbidden) => {
+                                    info!("Closing connection with forbidden message");
+                                    let _ = websocket
+                                        .send(warp::filters::ws::Message::close_with(
+                                            4003u16,
+                                            "forbidden",
+                                        ))
+                                        .await;
+                                    return;
+                                }
+                                Err(Error::Conflict) => {
+                                    info!("Closing connection with conflict message");
+                                    let _ = websocket
+                                        .send(warp::filters::ws::Message::close_with(
+                                            4009u16, "conflict",
+                                        ))
+                                        .await;
+                                    return;
+                                }
                                 Err(e) => {
                                     info!("could not set presence: {}", e);
                                     let _ = websocket

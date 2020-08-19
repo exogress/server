@@ -492,6 +492,7 @@ fn main() {
             redis_client,
             &api_client.mappings(),
             &client_tunnels,
+            &api_client,
             &app_stop_handle,
         )
         .await

@@ -17,7 +17,7 @@ use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 use futures::channel::oneshot;
 use url::Url;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConnectedTunnel {
     pub connector: Connector,
     pub hyper: hyper::client::Client<Connector>,
@@ -26,6 +26,7 @@ pub struct ConnectedTunnel {
     pub stop_tx: Arc<oneshot::Sender<()>>,
 }
 
+#[derive(Debug)]
 pub enum TunnelConnectionState {
     Requested(Arc<ManualResetEvent>),
     Connected(HashMap<InstanceId, ConnectedTunnel>),
@@ -52,11 +53,15 @@ impl ClientTunnels {
         self.inner.lock().clear();
     }
 
-    pub async fn retrieve_client_target(
+    /// Return active client tunnel if exists.
+    /// Otherwise, request new tunnel through signalling channel and
+    /// wait for the actual connection
+    pub async fn retrieve_client_tunnel(
         &self,
         account_name: AccountName,
         project_name: ProjectName,
         config_name: ConfigName,
+        instance_id: InstanceId,
         individual_hostname: String,
     ) -> Option<ConnectedTunnel> {
         // TODO:
@@ -119,8 +124,7 @@ impl ClientTunnels {
                 None => {}
                 Some(state) => {
                     if let TunnelConnectionState::Connected(connections) = state {
-                        let mut rng = SmallRng::from_entropy();
-                        return connections.values().choose(&mut rng).cloned();
+                        return connections.get(&instance_id).cloned();
                     }
                 }
             }

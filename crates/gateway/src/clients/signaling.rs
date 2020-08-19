@@ -55,6 +55,8 @@ pub async fn request_connection(
         .send()
         .await?;
 
+    info!("resp {:?}", resp);
+
     match resp.status() {
         reqwest::StatusCode::NOT_FOUND => Err(Error::ClientNotConnected),
         s if s.is_success() => {

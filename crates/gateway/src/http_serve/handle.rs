@@ -33,8 +33,12 @@ use hyper::Body;
 use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::stop_reasons::AppStopWait;
-use crate::url_mapping::mapping::{MappingAction, Protocol, ProxyTarget, UrlForRewriting};
-use crate::webapp::Client;
+use crate::url_mapping::mapping::{ClientTarget, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::targets::TargetsProcessor;
+use crate::webapp::{CertificateResponse, Client};
+use lru_time_cache::LruCache;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use std::io;
 use std::path::PathBuf;
 use tokio::fs::File;
@@ -377,8 +381,6 @@ pub async fn server(
                     let host = maybe_host.expect("unknown host");
                     let host_without_port = host.split(':').next().unwrap();
 
-                    let is_internal = headers.get("X-Int").is_some();
-
                     let url_for_rewriting = UrlForRewriting::from_components(
                         host_without_port,
                         path.as_str(),
@@ -397,7 +399,6 @@ pub async fn server(
                             external_https_port,
                             proto,
                             tunnels,
-                            is_internal,
                         )
                         .await;
 
@@ -445,77 +446,6 @@ pub async fn server(
         // })
         .and(filters::query::query::<HashMap<String, String>>())
         // ...
-        .and_then({
-            shadow_clone!(individual_hostname);
-            shadow_clone!(tunnels);
-
-            move |(ws_or_body, headers, path, mapping_action): (_, _, _, MappingAction), _params| {
-                shadow_clone!(individual_hostname);
-                shadow_clone!(tunnels);
-
-                async move {
-                    match mapping_action.target {
-                        ProxyTarget::Client {
-                            account_name,
-                            project_name,
-                            config_name,
-                            url,
-                            target,
-                        } => {
-                            if let Some(ConnectedTunnel {
-                                connector,
-                                hyper,
-                                instance_id: _,
-                                ..
-                            }) = tunnels
-                                .retrieve_client_target(
-                                    account_name.clone(),
-                                    project_name.clone(),
-                                    config_name.clone(),
-                                    individual_hostname.into(),
-                                )
-                                .await
-                            {
-                                Ok::<_, warp::Rejection>((
-                                    ws_or_body,
-                                    headers,
-                                    path,
-                                    url,
-                                    mapping_action.external_base_url,
-                                    // mapping_action.auth_type,
-                                    // mapping_action.jwt_secret,
-                                    Some((connector, hyper)),
-                                ))
-                            } else {
-                                info!("No connected tunnels. Return bad request.");
-                                Err::<_, _>(warp::reject::custom(BadGateway {}))
-                            }
-                        }
-                    }
-                }
-            }
-        })
-        .map(
-            move |(
-                ws_or_body,
-                headers,
-                path,
-                proxy_to,
-                _base_url,
-                // auth_type,
-                // jwt_secret,
-                connector,
-            ): (
-                _,
-                http::HeaderMap,
-                warp::filters::path::FullPath,
-                Url,
-                Url,
-                // AuthProviderConfig,
-                // Vec<u8>,
-                _,
-            )| { (ws_or_body, headers, path, proxy_to, connector) },
-        )
         // validate JWT token from cookies
         // .and_then({
         //     move |(
@@ -612,64 +542,110 @@ pub async fn server(
             shadow_clone!(client);
             shadow_clone!(resolver);
             shadow_clone!(dbip);
+            shadow_clone!(individual_hostname);
+            shadow_clone!(tunnels);
 
-            move |(ws_or_body, headers, _path, proxy_to, connector): (
-                _,
-                http::HeaderMap,
-                warp::filters::path::FullPath,
-                Url,
-                // jwt::Claims,
-                _,
-            ),
-                  method: http::Method,
+            move |(ws_or_body, headers, path, mapping_action): (_, _, _, MappingAction),
+                  _params,
+                  method,
                   remote_addr: Option<SocketAddr>,
                   local_addr: Option<SocketAddr>| {
                 shadow_clone!(client);
                 shadow_clone!(resolver);
                 shadow_clone!(dbip);
+                shadow_clone!(tunnels);
+                shadow_clone!(individual_hostname);
+                shadow_clone!(tunnels);
 
                 let remote_addr = remote_addr.unwrap().ip();
                 let local_addr = local_addr.unwrap().ip();
 
-                // if let Some(dbip) = dbip {
-                //     match dbip.lookup::<crate::dbip::LocationAndIsp>(remote_addr) {
-                //         Ok(loc) => log
-                //             .new(o!(
-                //                 "loc" => format!(
-                //                     "{}/{}",
-                //                     loc.country.and_then(|c| c.iso_code).unwrap_or_default(),
-                //                     loc.city.and_then(|c| c.names.and_then(|n| n.en)).unwrap_or_default()
-                //                 )
-                //             ))
-                //             .into_erased(),
-                //         Err(e) => log
-                //             .new(o!("loc" => format!("resolve_error {:?}", e)))
-                //             .into_erased(),
-                //     }
-                // };
+                let mut rng = thread_rng();
+                let mut ordered_instances =
+                    mapping_action.target.targets_processor.instance_ids.clone();
+                ordered_instances.shuffle(&mut rng);
 
-                info!("HTTP: proxy to {}", proxy_to);
+                async move {
+                    let account_name = mapping_action.target.account_name;
+                    let project_name = mapping_action.target.project_name;
+                    let config_name = mapping_action.target.config_name;
+                    let url = mapping_action.target.url;
+                    let targets_processor = mapping_action.target.targets_processor;
 
-                match ws_or_body {
-                    warp::Either::A((ws,)) => Either::Left(proxy_ws(
-                        ws,
-                        remote_addr,
-                        headers,
-                        proxy_to,
-                        local_addr,
-                        connector,
-                        resolver,
-                    )),
-                    warp::Either::B((body,)) => Either::Right(proxy_http_request(
-                        body,
-                        remote_addr,
-                        headers,
-                        proxy_to,
-                        method,
-                        client,
-                        local_addr,
-                        connector,
-                    )),
+                    for instance_id in ordered_instances.iter() {
+                        info!("try proxy to {}", instance_id);
+
+                        let (connector, hyper, proxy_to) =
+                            if let Some(ConnectedTunnel {
+                                connector, hyper, ..
+                            }) = tunnels
+                                .retrieve_client_tunnel(
+                                    account_name.clone(),
+                                    project_name.clone(),
+                                    config_name.clone(),
+                                    instance_id.clone(),
+                                    individual_hostname.clone().into(),
+                                )
+                                .await
+                            {
+                                (connector, hyper, url.clone())
+                            } else {
+                                info!("No connected tunnels. Try again..");
+                                continue;
+                            };
+
+                        info!("HTTP: proxy to {}", proxy_to);
+
+                        match ws_or_body {
+                            warp::Either::A((ws,)) => {
+                                let res = proxy_ws(
+                                    ws,
+                                    remote_addr,
+                                    headers,
+                                    proxy_to,
+                                    local_addr,
+                                    connector,
+                                    &targets_processor,
+                                )
+                                .await;
+
+                                match res {
+                                    Ok(r) => {
+                                        return Ok(r);
+                                    }
+                                    Err(e) => {
+                                        error!("Give Up retrying WS. Error: {:?}", e); //FIXME
+                                        return Err::<_, _>(warp::reject::custom(BadGateway {}));
+                                    }
+                                }
+                            }
+                            warp::Either::B((body,)) => {
+                                let res = proxy_http_request(
+                                    body,
+                                    remote_addr,
+                                    headers,
+                                    proxy_to,
+                                    method,
+                                    local_addr,
+                                    hyper,
+                                    &targets_processor,
+                                )
+                                .await;
+
+                                match res {
+                                    Ok(r) => {
+                                        return Ok(r);
+                                    }
+                                    Err(e) => {
+                                        error!("Give Up retrying HTTP. error: {:?}", e); //FIXME
+                                        return Err::<_, _>(warp::reject::custom(BadGateway {}));
+                                    }
+                                }
+                            }
+                        };
+                    }
+
+                    return Err::<_, _>(warp::reject::custom(BadGateway {}));
                 }
             }
         })
@@ -697,45 +673,50 @@ pub async fn server(
     .tls({
         shadow_clone!(webapp_client);
 
-        move |hostname| {
+        move |maybe_hostname| {
             shadow_clone!(webapp_client);
             shadow_clone!(public_base_url);
             shadow_clone!(tls_cert_path);
             shadow_clone!(tls_key_path);
 
-            info!("Serve hostname (from SNI) `{:?}`", hostname);
+            info!("Serve hostname (from SNI) `{:?}`", maybe_hostname);
 
             Box::pin(async move {
-                let mut builder = warp::TlsConfigBuilder::new();
+                if let Some(hostname) = maybe_hostname {
+                    let mut builder = warp::TlsConfigBuilder::new();
 
-                info!(
-                    "compare {:?} with {:?}",
-                    Some(public_base_url.host().unwrap().to_string()),
-                    hostname
-                );
+                    info!(
+                        "compare {:?} with {:?}",
+                        Some(public_base_url.host().unwrap().to_string()),
+                        hostname
+                    );
 
-                if Some(public_base_url.host().unwrap().to_string()) == hostname {
-                    builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                    if public_base_url.host().unwrap().to_string() == hostname {
+                        builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                    } else {
+                        shadow_clone!(webapp_client);
+
+                        match webapp_client.get_certificate(hostname.clone()).await {
+                            Ok(certs) => {
+                                builder = builder
+                                    .cert(certs.certificate.as_bytes())
+                                    .key(certs.private_key.as_bytes());
+                            }
+                            Err(_) if cfg!(debug_assertions) => {
+                                info!("fallback to default certificates on development");
+                                builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                            }
+                            Err(e) => {
+                                warn!("error retrieving certificate for {}: {}", hostname, e);
+                                return None;
+                            }
+                        }
+                    }
+
+                    builder.build().ok().map(Arc::new)
                 } else {
-                    shadow_clone!(webapp_client);
-
-                    match webapp_client.retrieve_certificate(&hostname?).await {
-                        Ok(certs) => {
-                            builder = builder
-                                .cert(certs.certificate.as_bytes())
-                                .key(certs.private_key.as_bytes());
-                        }
-                        Err(_) if cfg!(debug_assertions) => {
-                            info!("fallback to default certificates on developmet");
-                            builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
-                        }
-                        Err(_) => {
-                            return None;
-                        }
-                    };
+                    None
                 }
-
-                builder.build().ok().map(Arc::new)
             })
         }
     })
@@ -750,6 +731,15 @@ pub async fn server(
     });
 
     https_server.await;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("loop detected")]
+    LoopDetected,
+
+    #[error("request error")]
+    RequestError(#[from] hyper::Error),
 }
 
 async fn handle_rejection(
@@ -841,9 +831,17 @@ async fn proxy_ws(
     headers: http::HeaderMap,
     mut proxy_to: Url,
     local_ip: IpAddr,
-    connector: Option<(Connector, hyper::client::Client<Connector>)>,
-    resolver: Arc<trust_dns_resolver::TokioAsyncResolver>,
-) -> Result<Response<Body>, warp::Rejection> {
+    connector: Connector,
+    targets_processor: &TargetsProcessor,
+) -> Result<Response<Body>, Error> {
+    let target = targets_processor
+        .connect_targets("")
+        .into_iter()
+        .next()
+        .expect("FIXME");
+
+    target.update_url(&mut proxy_to);
+
     let should_use_tls = if proxy_to.scheme() == "http" {
         proxy_to.set_scheme("ws").unwrap();
         false
@@ -859,14 +857,7 @@ async fn proxy_ws(
         panic!("bad protocol {:?}", proxy_to)
     };
 
-    let upstream: Upstream = proxy_to
-        .host()
-        .expect("FIXME")
-        .to_string()
-        .parse()
-        .expect("FIXME");
-
-    info!("handle WS connection. proxy to {}", proxy_to);
+    info!("handle WS connection. target = {:?}", target);
 
     let mut proxy_req = http::Request::new(());
 
@@ -888,42 +879,14 @@ async fn proxy_ws(
         }
     }
 
-    let transport: Box<dyn Conn> = match connector {
-        None => {
-            let addr = resolver
-                .lookup_ip(proxy_to.host_str().unwrap())
-                .await
-                .map_err(|_| warp::reject::custom(BadGateway {}))?
-                .into_iter()
-                .next()
-                .ok_or_else(|| warp::reject::custom(BadGateway {}))?;
-
-            info!(
-                "about to connect via TCP to {:?}",
-                (addr, proxy_to.port_or_known_default().unwrap())
-            );
-
-            Box::new(
-                TcpStream::connect((addr, proxy_to.port_or_known_default().unwrap()))
-                    .await
-                    .expect("FIXME"),
-            )
-        }
-        Some((connector, _)) => Box::new(
-            connector
-                // FIXME: check upstream or internal!
-                .get_connection(ConnectTarget::Upstream(upstream))
-                .await
-                .expect("FIXME"),
-        ),
-    };
+    let transport: Box<dyn Conn> = Box::new(connector.get_connection(target).await.expect("FIXME"));
 
     info!("connected");
 
     let (proxied_ws, proxied_response) = if should_use_tls {
         let (s, resp) = tokio_tungstenite::client_async_tls(proxy_req, transport)
             .await
-            .unwrap();
+            .expect("FIXME");
 
         (Either::Left(s), resp)
     } else {
@@ -1032,7 +995,7 @@ async fn proxy_ws(
         if header.as_str().to_lowercase().starts_with("x-exg") {
             info!("Trying to proxy already proxied request (prevent loops)");
             let resp = Response::builder().status(StatusCode::LOOP_DETECTED);
-            return Ok::<_, warp::Rejection>(resp.body("Loop detected".into()).unwrap());
+            return Err(Error::LoopDetected);
         }
 
         if !header.as_str().to_lowercase().starts_with("sec-")
@@ -1104,26 +1067,68 @@ fn proxy_request_headers(
     res
 }
 
-async fn proxy_http_request(
-    body_stream: impl Stream<Item = Result<impl Buf + 'static, warp::Error>> + Send + Sync + 'static,
+async fn proxy_http_request<
+    T: Stream<Item = Result<impl Buf + 'static, warp::Error>> + Send + Sync + 'static,
+>(
+    body_stream: T,
     client_ip_addr: IpAddr,
     headers: http::HeaderMap,
-    proxy_to: Url,
+    mut proxy_to: Url,
     method: http::Method,
-    client: reqwest::Client,
     local_ip: IpAddr,
-    connector: Option<(Connector, hyper::client::Client<Connector>)>,
-) -> Result<Response<Body>, warp::Rejection> {
-    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers);
-    match connector {
-        None => {
-            let mut proxy_req = reqwest::Request::new(method, proxy_to.clone());
+    hyper: hyper::client::Client<Connector>,
+    targets_processor: &TargetsProcessor,
+) -> Result<Response<Body>, Error> {
+    let target = targets_processor
+        .connect_targets("")
+        .into_iter()
+        .next()
+        .expect("FIXME");
+    target.update_url(&mut proxy_to);
 
-            for (header, value) in proxy_headers.into_iter() {
-                match proxy_req
-                    .headers_mut()
-                    .entry(HeaderName::from_bytes(header.as_bytes()).unwrap())
-                {
+    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers);
+
+    info!("Proxy request to {}", proxy_to);
+
+    let mut proxy_req = hyper::Request::builder()
+        .uri(proxy_to.to_string())
+        .method(method);
+
+    for (header, value) in proxy_headers.into_iter() {
+        proxy_req.headers_mut().unwrap().append(
+            HeaderName::from_bytes(header.as_bytes()).unwrap(),
+            HeaderValue::from_str(&value).unwrap(),
+        );
+    }
+
+    match hyper
+        .request(
+            proxy_req
+                .body(hyper::Body::wrap_stream(
+                    to_bytes_stream_and_check_injections(body_stream),
+                ))
+                .expect("FIXME"),
+        )
+        .await
+    {
+        Err(e) => {
+            info!("error requesting client connection: {}", e);
+
+            Err(Error::RequestError(e))
+        }
+        Ok(hyper_response) => {
+            let mut resp = Response::builder().status(match hyper_response.status() {
+                StatusCode::PERMANENT_REDIRECT => StatusCode::TEMPORARY_REDIRECT,
+                code => code,
+            });
+
+            for (header, value) in hyper_response.headers().into_iter() {
+                if header.as_str().to_lowercase().starts_with("x-exg") {
+                    info!("Trying to proxy already proxied request (prevent loops)");
+                    return Err(Error::LoopDetected);
+                }
+
+                match resp.headers_mut().unwrap().entry(header) {
                     Entry::Occupied(mut e) => {
                         e.append(value.try_into().unwrap());
                     }
@@ -1133,122 +1138,11 @@ async fn proxy_http_request(
                 }
             }
 
-            *proxy_req.body_mut() = Some(reqwest::Body::wrap_stream(
-                to_bytes_stream_and_check_injections(body_stream),
-            ));
+            resp.headers_mut()
+                .unwrap()
+                .insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
 
-            match client.execute(proxy_req).await {
-                Err(e) => {
-                    info!("Error in executing hyper connection through tunnel: {}", e);
-                    Err::<_, _>(warp::reject::custom(BadGateway {}))
-                }
-                Ok(reqwest_response) => {
-                    let mut resp = Response::builder().status(match reqwest_response.status() {
-                        StatusCode::PERMANENT_REDIRECT => StatusCode::TEMPORARY_REDIRECT,
-                        code => code,
-                    });
-
-                    for (header, value) in reqwest_response.headers().into_iter() {
-                        if header.as_str().to_lowercase().starts_with("x-exg") {
-                            info!("Trying to proxy already proxied request (prevent loops)");
-                            let resp = Response::builder().status(StatusCode::LOOP_DETECTED);
-                            return Ok::<_, warp::Rejection>(
-                                resp.body("Loop detected".into()).unwrap(),
-                            );
-                        }
-
-                        match resp.headers_mut().unwrap().entry(header) {
-                            Entry::Occupied(mut e) => {
-                                e.append(value.try_into().unwrap());
-                            }
-                            Entry::Vacant(e) => {
-                                e.insert(value.try_into().unwrap());
-                            }
-                        }
-                    }
-
-                    resp.headers_mut()
-                        .unwrap()
-                        .insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
-
-                    let body =
-                        Body::wrap_stream(reqwest_response.bytes_stream().map(move |bytes| {
-                            match &bytes {
-                                Ok(b) => {
-                                    trace!("Proxy {} bytes", b.len());
-                                }
-                                Err(e) => {
-                                    info!("Error: {:?}", e);
-                                }
-                            }
-                            bytes
-                        }));
-
-                    Ok::<_, warp::Rejection>(resp.body(body).unwrap())
-                }
-            }
-        }
-        Some((_, hyper)) => {
-            info!("Proxy request to {}", proxy_to);
-
-            let mut proxy_req = hyper::Request::builder()
-                .uri(proxy_to.to_string())
-                .method(method);
-
-            for (header, value) in proxy_headers.into_iter() {
-                proxy_req.headers_mut().unwrap().append(
-                    HeaderName::from_bytes(header.as_bytes()).unwrap(),
-                    HeaderValue::from_str(&value).unwrap(),
-                );
-            }
-
-            match hyper
-                .request(
-                    proxy_req
-                        .body(hyper::Body::wrap_stream(
-                            to_bytes_stream_and_check_injections(body_stream),
-                        ))
-                        .unwrap(),
-                )
-                .await
-            {
-                Err(e) => {
-                    info!("error requesting client connection: {}", e);
-
-                    Err::<_, _>(warp::reject::custom(BadGateway {}))
-                }
-                Ok(hyper_response) => {
-                    let mut resp = Response::builder().status(match hyper_response.status() {
-                        StatusCode::PERMANENT_REDIRECT => StatusCode::TEMPORARY_REDIRECT,
-                        code => code,
-                    });
-
-                    for (header, value) in hyper_response.headers().into_iter() {
-                        if header.as_str().to_lowercase().starts_with("x-exg") {
-                            info!("Trying to proxy already proxied request (prevent loops)");
-                            let resp = Response::builder().status(StatusCode::LOOP_DETECTED);
-                            return Ok::<_, warp::Rejection>(
-                                resp.body("Loop detected".into()).unwrap(),
-                            );
-                        }
-
-                        match resp.headers_mut().unwrap().entry(header) {
-                            Entry::Occupied(mut e) => {
-                                e.append(value.try_into().unwrap());
-                            }
-                            Entry::Vacant(e) => {
-                                e.insert(value.try_into().unwrap());
-                            }
-                        }
-                    }
-
-                    resp.headers_mut()
-                        .unwrap()
-                        .insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
-
-                    Ok::<_, warp::Rejection>(resp.body(hyper_response.into_body()).unwrap())
-                }
-            }
+            Ok(resp.body(hyper_response.into_body()).expect("FIXME"))
         }
     }
 }

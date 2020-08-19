@@ -1,6 +1,9 @@
+use crate::webapp::ConfigData;
 use exogress_config_core::{Proxy, StaticDir, Target, TargetVariant};
-use exogress_entities::TargetName;
+use exogress_entities::{InstanceId, TargetName};
+use exogress_tunnel::ConnectTarget;
 use itertools::Itertools;
+use rand::thread_rng;
 use smallvec::SmallVec;
 use smartstring::alias::String;
 use std::str::FromStr;
@@ -8,17 +11,22 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ServerTarget {
     base_path_matcher: String,
-    name: TargetName,
-    variant: TargetVariant,
+    pub(crate) name: TargetName,
+    pub(crate) variant: TargetVariant,
 }
 
+#[derive(Debug, Clone)]
 pub struct TargetsProcessor {
-    inner: SmallVec<[ServerTarget; 4]>,
+    targets: SmallVec<[ServerTarget; 4]>,
+    pub instance_ids: SmallVec<[InstanceId; 4]>,
 }
 
 impl TargetsProcessor {
-    pub fn new<'a>(f: impl Iterator<Item = (&'a TargetName, &'a Target)>) -> TargetsProcessor {
-        let inner = f
+    pub fn new<'a>(
+        targets: impl Iterator<Item = (&'a TargetName, &'a Target)>,
+        instances: impl Iterator<Item = &'a InstanceId>,
+    ) -> TargetsProcessor {
+        let inner = targets
             .map(|(target_name, t)| {
                 let base_path = t
                     .base_path
@@ -41,16 +49,25 @@ impl TargetsProcessor {
             .map(|(s, _)| s)
             .collect();
 
-        TargetsProcessor { inner }
+        TargetsProcessor {
+            targets: inner,
+            instance_ids: instances.cloned().collect(),
+        }
     }
 
-    pub fn seq_for_rest_path<'a>(
-        &'a self,
-        path: &'a str,
-    ) -> impl Iterator<Item = &'a ServerTarget> {
-        self.inner
+    fn seq_for_rest_path<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a ServerTarget> {
+        self.targets
             .iter()
             .filter(move |item| path.starts_with(item.base_path_matcher.as_str()))
+    }
+
+    pub fn connect_targets(&self, path: &str) -> SmallVec<[ConnectTarget; 4]> {
+        self.seq_for_rest_path(path)
+            .map(|target| match &target.variant {
+                TargetVariant::Proxy(proxy) => ConnectTarget::Upstream(proxy.upstream.clone()),
+                TargetVariant::StaticDir(_) => ConnectTarget::Internal(target.name.clone()),
+            })
+            .collect()
     }
 }
 
@@ -96,6 +113,7 @@ exposes:
                 .unwrap()
                 .targets
                 .iter(),
+            vec![].iter(),
         );
 
         assert_eq!(

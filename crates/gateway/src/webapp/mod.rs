@@ -4,15 +4,18 @@ use crate::clients::ClientTunnels;
 use crate::url_mapping;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::registry::Configs;
+use crate::url_mapping::targets::TargetsProcessor;
 use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
-use exogress_config_core::{Config, Target};
-use exogress_entities::{AccountName, InstanceId, ProjectName};
+use exogress_config_core::{Config, Revision, Target};
+use exogress_entities::{AccountName, InstanceId, MountPointName, ProjectName};
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
 use http::StatusCode;
+use itertools::Itertools;
+use lru_time_cache::LruCache;
 use percent_encoding::NON_ALPHANUMERIC;
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -22,7 +25,7 @@ use url::Url;
 pub struct Client {
     reqwest: reqwest::Client,
     retrieve_configs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
-    retrieving_certs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
+    certificates: Arc<parking_lot::Mutex<LruCache<String, CertificateResponse>>>,
     configs: Configs,
     base_url: Url,
 }
@@ -102,19 +105,21 @@ pub struct AcmeHttpChallengeVerificationQueryParams {
 // }
 
 #[derive(Deserialize, Clone, Debug)]
-pub struct InstanceData {
-    pub instance_id: InstanceId,
-    pub account: AccountName,
-    pub project: ProjectName,
-    pub targets: SmallVec<[Target; 4]>,
+pub struct ConfigData {
+    pub instance_ids: SmallVec<[InstanceId; 4]>,
+    pub config: Config,
+    pub revision: Revision,
 }
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct ConfigsResponse {
     #[serde(with = "ts_milliseconds")]
     generated_at: DateTime<Utc>,
-    instances: SmallVec<[InstanceData; 8]>,
     url_prefix: UrlPrefix,
+    account: AccountName,
+    project: ProjectName,
+    mount_point: MountPointName,
+    configs: SmallVec<[ConfigData; 8]>,
 }
 
 impl url_mapping::mapping::Mapping {
@@ -225,8 +230,10 @@ impl Client {
                 .build()
                 .unwrap(),
             retrieve_configs: Arc::new(parking_lot::Mutex::new(Default::default())),
-            retrieving_certs: Arc::new(parking_lot::Mutex::new(Default::default())),
             base_url,
+            certificates: Arc::new(parking_lot::Mutex::new(
+                LruCache::with_expiry_duration_and_capacity(ttl, 1024),
+            )),
         }
     }
 
@@ -272,7 +279,6 @@ impl Client {
         external_port: u16,
         proto: Protocol,
         tunnels: ClientTunnels,
-        is_internal: bool,
     ) -> Result<
         Option<(
             MappingAction,
@@ -281,13 +287,10 @@ impl Client {
         Error,
     > {
         // Try to read from cache
-        if let Some((cached, matched_prefix)) = self.configs.resolve(
-            url_prefix.clone(),
-            tunnels.clone(),
-            external_port,
-            proto,
-            is_internal,
-        ) {
+        if let Some((cached, matched_prefix)) =
+            self.configs
+                .resolve(url_prefix.clone(), tunnels.clone(), external_port, proto)
+        {
             match cached {
                 Some(data) => {
                     // mapping exist
@@ -369,6 +372,27 @@ impl Client {
                                                     config_response
                                                 );
 
+                                                let config_data = config_response
+                                                    .configs
+                                                    .iter()
+                                                    .cloned()
+                                                    .sorted_by(|a, b| a.revision.cmp(&b.revision))
+                                                    .next()
+                                                    .expect("FIXME");
+
+                                                let targets_processor = TargetsProcessor::new(
+                                                    config_data
+                                                        .config
+                                                        .exposes
+                                                        .values()
+                                                        .next()
+                                                        .as_ref()
+                                                        .expect("FIXME")
+                                                        .targets
+                                                        .iter(),
+                                                    config_data.instance_ids.iter(),
+                                                );
+
                                                 configs.upsert(
                                                     &url_prefix,
                                                     Some(Mapping {
@@ -378,7 +402,11 @@ impl Client {
                                                             .parse()
                                                             .expect("FIXME"),
                                                         generated_at: config_response.generated_at,
-                                                        instances: config_response.instances,
+                                                        // targets_processor,
+                                                        targets_processor,
+                                                        account: config_response.account,
+                                                        project: config_response.project,
+                                                        config_name: config_data.config.name,
                                                     }),
                                                 );
                                             }
@@ -424,9 +452,9 @@ impl Client {
             }
         }
 
-        if let Some((cached, _)) =
-            self.configs
-                .resolve(url_prefix, tunnels, external_port, proto, is_internal)
+        if let Some((cached, _)) = self
+            .configs
+            .resolve(url_prefix, tunnels, external_port, proto)
         {
             Ok(cached)
         } else {
@@ -435,7 +463,31 @@ impl Client {
         }
     }
 
-    pub async fn retrieve_certificate(&self, domain: &str) -> Result<CertificateResponse, Error> {
+    pub fn forget_certificate(&self, domain: String) {
+        self.certificates.lock().remove(&domain);
+    }
+
+    pub async fn get_certificate(&self, domain: String) -> Result<CertificateResponse, Error> {
+        let cached_cert = self.certificates.lock().get(&domain).cloned();
+
+        if let Some(certs) = cached_cert {
+            info!("serve cert from cache");
+            Ok(certs)
+        } else {
+            match self.retrieve_certificate(&domain).await {
+                Ok(certs) => {
+                    self.certificates.lock().insert(domain, certs.clone());
+                    Ok(certs)
+                }
+                Err(e) => {
+                    warn!("error retrieving certificate for {}: {}", domain, e);
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    async fn retrieve_certificate(&self, domain: &str) -> Result<CertificateResponse, Error> {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .unwrap()
