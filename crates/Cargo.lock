@@ -956,7 +956,7 @@ dependencies = [
  "smartstring",
  "thiserror",
  "tokio",
- "tokio-rustls",
+ "tokio-rustls 0.14.0",
  "tokio-tungstenite 0.11.0",
  "tracing",
  "tracing-futures",
@@ -979,13 +979,13 @@ dependencies = [
  "num_cpus",
  "pin-project",
  "rand 0.7.3",
- "rustls",
+ "rustls 0.18.1",
  "rustls-native-certs",
  "stop-handle",
  "thiserror",
  "tokio",
  "tokio-either",
- "tokio-rustls",
+ "tokio-rustls 0.14.0",
  "tokio-tungstenite 0.11.0",
  "tracing",
  "tracing-subscriber",
@@ -1093,7 +1093,7 @@ dependencies = [
  "time 0.2.16",
  "tokio",
  "tokio-either",
- "tokio-rustls",
+ "tokio-rustls 0.14.0",
  "tokio-tungstenite 0.11.0",
  "tokio-util",
  "tower",
@@ -1182,7 +1182,7 @@ dependencies = [
  "stop-handle",
  "thiserror",
  "tokio",
- "tokio-rustls",
+ "tokio-rustls 0.14.0",
  "tokio-util",
  "tower",
  "tracing",
@@ -1706,9 +1706,9 @@ dependencies = [
  "futures-util",
  "hyper",
  "log 0.4.11",
- "rustls",
+ "rustls 0.18.1",
  "tokio",
- "tokio-rustls",
+ "tokio-rustls 0.14.0",
  "webpki",
 ]
 
@@ -3079,12 +3079,12 @@ dependencies = [
  "native-tls",
  "percent-encoding 2.1.0",
  "pin-project-lite",
- "rustls",
+ "rustls 0.18.1",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "tokio",
- "tokio-rustls",
+ "tokio-rustls 0.14.0",
  "tokio-tls",
  "trust-dns-resolver",
  "url",
@@ -3164,6 +3164,19 @@ dependencies = [
 
 [[package]]
 name = "rustls"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0d4a31f5d68413404705d6982529b0e11a9aacd4839d1d6222ee3b8cb4015e1"
+dependencies = [
+ "base64 0.11.0",
+ "log 0.4.11",
+ "ring",
+ "sct",
+ "webpki",
+]
+
+[[package]]
+name = "rustls"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d1126dcf58e93cee7d098dbda643b5f92ed724f1f6a63007c1116eed6700c81"
@@ -3182,7 +3195,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "629d439a7672da82dd955498445e496ee2096fe2117b9f796558a43fdb9e59b8"
 dependencies = [
  "openssl-probe",
- "rustls",
+ "rustls 0.18.1",
  "schannel",
  "security-framework 1.0.0",
 ]
@@ -3974,12 +3987,24 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15cb62a0d2770787abc96e99c1cd98fcf17f94959f3af63ca85bdfb203f051b4"
+dependencies = [
+ "futures-core",
+ "rustls 0.17.0",
+ "tokio",
+ "webpki",
+]
+
+[[package]]
+name = "tokio-rustls"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "228139ddd4fea3fa345a29233009635235833e52807af7ea6448ead03890d6a9"
 dependencies = [
  "futures-core",
- "rustls",
+ "rustls 0.18.1",
  "tokio",
  "webpki",
 ]
@@ -4532,7 +4557,7 @@ dependencies = [
  "serde_urlencoded",
  "tls-parser",
  "tokio",
- "tokio-rustls",
+ "tokio-rustls 0.13.1",
  "tokio-tungstenite 0.10.1",
  "tower-service",
  "tracing",
