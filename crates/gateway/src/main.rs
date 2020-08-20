@@ -257,7 +257,6 @@ fn main() {
         .value_of("redis_addr")
         .expect("no redis addr provided")
         .into();
-    let redis_client = redis::Client::open(redis_addr.as_str()).unwrap();
 
     let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
@@ -488,14 +487,21 @@ fn main() {
 
         let api_client = Client::new(cache_ttl, webapp_base_url);
 
-        let redis_consumer = RedisConsumer::new(
-            redis_client,
-            &api_client.mappings(),
-            &client_tunnels,
-            &api_client,
-            &app_stop_handle,
+        info!("Using redis at {}", redis_addr);
+        let redis_client = redis::Client::open(redis_addr.as_str()).unwrap();
+
+        let redis_consumer = tokio::time::timeout(
+            Duration::from_secs(10),
+            RedisConsumer::new(
+                redis_client,
+                &api_client.mappings(),
+                &client_tunnels,
+                &api_client,
+                &app_stop_handle,
+            ),
         )
         .await
+        .expect("Could not start redis consumer: timeout")
         .expect("Could not start redis consumer");
         tokio::spawn(redis_consumer.spawn());
 
