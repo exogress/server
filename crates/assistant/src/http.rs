@@ -3,7 +3,7 @@ use futures::{FutureExt, SinkExt, StreamExt};
 use redis::AsyncCommands;
 use std::net::SocketAddr;
 use stop_handle::StopWait;
-seuse tokio::sync::mpsc;
+use tokio::sync::mpsc;
 use tokio::time::{delay_for, Duration};
 use tracing_futures::Instrument;
 use warp::Filter;
