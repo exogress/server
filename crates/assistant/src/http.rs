@@ -3,6 +3,8 @@ use futures::{FutureExt, SinkExt, StreamExt};
 use redis::AsyncCommands;
 use std::net::SocketAddr;
 use stop_handle::StopWait;
+seuse tokio::sync::mpsc;
+use tokio::time::{delay_for, Duration};
 use tracing_futures::Instrument;
 use warp::Filter;
 
@@ -30,22 +32,64 @@ pub async fn server(
                                 if let Ok(_) = pubsub.subscribe("invalidations").await {
                                     let mut messages = pubsub.into_on_message();
 
-                                    while let Some(msg) = messages.next().await {
-                                        match msg.get_payload::<String>() {
-                                            Ok(p) => {
-                                                if let Err(e) = websocket
-                                                    .send(warp::filters::ws::Message::text(p))
-                                                    .await
-                                                {
-                                                    error!("error sending to websocket: {}", e);
-                                                    return;
+                                    let (mut to_ws_tx, mut to_ws_rx) = mpsc::channel(16);
+
+                                    let forward_channel_to_ws = async {
+                                        while let Some(msg) = to_ws_rx.next().await {
+                                            websocket.send(msg).await?;
+                                        }
+
+                                        Ok::<_, anyhow::Error>(())
+                                    };
+
+                                    let forward_from_redis = {
+                                        shadow_clone!(mut to_ws_tx);
+
+                                        async move {
+                                            while let Some(msg) = messages.next().await {
+                                                match msg.get_payload::<String>() {
+                                                    Ok(p) => {
+                                                        if let Err(e) = to_ws_tx
+                                                            .send(warp::filters::ws::Message::text(
+                                                                p,
+                                                            ))
+                                                            .await
+                                                        {
+                                                            error!(
+                                                                "error sending to websocket: {}",
+                                                                e
+                                                            );
+                                                            return;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!(
+                                                            "error getting redis payload: {}",
+                                                            e
+                                                        );
+                                                        break;
+                                                    }
                                                 }
                                             }
-                                            Err(e) => {
-                                                error!("error getting redis payload: {}", e);
-                                                break;
-                                            }
                                         }
+                                    };
+
+                                    let periodically_send_ping = async move {
+                                        loop {
+                                            delay_for(Duration::from_secs(15)).await;
+
+                                            to_ws_tx
+                                                .send(warp::filters::ws::Message::ping(""))
+                                                .await?;
+                                        }
+
+                                        Ok::<_, anyhow::Error>(())
+                                    };
+
+                                    tokio::select! {
+                                        _ = forward_channel_to_ws => {},
+                                        _ = forward_from_redis => {},
+                                        _ = periodically_send_ping => {},
                                     }
                                 }
                             }
