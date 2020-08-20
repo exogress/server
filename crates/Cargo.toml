@@ -3,6 +3,7 @@ members = [
  "common",
  "gateway",
  "signaler",
+ "assistant",
 ]
 
 [profile.release]

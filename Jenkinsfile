@@ -3,6 +3,7 @@
 IMAGE = "servers"
 IMAGE_SIGNALER = "signaler"
 IMAGE_GATEWAY = "gateway"
+IMAGE_ASSISTANT = "assistant"
 PUSH = false
 DOCKER_AUTH = "\$(cat ~/.docker/config.json |jq -r \".auths[] .auth\")"
 BASE_VERSION = ""
@@ -31,12 +32,14 @@ if (env.BRANCH_NAME == "master") {
     IMAGE = "r.lancastr.net/${IMAGE}"
     IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}"
     IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}"
+    IMAGE_ASSISTANT = "r.lancastr.net/${IMAGE_ASSISTANT}"
     PUSH = true
     TAG = "${BASE_VERSION}"
 } else if (env.BRANCH_NAME == "develop") {
     IMAGE = "r.lancastr.net/${IMAGE}-${env.BRANCH_NAME}"
     IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}-${env.BRANCH_NAME}"
     IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}-${env.BRANCH_NAME}"
+    IMAGE_ASSISTANT = "r.lancastr.net/${IMAGE_ASSISTANT}-${env.BRANCH_NAME}"
     TAG = "${BASE_VERSION}.build.${env.BUILD_NUMBER}"
     PUSH = true
 }
@@ -80,6 +83,11 @@ node("linux-docker") {
                 sh "docker tag ${IMAGE_GATEWAY}:${TAG} ${IMAGE_GATEWAY}:latest"
             }
 
+            stage('build_assistant') {
+                sh "docker build --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} ."
+                sh "docker tag ${IMAGE_ASSISTANT}:${TAG} ${IMAGE_ASSISTANT}:latest"
+            }
+
             stage('save_artifacts') {
                 if (PUSH == true) {
                     sh "docker push $IMAGE_SIGNALER:$TAG"
@@ -87,6 +95,9 @@ node("linux-docker") {
 
                     sh "docker push $IMAGE_GATEWAY:$TAG"
                     sh "docker push $IMAGE_GATEWAY:latest"
+
+                    sh "docker push $IMAGE_ASSISTANT:$TAG"
+                    sh "docker push $IMAGE_ASSISTANT:latest"
                 }
             }
             if (currentBuild.getPreviousBuild()?.getResult() != "SUCCESS") {
@@ -112,6 +123,9 @@ node("linux-docker") {
 
                 sh "docker rmi $IMAGE_GATEWAY:$TAG || true"
                 sh "docker rmi $IMAGE_GATEWAY:latest || true"
+
+                sh "docker rmi $IMAGE_ASSISTANT:$TAG || true"
+                sh "docker rmi $IMAGE_ASSISTANT:latest || true"
             }
         }
     }

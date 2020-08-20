@@ -891,6 +891,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "exogress-assistant"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 3.0.0-beta.1",
+ "exogress-common-utils",
+ "exogress-entities",
+ "exogress-server-common",
+ "futures",
+ "mimalloc",
+ "pin-project",
+ "rand 0.7.3",
+ "redis",
+ "sentry",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "shadow-clone",
+ "smartstring",
+ "stop-handle",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "warp",
+]
+
+[[package]]
 name = "exogress-client-core"
 version = "0.1.0"
 dependencies = [
@@ -927,7 +956,7 @@ dependencies = [
  "smartstring",
  "thiserror",
  "tokio",
- "tokio-rustls 0.14.0",
+ "tokio-rustls",
  "tokio-tungstenite 0.11.0",
  "tracing",
  "tracing-futures",
@@ -950,10 +979,20 @@ dependencies = [
  "num_cpus",
  "pin-project",
  "rand 0.7.3",
+ "rustls",
+ "rustls-native-certs",
  "stop-handle",
+ "thiserror",
  "tokio",
+ "tokio-either",
+ "tokio-rustls",
+ "tokio-tungstenite 0.11.0",
  "tracing",
  "tracing-subscriber",
+ "trust-dns-resolver",
+ "tungstenite 0.11.1",
+ "url",
+ "webpki",
 ]
 
 [[package]]
@@ -1036,7 +1075,6 @@ dependencies = [
  "percent-encoding 2.1.0",
  "progress_bar",
  "rand 0.7.3",
- "redis",
  "reqwest",
  "sentry",
  "serde",
@@ -1054,7 +1092,8 @@ dependencies = [
  "thiserror",
  "time 0.2.16",
  "tokio",
- "tokio-rustls 0.13.1",
+ "tokio-either",
+ "tokio-rustls",
  "tokio-tungstenite 0.11.0",
  "tokio-util",
  "tower",
@@ -1143,7 +1182,7 @@ dependencies = [
  "stop-handle",
  "thiserror",
  "tokio",
- "tokio-rustls 0.14.0",
+ "tokio-rustls",
  "tokio-util",
  "tower",
  "tracing",
@@ -1667,9 +1706,9 @@ dependencies = [
  "futures-util",
  "hyper",
  "log 0.4.11",
- "rustls 0.18.1",
+ "rustls",
  "tokio",
- "tokio-rustls 0.14.0",
+ "tokio-rustls",
  "webpki",
 ]
 
@@ -2152,7 +2191,7 @@ dependencies = [
  "kernel32-sys",
  "libc",
  "log 0.4.11",
- "miow",
+ "miow 0.2.1",
  "net2",
  "slab",
  "winapi 0.2.8",
@@ -2168,6 +2207,18 @@ dependencies = [
  "log 0.4.11",
  "mio",
  "slab",
+]
+
+[[package]]
+name = "mio-named-pipes"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0840c1c50fd55e521b247f949c241c9997709f23bd7f023b9762cd561e935656"
+dependencies = [
+ "log 0.4.11",
+ "mio",
+ "miow 0.3.5",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -2191,6 +2242,16 @@ dependencies = [
  "net2",
  "winapi 0.2.8",
  "ws2_32-sys",
+]
+
+[[package]]
+name = "miow"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07b88fb9795d4d36d62a012dfbf49a8f5cf12751f36d31a9dbe66d528e58979e"
+dependencies = [
+ "socket2",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -2931,11 +2992,9 @@ dependencies = [
  "futures",
  "futures-util",
  "itoa",
- "native-tls",
  "percent-encoding 2.1.0",
  "pin-project-lite",
  "tokio",
- "tokio-tls",
  "tokio-util",
  "url",
 ]
@@ -3020,12 +3079,12 @@ dependencies = [
  "native-tls",
  "percent-encoding 2.1.0",
  "pin-project-lite",
- "rustls 0.18.1",
+ "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "tokio",
- "tokio-rustls 0.14.0",
+ "tokio-rustls",
  "tokio-tls",
  "trust-dns-resolver",
  "url",
@@ -3105,19 +3164,6 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0d4a31f5d68413404705d6982529b0e11a9aacd4839d1d6222ee3b8cb4015e1"
-dependencies = [
- "base64 0.11.0",
- "log 0.4.11",
- "ring",
- "sct",
- "webpki",
-]
-
-[[package]]
-name = "rustls"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d1126dcf58e93cee7d098dbda643b5f92ed724f1f6a63007c1116eed6700c81"
@@ -3136,7 +3182,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "629d439a7672da82dd955498445e496ee2096fe2117b9f796558a43fdb9e59b8"
 dependencies = [
  "openssl-probe",
- "rustls 0.18.1",
+ "rustls",
  "schannel",
  "security-framework 1.0.0",
 ]
@@ -3896,6 +3942,7 @@ dependencies = [
  "libc",
  "memchr",
  "mio",
+ "mio-named-pipes",
  "mio-uds",
  "num_cpus",
  "pin-project-lite",
@@ -3903,6 +3950,15 @@ dependencies = [
  "slab",
  "tokio-macros",
  "winapi 0.3.9",
+]
+
+[[package]]
+name = "tokio-either"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "930c1aeb5da5f5bf4d090b645daae582ceb538ba7711e51adb383a2736149489"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
@@ -3918,24 +3974,12 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15cb62a0d2770787abc96e99c1cd98fcf17f94959f3af63ca85bdfb203f051b4"
-dependencies = [
- "futures-core",
- "rustls 0.17.0",
- "tokio",
- "webpki",
-]
-
-[[package]]
-name = "tokio-rustls"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "228139ddd4fea3fa345a29233009635235833e52807af7ea6448ead03890d6a9"
 dependencies = [
  "futures-core",
- "rustls 0.18.1",
+ "rustls",
  "tokio",
  "webpki",
 ]
@@ -4488,7 +4532,7 @@ dependencies = [
  "serde_urlencoded",
  "tls-parser",
  "tokio",
- "tokio-rustls 0.13.1",
+ "tokio-rustls",
  "tokio-tungstenite 0.10.1",
  "tower-service",
  "tracing",

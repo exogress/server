@@ -32,3 +32,10 @@ COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
+
+FROM debian:buster as assistant
+RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
+COPY --from=builder /code/crates/target/release/exogress-assistant /usr/local/bin/
+RUN exogress-assistant autocompletion bash > /etc/profile.d/exogress-assistant.sh && \
+    echo "source /etc/profile.d/exogress-assistant.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-assistant"]

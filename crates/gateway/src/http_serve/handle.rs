@@ -61,6 +61,7 @@ pub async fn server(
     // google_oauth2_client: auth::google::GoogleOauth2Client,
     // github_oauth2_client: auth::github::GithubOauth2Client,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
+    resolver: TokioAsyncResolver,
 ) {
     let (https_stop_handle, https_stop_wait) = stop_handle();
 
@@ -178,16 +179,6 @@ pub async fn server(
     });
 
     tokio::spawn(http_server);
-
-    let resolver = Arc::new(
-        TokioAsyncResolver::new(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-            Handle::current(),
-        )
-        .await
-        .unwrap(),
-    );
 
     // let auth_finalizers = Arc::new(Mutex::new(LruCache::with_expiry_duration(
     //     Duration::from_secs(10),

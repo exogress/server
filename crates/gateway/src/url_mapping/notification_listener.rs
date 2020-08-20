@@ -6,8 +6,15 @@ use crate::clients::ClientTunnels;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
 use crate::webapp;
-use redis::RedisError;
+use exogress_common_utils::ws_client::{connect_ws, Error};
 use smartstring::alias::*;
+use tokio::net::TcpStream;
+use tokio_either::Either;
+use tokio_rustls::client::TlsStream;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::http::Method;
+use tokio_tungstenite::WebSocketStream;
+use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -24,34 +31,48 @@ pub struct Notification {
     action: Action,
 }
 
-pub struct RedisConsumer {
-    consumer: redis::aio::PubSub,
+pub struct Consumer {
+    stream: WebSocketStream<Either<TlsStream<TcpStream>, TcpStream>>,
     client_tunnels: ClientTunnels,
     stop_handle: AppStopHandle,
     webapp_client: webapp::Client,
     mappings: Configs,
 }
 
-impl RedisConsumer {
+impl Consumer {
     pub async fn new(
-        redis_client: redis::Client,
+        assistant_base_url: Url,
+        individual_hostname: &str,
         mappings: &Configs,
         client_tunnels: &ClientTunnels,
         webapp_client: &webapp::Client,
+        resolver: TokioAsyncResolver,
         app_stop_handle: &AppStopHandle,
-    ) -> Result<RedisConsumer, RedisError> {
+    ) -> Result<Consumer, Error> {
         shadow_clone!(mappings);
 
-        let mut pubsub = redis_client
-            .get_tokio_connection_tokio()
-            .await?
-            .into_pubsub();
+        let mut url = assistant_base_url;
+        {
+            let mut segments = url.path_segments_mut().unwrap();
+            segments
+                .push("api")
+                .push("v1")
+                .push("gateways")
+                .push(individual_hostname)
+                .push("notifications");
+        }
+        let notifier_req = Request::builder()
+            .method(Method::GET)
+            .uri(url.to_string())
+            .body(())
+            .unwrap();
 
-        pubsub.subscribe("invalidations").await?;
+        info!("connecting to notification listener..");
+        let (stream, _resp) = connect_ws(notifier_req, resolver).await?;
 
-        Ok(RedisConsumer {
+        Ok(Consumer {
             client_tunnels: client_tunnels.clone(),
-            consumer: pubsub,
+            stream,
             webapp_client: webapp_client.clone(),
             stop_handle: app_stop_handle.clone(),
             mappings,
@@ -63,26 +84,25 @@ impl RedisConsumer {
 
         let stop_handle = self.stop_handle.clone();
 
-        let mut message_stream = self.consumer.on_message();
-
-        while let Some(msg) = message_stream.next().await {
-            match msg.get_payload::<std::string::String>() {
+        while let Some(msg) = self.stream.next().await {
+            match msg {
                 Err(e) => {
-                    warn!("Error while receiving from Redis: {}", e);
-                    stop_handle.stop(StopReason::RedisConsumeError);
+                    warn!("Error while receiving from Notifier: {}", e);
+                    stop_handle.stop(StopReason::NotificationChannelError);
                 }
-                Ok(msg) => {
-                    info!("Received invalidation message: {:?}", msg);
+                Ok(msg) if msg.is_text() => {
+                    let text = msg.into_text().unwrap();
+                    info!("Received invalidation message: {:?}", text);
 
-                    match serde_json::from_str::<Notification>(msg.as_str()) {
-                        Ok(msg) => {
-                            info!("Process redis notification {:?}", msg);
-                            match msg.action {
+                    match serde_json::from_str::<Notification>(text.as_str()) {
+                        Ok(notification) => {
+                            info!("Process invalidation notification {:?}", notification);
+                            match notification.action {
                                 Action::InvalidateUrlPrefixes { url_prefixes } => {
                                     for url_prefix in url_prefixes.into_iter() {
                                         self.mappings.remove_by_notification_if_time_applicable(
                                             url_prefix.clone(),
-                                            msg.generated_at,
+                                            notification.generated_at,
                                         );
                                         match Url::parse(format!("http://{}", url_prefix).as_str())
                                         {
@@ -106,6 +126,10 @@ impl RedisConsumer {
                             error!("error parsing notification in redis: {}", e);
                         }
                     }
+                }
+                Ok(msg) => {
+                    error!("received unexpected message from assistant: {:?}", msg);
+                    stop_handle.stop(StopReason::NotificationChannelError);
                 }
             }
         }

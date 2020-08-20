@@ -29,10 +29,15 @@ use crate::clients::{spawn_tunnel, ClientTunnels};
 // use crate::http_serve::auth::github::GithubOauth2Client;
 // use crate::http_serve::auth::google::GoogleOauth2Client;
 
-use crate::url_mapping::notification_listener::RedisConsumer;
+use crate::url_mapping::notification_listener::Consumer;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
-use tokio::runtime::Builder;
+use exogress_common_utils::ws_client::connect_ws;
+use tokio::runtime::{Builder, Handle};
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::http::Method;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use trust_dns_resolver::TokioAsyncResolver;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -48,20 +53,20 @@ mod webapp;
 fn main() {
     let spawn_args = App::new("spawn")
         .arg(
+            Arg::with_name("assistant_base_url")
+                .long("assistant-base-url")
+                .value_name("URL")
+                .required(true)
+                .about("Assistant base URL")
+                .default_value("ws://localhost:3214")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("public_base_url")
                 .long("public-base-url")
                 .value_name("URL")
                 .required(true)
                 .about("Public base URL")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("redis_addr")
-                .long("redis-addr")
-                .value_name("URL")
-                .default_value("redis://127.0.0.1")
-                .required(true)
-                .about("Set redis addr")
                 .takes_value(true),
         )
         .arg(
@@ -253,11 +258,6 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let redis_addr: String = matches
-        .value_of("redis_addr")
-        .expect("no redis addr provided")
-        .into();
-
     let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "gw");
@@ -280,6 +280,12 @@ fn main() {
         .unwrap()
         .parse()
         .expect("bad URL format");
+
+    let assistant_base_url: Url = matches
+        .value_of("assistant_base_url")
+        .unwrap()
+        .parse()
+        .expect("bad assistant URL format");
 
     // let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
     // let google_oauth2_client_secret = matches
@@ -487,23 +493,27 @@ fn main() {
 
         let api_client = Client::new(cache_ttl, webapp_base_url);
 
-        info!("Using redis at {}", redis_addr);
-        let redis_client = redis::Client::open(redis_addr.as_str()).unwrap();
-
-        let redis_consumer = tokio::time::timeout(
-            Duration::from_secs(10),
-            RedisConsumer::new(
-                redis_client,
-                &api_client.mappings(),
-                &client_tunnels,
-                &api_client,
-                &app_stop_handle,
-            ),
+        let resolver = TokioAsyncResolver::new(
+            ResolverConfig::default(),
+            ResolverOpts::default(),
+            Handle::current(),
         )
         .await
-        .expect("Could not start redis consumer: timeout")
-        .expect("Could not start redis consumer");
-        tokio::spawn(redis_consumer.spawn());
+        .unwrap();
+
+        let consumer = Consumer::new(
+            assistant_base_url,
+            &individual_hostname,
+            &api_client.mappings(),
+            &client_tunnels,
+            &api_client,
+            resolver.clone(),
+            &app_stop_handle,
+        )
+        .await
+        .expect("notification listener error");
+
+        tokio::spawn(consumer.spawn());
 
         // let google_oauth2_client = GoogleOauth2Client::new(
         //     Duration::from_secs(60),
@@ -534,6 +544,7 @@ fn main() {
             // google_oauth2_client,
             // github_oauth2_client,
             dbip,
+            resolver,
         )
         .await;
 

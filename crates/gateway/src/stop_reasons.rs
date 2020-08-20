@@ -1,7 +1,6 @@
 use std::fmt;
 
 use exogress_common_utils::termination::StopSignal;
-use redis::RedisError;
 use stop_handle::{StopHandle, StopWait};
 
 pub type AppStopHandle = StopHandle<StopReason>;
@@ -10,7 +9,7 @@ pub type AppStopWait = StopWait<StopReason>;
 #[derive(Debug, Clone)]
 pub enum StopReason {
     SignalReceived,
-    RedisConsumeError,
+    NotificationChannelError,
 }
 
 impl StopSignal for StopReason {
@@ -23,7 +22,7 @@ impl fmt::Display for StopReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StopReason::SignalReceived => write!(f, "signal received"),
-            StopReason::RedisConsumeError => write!(f, "redis consume error"),
+            StopReason::NotificationChannelError => write!(f, "notificatio channel error"),
         }
     }
 }
