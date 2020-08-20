@@ -127,6 +127,7 @@ impl Consumer {
                         }
                     }
                 }
+                Ok(msg) if msg.is_ping() => {}
                 Ok(msg) => {
                     error!("received unexpected message from assistant: {:?}", msg);
                     stop_handle.stop(StopReason::NotificationChannelError);
