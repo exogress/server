@@ -31,6 +31,9 @@ pub enum Error {
 
     #[error("unauthorized")]
     Unauthorized,
+
+    #[error("bad request: {:?}", _0)]
+    BadRequest(Option<String>),
 }
 
 impl Client {
@@ -72,6 +75,9 @@ impl Client {
             StatusCode::NOT_FOUND => Err(Error::NotFound),
             StatusCode::FORBIDDEN => Err(Error::Forbidden),
             StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
+            StatusCode::BAD_REQUEST => {
+                Err(Error::BadRequest(res.text().await.ok().map(|s| s.into())))
+            }
             code => Err(Error::BadResponse(code)),
         }
     }
