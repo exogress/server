@@ -394,7 +394,7 @@ impl Client {
                                                 );
 
                                                 configs.upsert(
-                                                    &url_prefix,
+                                                    &config_response.url_prefix,
                                                     Some(Mapping {
                                                         match_pattern: config_response
                                                             .url_prefix

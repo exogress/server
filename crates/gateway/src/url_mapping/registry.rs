@@ -9,6 +9,7 @@ use smartstring::alias::*;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::url_prefix::UrlPrefix;
 
 struct Inner {
     // List of prefix with expiration according to policies
@@ -25,7 +26,7 @@ impl Inner {
         }
     }
 
-    fn upsert(&mut self, url: &UrlForRewriting, mapping: Option<Mapping>) {
+    fn upsert(&mut self, url: &UrlPrefix, mapping: Option<Mapping>) {
         let from_key = url.clone();
 
         let for_lru = mapping.map(Arc::new);
@@ -146,7 +147,7 @@ impl Configs {
             .remove_by_notification_if_time_applicable(url_prefix, generated_at)
     }
 
-    pub fn upsert(&self, url: &UrlForRewriting, mapping: Option<Mapping>) {
+    pub fn upsert(&self, url: &UrlPrefix, mapping: Option<Mapping>) {
         self.inner.lock().upsert(url, mapping)
     }
 }

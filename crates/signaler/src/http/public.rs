@@ -115,6 +115,19 @@ pub async fn server(
                                         .await;
                                     return;
                                 }
+                                Err(Error::BadRequest(maybe_str)) => {
+                                    info!("Closing connection with conflict message");
+                                    let _ = websocket
+                                        .send(warp::filters::ws::Message::close_with(
+                                            4000u16,
+                                            format!(
+                                                "bad request: {}",
+                                                maybe_str.unwrap_or("no error specified".into())
+                                            ),
+                                        ))
+                                        .await;
+                                    return;
+                                }
                                 Err(e) => {
                                     info!("could not set presence: {}", e);
                                     let _ = websocket
