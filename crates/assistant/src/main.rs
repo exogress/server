@@ -32,7 +32,7 @@ fn main() {
                 .value_name("SOCKET_ADDR")
                 .default_value("0.0.0.0:3214")
                 .required(true)
-                .about("Set websocket listen address")
+                .help("Set websocket listen address")
                 .takes_value(true),
         )
         .arg(
@@ -41,7 +41,7 @@ fn main() {
                 .value_name("URL")
                 .default_value("redis://127.0.0.1")
                 .required(true)
-                .about("Set redis addr")
+                .help("Set redis addr")
                 .takes_value(true),
         );
 

@@ -57,7 +57,7 @@ fn main() {
                 .long("assistant-base-url")
                 .value_name("URL")
                 .required(true)
-                .about("Assistant base URL")
+                .help("Assistant base URL")
                 .default_value("ws://localhost:3214")
                 .takes_value(true),
         )
@@ -66,7 +66,7 @@ fn main() {
                 .long("public-base-url")
                 .value_name("URL")
                 .required(true)
-                .about("Public base URL")
+                .help("Public base URL")
                 .takes_value(true),
         )
         .arg(
@@ -74,7 +74,7 @@ fn main() {
                 .long("google-oauth2-client-id")
                 .value_name("STRING")
                 .required(true)
-                .about("Google oAuth2 client ID")
+                .help("Google oAuth2 client ID")
                 .takes_value(true),
         )
         .arg(
@@ -82,7 +82,7 @@ fn main() {
                 .long("google-oauth2-client-secret")
                 .value_name("STRING")
                 .required(true)
-                .about("Google oAuth2 client Secret")
+                .help("Google oAuth2 client Secret")
                 .takes_value(true),
         )
         .arg(
@@ -90,7 +90,7 @@ fn main() {
                 .long("github-oauth2-client-id")
                 .value_name("STRING")
                 .required(true)
-                .about("Github oAuth2 client ID")
+                .help("Github oAuth2 client ID")
                 .takes_value(true),
         )
         .arg(
@@ -98,7 +98,7 @@ fn main() {
                 .long("github-oauth2-client-secret")
                 .value_name("STRING")
                 .required(true)
-                .about("Github oAuth2 client Secret")
+                .help("Github oAuth2 client Secret")
                 .takes_value(true),
         )
         .arg(
@@ -107,7 +107,7 @@ fn main() {
                 .value_name("SOCKET_ADDR")
                 .default_value("0.0.0.0:1337")
                 .required(true)
-                .about("Set HTTP listen address")
+                .help("Set HTTP listen address")
                 .takes_value(true),
         )
         .arg(
@@ -116,7 +116,7 @@ fn main() {
                 .value_name("SOCKET_ADDR")
                 .default_value("0.0.0.0:2443")
                 .required(true)
-                .about("Set HTTPS listen address")
+                .help("Set HTTPS listen address")
                 .takes_value(true),
         )
         .arg(
@@ -125,14 +125,14 @@ fn main() {
                 .value_name("SOCKET_ADDR")
                 .default_value("0.0.0.0:10714")
                 .required(true)
-                .about("Tunnels listener")
+                .help("Tunnels listener")
                 .takes_value(true),
         )
         .arg(
             Arg::with_name("tunnel_tls_cert_path")
                 .long("tunnel-tls-cert-path")
                 .value_name("PATH")
-                .about("Certificate to use")
+                .help("Certificate to use")
                 .required(true)
                 .takes_value(true),
         )
@@ -140,7 +140,7 @@ fn main() {
             Arg::with_name("tunnel_tls_key_path")
                 .long("tunnel-tls-key-path")
                 .value_name("PATH")
-                .about("Key file to use")
+                .help("Key file to use")
                 .required(true)
                 .takes_value(true),
         )
@@ -148,7 +148,7 @@ fn main() {
             Arg::with_name("individual_hostname")
                 .long("individual-hostname")
                 .value_name("INDIVIDUAL_HOSTNAME")
-                .about("Own hostname to use for client tunnel connections")
+                .help("Own hostname to use for client tunnel connections")
                 .required(true)
                 .takes_value(true),
         )
@@ -156,14 +156,14 @@ fn main() {
             Arg::with_name("external_https_port")
                 .long("external-https-port")
                 .value_name("PORT")
-                .about("Redefine external HTTPS port to use")
+                .help("Redefine external HTTPS port to use")
                 .takes_value(true),
         )
         .arg(
             Arg::with_name("webroot")
                 .long("webroot")
                 .value_name("PATH")
-                .about("Set webroot path for certbot interaction")
+                .help("Set webroot path for certbot interaction")
                 .takes_value(true),
         )
         .arg(
@@ -171,7 +171,7 @@ fn main() {
                 .long("int-base-url")
                 .value_name("URL")
                 .default_value("http://localhost:2999")
-                .about("Set private signaler base URL")
+                .help("Set private signaler base URL")
                 .takes_value(true),
         )
         .arg(
@@ -179,14 +179,14 @@ fn main() {
                 .long("cache-ttl")
                 .value_name("SECONDS")
                 .default_value("600") // 10 minutes
-                .about("Keep data upto the number of seconds")
+                .help("Keep data upto the number of seconds")
                 .takes_value(true),
         )
         .arg(
             Arg::with_name("tls_cert_path")
                 .long("tls-cert-path")
                 .value_name("PATH")
-                .about("Certificate to use")
+                .help("Certificate to use")
                 .required(true)
                 .takes_value(true),
         )
@@ -194,14 +194,14 @@ fn main() {
             Arg::with_name("tls_key_path")
                 .long("tls-key-path")
                 .value_name("PATH")
-                .about("Key file to use")
+                .help("Key file to use")
                 .required(true)
                 .takes_value(true),
         )
         .arg(
             Arg::with_name("download_dbip")
                 .long("download-dbip")
-                .about("Perform DBIP download")
+                .help("Perform DBIP download")
                 .requires("isp_location_dbip_url"),
         )
         .arg(
@@ -209,7 +209,7 @@ fn main() {
                 .long("isp-location-dbip-url")
                 .env("ISP_LOCATION_DBIP_URL")
                 .value_name("URL")
-                .about("ISP DBIP Download URL")
+                .help("ISP DBIP Download URL")
                 .takes_value(true)
                 .default_value("https://repos.lancastr.net/dbip-mirror/stable/files/dbip-location-isp/latest/dbip-location-isp.gz"),
         )
@@ -218,7 +218,7 @@ fn main() {
                 .long("dbip-download-dir")
                 .env("DBIP_DOWNLOAD_DIR")
                 .value_name("PATH")
-                .about("ISP DBIP Download into this dir. If not set temporary directory will be created")
+                .help("ISP DBIP Download into this dir. If not set temporary directory will be created")
                 .takes_value(true)
         )
         .arg(
@@ -227,7 +227,7 @@ fn main() {
                 .conflicts_with("download_dbip")
                 .value_name("PATH")
                 .env("DBIP_PATH")
-                .about("Path to MMDB database")
+                .help("Path to MMDB database")
                 .takes_value(true),
         );
 

@@ -2,12 +2,12 @@ use clap::{Arg, ArgMatches};
 use sentry::integrations::panic::PanicIntegration;
 use sentry::{ClientInitGuard, ScopeGuard};
 
-pub fn add_args(app: clap::App) -> clap::App {
+pub fn add_args<'a>(app: clap::App<'a, 'a>) -> clap::App<'a, 'a> {
     app.arg(
         Arg::with_name("sentry_dsn")
             .long("sentry-dsn")
             .value_name("DSN")
-            .about("sentry dsn")
+            .help("sentry dsn")
             .required(false)
             .takes_value(true),
     )

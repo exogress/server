@@ -1,13 +1,13 @@
 use clap::{Arg, ArgMatches};
 use url::Url;
 
-pub fn add_args(app: clap::App) -> clap::App {
+pub fn add_args<'a>(app: clap::App<'a, 'a>) -> clap::App<'a, 'a> {
     app.arg(
         Arg::with_name("webapp_base_url")
             .long("webapp-base-url")
             .value_name("URL")
             .required(true)
-            .about("Set Webapp Base URL")
+            .help("Set Webapp Base URL")
             .takes_value(true),
     )
 }

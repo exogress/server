@@ -249,7 +249,7 @@ dependencies = [
  "cexpr",
  "cfg-if",
  "clang-sys",
- "clap 2.33.3",
+ "clap",
  "env_logger",
  "lazy_static",
  "lazycell",
@@ -452,47 +452,6 @@ dependencies = [
  "textwrap",
  "unicode-width",
  "vec_map",
-]
-
-[[package]]
-name = "clap"
-version = "3.0.0-beta.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "860643c53f980f0d38a5e25dfab6c3c93b2cb3aa1fe192643d17a293c6c41936"
-dependencies = [
- "atty",
- "bitflags",
- "clap_derive",
- "indexmap",
- "lazy_static",
- "os_str_bytes",
- "strsim 0.10.0",
- "termcolor",
- "textwrap",
- "unicode-width",
- "vec_map",
-]
-
-[[package]]
-name = "clap_derive"
-version = "3.0.0-beta.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb51c9e75b94452505acd21d929323f5a5c6c4735a852adbd39ef5fb1b014f30"
-dependencies = [
- "heck",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "clap_generate"
-version = "3.0.0-beta.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "188d8b137fa922515d549cf17ece165ddbc71bf21e723e81d84406958dcdef67"
-dependencies = [
- "clap 3.0.0-beta.1",
 ]
 
 [[package]]
@@ -895,7 +854,7 @@ name = "exogress-assistant"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap 3.0.0-beta.1",
+ "clap",
  "exogress-common-utils",
  "exogress-entities",
  "exogress-server-common",
@@ -971,8 +930,7 @@ dependencies = [
 name = "exogress-common-utils"
 version = "0.1.0"
 dependencies = [
- "clap 3.0.0-beta.1",
- "clap_generate",
+ "clap",
  "futures",
  "hostname",
  "lazy_static",
@@ -1044,7 +1002,7 @@ dependencies = [
  "byteorder",
  "bytes 0.5.6",
  "chrono",
- "clap 3.0.0-beta.1",
+ "clap",
  "cookie",
  "exogress-common-utils",
  "exogress-config-core",
@@ -1108,7 +1066,7 @@ dependencies = [
 name = "exogress-server-common"
 version = "0.1.0"
 dependencies = [
- "clap 3.0.0-beta.1",
+ "clap",
  "sentry",
  "tracing",
  "url",
@@ -1120,7 +1078,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "byteorder",
- "clap 3.0.0-beta.1",
+ "clap",
  "derive_builder",
  "exogress-client-core",
  "exogress-common-utils",
@@ -2482,12 +2440,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "os_str_bytes"
-version = "2.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ac6fe3538f701e339953a3ebbe4f39941aababa8a3f6964635b24ab526daeac"
-
-[[package]]
 name = "parking_lot"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2701,32 +2653,6 @@ name = "ppv-lite86"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c36fa947111f5c62a733b652544dd0016a43ce89619538a8ef92724a6f501a20"
-
-[[package]]
-name = "proc-macro-error"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18f33027081eba0a6d8aba6d1b1c3a3be58cbb12106341c2d5759fcd9b5277e7"
-dependencies = [
- "proc-macro-error-attr",
- "proc-macro2",
- "quote",
- "syn",
- "version_check 0.9.2",
-]
-
-[[package]]
-name = "proc-macro-error-attr"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a5b4b77fdb63c1eca72173d68d24501c54ab1269409f6b672c85deb18af69de"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
- "syn-mid",
- "version_check 0.9.2",
-]
 
 [[package]]
 name = "proc-macro-hack"
@@ -3774,12 +3700,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6446ced80d6c486436db5c078dde11a9f73d42b57fb273121e160b84f63d894c"
 
 [[package]]
-name = "strsim"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
-
-[[package]]
 name = "subtle"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3794,17 +3714,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "syn-mid"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7be3539f6c128a931cf19dcee741c1af532c7fd387baa739c03dd2e96479338a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
