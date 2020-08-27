@@ -6,6 +6,10 @@ extern crate shadow_clone;
 extern crate serde_derive;
 #[macro_use]
 extern crate tracing;
+#[macro_use]
+extern crate lazy_static;
+#[macro_use]
+extern crate prometheus;
 
 use std::fs;
 use std::net::SocketAddr;
@@ -33,6 +37,7 @@ use crate::url_mapping::notification_listener::Consumer;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
 use exogress_common_utils::ws_client::connect_ws;
+use prometheus::{Counter, Opts, Registry};
 use tokio::runtime::{Builder, Handle};
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::http::Method;
@@ -46,6 +51,8 @@ mod clients;
 mod dbip;
 // mod environments;
 mod http_serve;
+mod int_server;
+mod statistics;
 mod stop_reasons;
 mod url_mapping;
 mod webapp;
@@ -129,16 +136,25 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("tunnel_tls_cert_path")
-                .long("tunnel-tls-cert-path")
+            Arg::with_name("listen_int_https")
+                .long("listen-int-https")
+                .value_name("SOCKET_ADDR")
+                .default_value("0.0.0.0:3443")
+                .required(true)
+                .help("Set HTTPS listen address")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("individual_tls_cert_path")
+                .long("individual-tls-cert-path")
                 .value_name("PATH")
                 .help("Certificate to use")
                 .required(true)
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("tunnel_tls_key_path")
-                .long("tunnel-tls-key-path")
+            Arg::with_name("individual_tls_key_path")
+                .long("individual-tls-key-path")
                 .value_name("PATH")
                 .help("Key file to use")
                 .required(true)
@@ -147,7 +163,7 @@ fn main() {
         .arg(
             Arg::with_name("individual_hostname")
                 .long("individual-hostname")
-                .value_name("INDIVIDUAL_HOSTNAME")
+                .value_name("HOSTNAME")
                 .help("Own hostname to use for client tunnel connections")
                 .required(true)
                 .takes_value(true),
@@ -167,8 +183,8 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("int_base_url")
-                .long("int-base-url")
+            Arg::with_name("int_api_base_url")
+                .long("int-api-base-url")
                 .value_name("URL")
                 .default_value("http://localhost:2999")
                 .help("Set private signaler base URL")
@@ -307,8 +323,8 @@ fn main() {
             .expect("bad TTL value"),
     );
 
-    let tunnel_tls_cert_path = matches.value_of("tunnel_tls_cert_path").unwrap();
-    let tunnel_tls_key_path = matches.value_of("tunnel_tls_key_path").unwrap();
+    let individual_tls_cert_path = matches.value_of("individual_tls_cert_path").unwrap();
+    let individual_tls_key_path = matches.value_of("individual_tls_key_path").unwrap();
 
     let tls_cert_path = matches.value_of("tls_cert_path").unwrap();
     let tls_key_path = matches.value_of("tls_key_path").unwrap();
@@ -324,17 +340,25 @@ fn main() {
     .expect("error in webroot");
     info!("Use certbot webroot at {}", webroot.display());
 
-    let int_base_url: Url = matches
-        .value_of("int_base_url")
-        .expect("no int_base_url")
+    let int_api_base_url: Url = matches
+        .value_of("int_api_base_url")
+        .expect("no int_api_base_url")
         .parse()
-        .expect("bad int_base_url");
+        .expect("bad int_api_base_url");
 
     let listen_http_addr = matches
         .value_of("listen_http")
         .map(|r| {
             r.parse::<SocketAddr>()
                 .expect("Failed to parse listen HTTP address (ip:port)")
+        })
+        .unwrap();
+
+    let listen_int_https_addr = matches
+        .value_of("listen_int_https")
+        .map(|r| {
+            r.parse::<SocketAddr>()
+                .expect("Failed to parse listen int HTTPS address (ip:port)")
         })
         .unwrap();
 
@@ -466,6 +490,13 @@ fn main() {
 
         tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
+        info!("Listening int HTTPS on https://{}", listen_int_https_addr);
+        tokio::spawn(int_server::spawn(
+            listen_int_https_addr,
+            individual_tls_cert_path.into(),
+            individual_tls_key_path.into(),
+        ));
+
         let external_https_port = matches
             .value_of("external_https_port")
             .map(|r| r.parse().expect("Could not parse external_https_port"))
@@ -477,12 +508,12 @@ fn main() {
             listen_https_addr, external_https_port
         );
 
-        let client_tunnels = ClientTunnels::new(int_base_url);
+        let client_tunnels = ClientTunnels::new(int_api_base_url);
 
         tokio::spawn(spawn_tunnel(
             listen_tunnel_addr,
-            tunnel_tls_cert_path.into(),
-            tunnel_tls_key_path.into(),
+            individual_tls_cert_path.into(),
+            individual_tls_key_path.into(),
             client_tunnels.clone(),
         ));
 

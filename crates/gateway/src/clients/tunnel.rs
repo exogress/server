@@ -78,6 +78,8 @@ pub async fn spawn(
             async move {
                 match acceptor.accept(tunnel_stream).await {
                     Ok(mut tls_conn) => {
+                        crate::statistics::TUNNELS_GAUGE.inc();
+
                         let read_tunnel_hello = async {
                             let len = tls_conn.read_u16().await?;
                             let mut payload = vec![0u8; len.into()];
@@ -168,6 +170,8 @@ pub async fn spawn(
                                 info!("tunnel terminated by request");
                             },
                         }
+
+                        crate::statistics::TUNNELS_GAUGE.dec();
 
                         if let Entry::Occupied(mut client) = tunnels.inner.lock().entry(config_name)
                         {

@@ -870,7 +870,8 @@ async fn proxy_ws(
         }
     }
 
-    let transport: Box<dyn Conn> = Box::new(connector.get_connection(target).await.expect("FIXME"));
+    let transport: Box<dyn Conn> =
+        Box::new(connector.retrieve_connection(target).await.expect("FIXME"));
 
     info!("connected");
 
@@ -985,7 +986,6 @@ async fn proxy_ws(
     for (header, value) in proxied_response.headers().into_iter() {
         if header.as_str().to_lowercase().starts_with("x-exg") {
             info!("Trying to proxy already proxied request (prevent loops)");
-            let resp = Response::builder().status(StatusCode::LOOP_DETECTED);
             return Err(Error::LoopDetected);
         }
 

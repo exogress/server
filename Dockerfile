@@ -1,4 +1,4 @@
-FROM rust:1.45.1 as builder
+FROM rust:1.46 as builder
 
 RUN rustup component add clippy rustfmt
 RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
@@ -19,22 +19,22 @@ RUN cargo test && sccache --show-stats
 
 RUN cargo build --release && sccache --show-stats
 
-FROM debian:buster as signaler
+FROM debian:buster as base
 RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
+
+FROM base as signaler
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
 RUN exogress-signaler autocompletion bash > /etc/profile.d/exogress-signaler.sh && \
     echo "source /etc/profile.d/exogress-signaler.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-signaler"]
 
-FROM debian:buster as gateway
-RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
+FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
 
-FROM debian:buster as assistant
-RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
+FROM base as assistant
 COPY --from=builder /code/crates/target/release/exogress-assistant /usr/local/bin/
 RUN exogress-assistant autocompletion bash > /etc/profile.d/exogress-assistant.sh && \
     echo "source /etc/profile.d/exogress-assistant.sh" >> ~/.bashrc
