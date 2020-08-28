@@ -28,6 +28,7 @@ use hyper::Body;
 
 use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
+use crate::dbip::LocationAndIsp;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::targets::TargetsProcessor;
@@ -545,6 +546,11 @@ pub async fn server(
 
                 let remote_addr = remote_addr.unwrap().ip();
                 let local_addr = local_addr.unwrap().ip();
+
+                if let Some(dbip) = dbip {
+                    let resolved = dbip.lookup::<LocationAndIsp>(remote_addr);
+                    info!("GEO IP: {:?}", resolved);
+                }
 
                 let mut rng = thread_rng();
                 let mut ordered_instances =
