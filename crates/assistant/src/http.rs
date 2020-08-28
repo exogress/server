@@ -1,6 +1,5 @@
 use crate::termination::StopReason;
 use futures::{FutureExt, SinkExt, StreamExt};
-use redis::AsyncCommands;
 use std::net::SocketAddr;
 use stop_handle::StopWait;
 use tokio::sync::mpsc;
@@ -26,7 +25,7 @@ pub async fn server(
                 ws.on_upgrade(move |mut websocket| {
                     async move {
                         match redis.get_async_connection().await {
-                            Ok(mut conn) => {
+                            Ok(conn) => {
                                 let mut pubsub = conn.into_pubsub();
 
                                 if let Ok(_) = pubsub.subscribe("invalidations").await {
@@ -74,6 +73,7 @@ pub async fn server(
                                         }
                                     };
 
+                                    #[allow(unreachable_code)]
                                     let periodically_send_ping = async move {
                                         loop {
                                             delay_for(Duration::from_secs(15)).await;

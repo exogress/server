@@ -16,27 +16,22 @@ use memmap::Mmap;
 use percent_encoding::percent_decode_str;
 use reqwest::header::Entry;
 use stop_handle::stop_handle;
-use tokio::net::TcpStream;
-use tokio::runtime::Handle;
 use tokio_tungstenite::tungstenite;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 use warp::reject::Reject;
 use warp::{filters, Filter, Rejection, Reply};
 
-use exogress_entities::Upstream;
-use exogress_tunnel::{Conn, ConnectTarget, Connector};
+use exogress_tunnel::{Conn, Connector};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::Body;
 
 use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::stop_reasons::AppStopWait;
-use crate::url_mapping::mapping::{ClientTarget, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::mapping::{MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::targets::TargetsProcessor;
-use crate::webapp::{CertificateResponse, Client};
-use lru_time_cache::LruCache;
+use crate::webapp::Client;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::io;
@@ -129,7 +124,7 @@ pub async fn server(
                                 .body(content)
                                 .unwrap())
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             let hostname = host.expect("no host in request");
 
                             info!(
@@ -536,7 +531,7 @@ pub async fn server(
             shadow_clone!(individual_hostname);
             shadow_clone!(tunnels);
 
-            move |(ws_or_body, headers, path, mapping_action): (_, _, _, MappingAction),
+            move |(ws_or_body, headers, _path, mapping_action): (_, _, _, MappingAction),
                   _params,
                   method,
                   remote_addr: Option<SocketAddr>,

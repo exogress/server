@@ -36,11 +36,7 @@ use crate::clients::{spawn_tunnel, ClientTunnels};
 use crate::url_mapping::notification_listener::Consumer;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
-use exogress_common_utils::ws_client::connect_ws;
-use prometheus::{Counter, Opts, Registry};
 use tokio::runtime::{Builder, Handle};
-use tokio_tungstenite::tungstenite::handshake::client::Request;
-use tokio_tungstenite::tungstenite::http::Method;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -286,8 +282,6 @@ fn main() {
         .thread_name("gateway-reactor")
         .build()
         .unwrap();
-
-    sentry::configure_scope(|scope| {});
 
     let (app_stop_handle, app_stop_wait) = stop_handle();
 

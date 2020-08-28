@@ -4,9 +4,6 @@ use std::time::Duration;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
-use rand::rngs::SmallRng;
-use rand::seq::IteratorRandom;
-use rand::SeedableRng;
 use smartstring::alias::*;
 use tokio::time::timeout;
 

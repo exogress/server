@@ -8,7 +8,7 @@ use crate::url_mapping::targets::TargetsProcessor;
 use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
-use exogress_config_core::{Config, Revision, Target};
+use exogress_config_core::{Config, Revision};
 use exogress_entities::{AccountName, InstanceId, MountPointName, ProjectName};
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;

@@ -1,4 +1,4 @@
-use prometheus::{Counter, Encoder, Gauge, HistogramVec, TextEncoder};
+use prometheus::{Encoder, Gauge, TextEncoder};
 
 lazy_static! {
     pub static ref TUNNELS_GAUGE: Gauge =

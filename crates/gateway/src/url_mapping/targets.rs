@@ -1,12 +1,9 @@
-use crate::webapp::ConfigData;
-use exogress_config_core::{Proxy, StaticDir, Target, TargetVariant};
+use exogress_config_core::{Target, TargetVariant};
 use exogress_entities::{InstanceId, TargetName};
 use exogress_tunnel::ConnectTarget;
 use itertools::Itertools;
-use rand::thread_rng;
 use smallvec::SmallVec;
 use smartstring::alias::String;
-use std::str::FromStr;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ServerTarget {

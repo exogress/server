@@ -9,14 +9,11 @@ use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
 
-use exogress_config_core::{Config, Proxy, Target, TargetVariant};
+use exogress_config_core::Config;
 use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::targets::TargetsProcessor;
-use crate::webapp::ConfigData;
-use exogress_tunnel::ConnectTarget;
-use rand::prelude::*;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TlsConfig {
@@ -320,12 +317,11 @@ pub enum RewriteMatchedToError {
 
     #[error("URI build error: `{0}`")]
     Uri(#[from] http::Error),
+    // #[error("query should not exist")]
+    // QueryFound,
 
-    #[error("query should not exist")]
-    QueryFound,
-
-    #[error("fragment (hash) should not exist")]
-    FragmentFound,
+    // #[error("fragment (hash) should not exist")]
+    // FragmentFound,
 }
 
 #[derive(Clone)]
@@ -449,7 +445,7 @@ impl Mapping {
                 .generate_url(proto, Some(external_port), "");
             info!("base_url = {:?}", base_url);
 
-            let mut target = m
+            let target = m
                 .resolve_target(
                     &ProxyMatchedTo::new(
                         self.account.clone(),
