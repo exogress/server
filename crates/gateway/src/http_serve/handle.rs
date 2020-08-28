@@ -13,7 +13,6 @@ use http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, HOS
 use http::status::StatusCode;
 use http::{Response, Uri};
 use memmap::Mmap;
-use percent_encoding::percent_decode_str;
 use reqwest::header::Entry;
 use stop_handle::stop_handle;
 use tokio_tungstenite::tungstenite;
@@ -321,31 +320,29 @@ pub async fn server(
             filters::query::raw()
                 .or_else(|_| futures::future::ready(Ok::<(String,), Rejection>(("".into(),)))),
         )
-        .and_then({
-            move |path: warp::filters::path::FullPath, query: String| async move {
-                info!("check injections in path {:?}", path.as_str());
-                let decoded_path = percent_decode_str(path.as_str()).decode_utf8_lossy();
-                let decoded_query = percent_decode_str(query.as_str()).decode_utf8_lossy();
+        .map(move |path: warp::filters::path::FullPath, query: String| {
+            // info!("check injections in path {:?}", path.as_str());
+            // let decoded_path = percent_decode_str(path.as_str()).decode_utf8_lossy();
+            // let decoded_query = percent_decode_str(query.as_str()).decode_utf8_lossy();
+            //
+            // if let Some(true) = libinjection::xss(decoded_path.as_ref()) {
+            //     warn!("found XSS in path");
+            //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
+            // }
+            // if let Some((true, fingerprint)) = libinjection::sqli(decoded_path.as_ref()) {
+            //     warn!("found SQL injection in path: {}", fingerprint);
+            //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
+            // }
+            // if let Some(true) = libinjection::xss(decoded_query.as_ref()) {
+            //     warn!("found XSS in query params");
+            //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
+            // }
+            // if let Some((true, fingerprint)) = libinjection::sqli(decoded_query.as_ref()) {
+            //     warn!("found SQL injection in query params: {}", fingerprint);
+            //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
+            // }
 
-                if let Some(true) = libinjection::xss(decoded_path.as_ref()) {
-                    warn!("found XSS in path");
-                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                }
-                if let Some((true, fingerprint)) = libinjection::sqli(decoded_path.as_ref()) {
-                    warn!("found SQL injection in path: {}", fingerprint);
-                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                }
-                if let Some(true) = libinjection::xss(decoded_query.as_ref()) {
-                    warn!("found XSS in query params");
-                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                }
-                if let Some((true, fingerprint)) = libinjection::sqli(decoded_query.as_ref()) {
-                    warn!("found SQL injection in query params: {}", fingerprint);
-                    return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-                }
-
-                Ok((path, query))
-            }
+            (path, query)
         })
         .and(warp::ws().or(filters::body::stream()))
         .and(filters::header::headers_cloned())

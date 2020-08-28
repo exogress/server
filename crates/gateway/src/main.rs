@@ -454,7 +454,7 @@ fn main() {
             Some(db_path)
         } else {
             matches
-                .value_of("dbip-path")
+                .value_of("dbip_path")
                 .map(|path| PathBuf::from(path.to_string()))
         };
 
