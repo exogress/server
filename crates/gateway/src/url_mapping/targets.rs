@@ -71,8 +71,9 @@ impl TargetsProcessor {
 #[cfg(test)]
 mod test {
     use super::*;
-    use exogress_config_core::Config;
+    use exogress_config_core::{Config, Proxy, StaticDir};
     use exogress_entities::MountPointName;
+    use std::str::FromStr;
 
     #[test]
     pub fn test_targets() {

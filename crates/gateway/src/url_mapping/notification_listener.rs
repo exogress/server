@@ -139,8 +139,6 @@ impl Consumer {
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
-
     use super::*;
 
     #[test]
