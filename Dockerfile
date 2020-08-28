@@ -30,6 +30,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-signaler"]
 
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
+COPY --from=r.lancastr.net/dbip:latest /dbip.mmdb /
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
