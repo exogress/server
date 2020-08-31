@@ -30,8 +30,11 @@ use crate::clients::{ClientTunnels, ConnectedTunnel};
 use crate::dbip::LocationAndIsp;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::rate_limiter::{RateLimiterResponse, RateLimiters};
 use crate::url_mapping::targets::TargetsProcessor;
 use crate::webapp::Client;
+use chrono::{DateTime, Utc};
+use exogress_entities::RateLimiterName;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::io;
@@ -387,9 +390,13 @@ pub async fn server(
                         .await;
 
                     match handle_result {
-                        Ok(Some((mapping_action,))) => {
-                            Ok((ws_or_body, headers, path, mapping_action))
-                        }
+                        Ok(Some((mapping_action, maybe_rate_limiter))) => Ok((
+                            ws_or_body,
+                            headers,
+                            path,
+                            maybe_rate_limiter,
+                            mapping_action,
+                        )),
                         Ok(None) => Err(warp::reject::not_found()),
                         Err(e) => {
                             error!("Error resolving URL: {:?}", e);
@@ -400,34 +407,40 @@ pub async fn server(
             }
         })
         // check rate limits
-        // .and_then({
-        //     move |(ws_or_body, headers, path, action): (
-        //         _,
-        //         http::HeaderMap,
-        //         warp::filters::path::FullPath,
-        //         // Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
-        //         MappingAction,
-        //     )| {
-        //         async move {
-        //             // if let Some(rate_limiter) = maybe_rate_limiter {
-        //             //     let locked = &*rate_limiter.lock();
-        //             //
-        //             //     match locked.check() {
-        //             //         Ok(_) => Ok((ws_or_body, headers, path, action)),
-        //             //         Err(limited) => {
-        //             //             let wait_time =
-        //             //                 limited.wait_time_from(MonotonicClock::default().now());
-        //             //
-        //             //             info!("rate limited! {:?}", wait_time);
-        //             //             Err::<_, _>(warp::reject::custom(RateLimited { wait_time }))
-        //             //         }
-        //             //     }
-        //             // } else {
-        //             //     Ok::<_, warp::reject::Rejection>((ws_or_body, headers, path, action))
-        //             // }
-        //         }
-        //     }
-        // })
+        .and_then({
+            move |(ws_or_body, headers, path, rate_limiters, action): (
+                _,
+                http::HeaderMap,
+                warp::filters::path::FullPath,
+                RateLimiters,
+                MappingAction,
+            )| {
+                async move {
+                    let delayed_for = match rate_limiters.process().await {
+                        RateLimiterResponse::DelayedBy(limiters) => {
+                            info!("Request delayed: {:?}", limiters);
+                            Some(limiters.iter().map(|(_, delay)| delay).sum::<Duration>())
+                        }
+                        RateLimiterResponse::LimitedError {
+                            rate_limiter_name,
+                            not_until,
+                        } => {
+                            info!(
+                                "rate limited by {} at least upto {:?}",
+                                rate_limiter_name, not_until
+                            );
+                            return Err::<_, _>(warp::reject::custom(RateLimited {
+                                not_until,
+                                rate_limiter_name,
+                            }));
+                        }
+                        RateLimiterResponse::Passthrough => None,
+                    };
+
+                    Ok((ws_or_body, headers, delayed_for, path, action))
+                }
+            }
+        })
         .and(filters::query::query::<HashMap<String, String>>())
         // ...
         // validate JWT token from cookies
@@ -529,7 +542,13 @@ pub async fn server(
             shadow_clone!(individual_hostname);
             shadow_clone!(tunnels);
 
-            move |(ws_or_body, headers, _path, mapping_action): (_, _, _, MappingAction),
+            move |(ws_or_body, headers, delayed_for, _path, mapping_action): (
+                _,
+                _,
+                Option<Duration>,
+                _,
+                MappingAction,
+            ),
                   _params,
                   method,
                   remote_addr: Option<SocketAddr>,
@@ -599,12 +618,21 @@ pub async fn server(
                                 .await;
 
                                 match res {
-                                    Ok(r) => {
+                                    Ok(mut r) => {
+                                        if let Some(delay) = delayed_for {
+                                            r.headers_mut().insert(
+                                                "x-exg-delayed-for-ms",
+                                                delay.as_millis().to_string().try_into().unwrap(),
+                                            );
+                                        }
+
                                         return Ok(r);
                                     }
                                     Err(e) => {
                                         error!("Give Up retrying WS. Error: {:?}", e); //FIXME
-                                        return Err::<_, _>(warp::reject::custom(BadGateway {}));
+                                        return Err::<_, _>(warp::reject::custom(BadGateway {
+                                            delayed_for,
+                                        }));
                                     }
                                 }
                             }
@@ -622,19 +650,27 @@ pub async fn server(
                                 .await;
 
                                 match res {
-                                    Ok(r) => {
+                                    Ok(mut r) => {
+                                        if let Some(delay) = delayed_for {
+                                            r.headers_mut().insert(
+                                                "x-exg-delayed-for-ms",
+                                                delay.as_millis().to_string().try_into().unwrap(),
+                                            );
+                                        }
                                         return Ok(r);
                                     }
                                     Err(e) => {
                                         error!("Give Up retrying HTTP. error: {:?}", e); //FIXME
-                                        return Err::<_, _>(warp::reject::custom(BadGateway {}));
+                                        return Err::<_, _>(warp::reject::custom(BadGateway {
+                                            delayed_for,
+                                        }));
                                     }
                                 }
                             }
                         };
                     }
 
-                    return Err::<_, _>(warp::reject::custom(BadGateway {}));
+                    return Err::<_, _>(warp::reject::custom(BadGateway { delayed_for }));
                 }
             }
         })
@@ -686,14 +722,18 @@ pub async fn server(
                         shadow_clone!(webapp_client);
 
                         match webapp_client.get_certificate(hostname.clone()).await {
-                            Ok(certs) => {
+                            Ok(Some(certs)) => {
                                 builder = builder
                                     .cert(certs.certificate.as_bytes())
                                     .key(certs.private_key.as_bytes());
                             }
-                            Err(_) if cfg!(debug_assertions) => {
+                            Ok(None) if cfg!(debug_assertions) => {
                                 info!("fallback to default certificates on development");
                                 builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                            }
+                            Ok(None) => {
+                                info!("certificate not found");
+                                return None;
                             }
                             Err(e) => {
                                 warn!("error retrieving certificate for {}: {}", hostname, e);
@@ -743,19 +783,29 @@ async fn handle_rejection(
     if err.is_not_found() {
         *resp.status_mut() = StatusCode::NOT_FOUND;
         *resp.body_mut() = "404 Not Found";
-    } else if let Some(BadGateway {}) = err.find() {
+    } else if let Some(BadGateway { delayed_for }) = err.find() {
+        if let Some(delay) = delayed_for {
+            resp.headers_mut().insert(
+                "x-exg-delayed-for-ms",
+                delay.as_millis().to_string().try_into().unwrap(),
+            );
+        }
+
         *resp.status_mut() = StatusCode::BAD_GATEWAY;
         *resp.body_mut() = "Bad Gateway"
     } else if let Some(RateLimited {
-        wait_time: retry_at,
+        not_until,
+        rate_limiter_name,
     }) = err.find()
     {
-        let dur = chrono::Duration::from_std(*retry_at).unwrap();
-
         resp.headers_mut()
             .insert("x-exg-rate-limited", "1".try_into().unwrap());
+        resp.headers_mut().insert(
+            "x-exg-rate-limited-by",
+            rate_limiter_name.to_string().try_into().unwrap(),
+        );
         resp.headers_mut()
-            .insert("x-exg-retry-in-secs", dur.num_seconds().try_into().unwrap());
+            .insert("x-exg-retry-at", not_until.to_rfc3339().try_into().unwrap());
 
         *resp.status_mut() = StatusCode::TOO_MANY_REQUESTS;
         *resp.body_mut() = "Rate Limited"
@@ -1183,7 +1233,8 @@ impl Reject for AuthError {}
 
 #[derive(Debug)]
 struct RateLimited {
-    wait_time: Duration,
+    not_until: DateTime<Utc>,
+    rate_limiter_name: RateLimiterName,
 }
 
 impl Reject for RateLimited {}
@@ -1216,6 +1267,8 @@ struct InjectionFound {}
 impl Reject for InjectionFound {}
 
 #[derive(Debug)]
-struct BadGateway {}
+struct BadGateway {
+    delayed_for: Option<Duration>,
+}
 
 impl Reject for BadGateway {}

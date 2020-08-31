@@ -28,71 +28,77 @@ pub async fn server(
                             Ok(conn) => {
                                 let mut pubsub = conn.into_pubsub();
 
-                                if let Ok(_) = pubsub.subscribe("invalidations").await {
-                                    let mut messages = pubsub.into_on_message();
+                                match pubsub.subscribe("invalidations").await {
+                                    Ok(_) => {
+                                        info!("subscribed to invalidations");
+                                        let mut messages = pubsub.into_on_message();
 
-                                    let (mut to_ws_tx, mut to_ws_rx) = mpsc::channel(16);
+                                        let (mut to_ws_tx, mut to_ws_rx) = mpsc::channel(16);
 
-                                    let forward_channel_to_ws = async {
-                                        while let Some(msg) = to_ws_rx.next().await {
-                                            websocket.send(msg).await?;
-                                        }
+                                        let forward_channel_to_ws = async {
+                                            while let Some(msg) = to_ws_rx.next().await {
+                                                websocket.send(msg).await?;
+                                            }
 
-                                        Ok::<_, anyhow::Error>(())
-                                    };
+                                            Ok::<_, anyhow::Error>(())
+                                        };
 
-                                    let forward_from_redis = {
-                                        shadow_clone!(mut to_ws_tx);
+                                        let forward_from_redis = {
+                                            shadow_clone!(mut to_ws_tx);
 
-                                        async move {
-                                            while let Some(msg) = messages.next().await {
-                                                match msg.get_payload::<String>() {
-                                                    Ok(p) => {
-                                                        if let Err(e) = to_ws_tx
-                                                            .send(warp::filters::ws::Message::text(
-                                                                p,
-                                                            ))
-                                                            .await
-                                                        {
+                                            async move {
+                                                while let Some(msg) = messages.next().await {
+                                                    match msg.get_payload::<String>() {
+                                                        Ok(p) => {
+                                                            if let Err(e) = to_ws_tx
+                                                                .send(warp::filters::ws::Message::text(
+                                                                    p,
+                                                                ))
+                                                                .await
+                                                            {
+                                                                error!(
+                                                                    "error sending to websocket: {}",
+                                                                    e
+                                                                );
+                                                                return;
+                                                            }
+                                                        }
+                                                        Err(e) => {
                                                             error!(
-                                                                "error sending to websocket: {}",
+                                                                "error getting redis payload: {}",
                                                                 e
                                                             );
-                                                            return;
+                                                            break;
                                                         }
-                                                    }
-                                                    Err(e) => {
-                                                        error!(
-                                                            "error getting redis payload: {}",
-                                                            e
-                                                        );
-                                                        break;
                                                     }
                                                 }
                                             }
-                                        }
-                                    };
+                                        };
 
-                                    #[allow(unreachable_code)]
-                                    let periodically_send_ping = async move {
-                                        loop {
-                                            delay_for(Duration::from_secs(15)).await;
+                                        #[allow(unreachable_code)]
+                                            let periodically_send_ping = async move {
+                                            loop {
+                                                delay_for(Duration::from_secs(15)).await;
 
-                                            to_ws_tx
-                                                .send(warp::filters::ws::Message::ping(""))
-                                                .await?;
-                                        }
+                                                to_ws_tx
+                                                    .send(warp::filters::ws::Message::ping(""))
+                                                    .await?;
+                                            }
 
-                                        Ok::<_, anyhow::Error>(())
-                                    };
+                                            Ok::<_, anyhow::Error>(())
+                                        };
 
-                                    tokio::select! {
+                                        tokio::select! {
                                         _ = forward_channel_to_ws => {},
                                         _ = forward_from_redis => {},
                                         _ = periodically_send_ping => {},
                                     }
+                                    }
+                                    Err(e) => {
+                                        error!("couldn't subscribe to invalidations: {}", e)
+                                    }
                                 }
-                            }
+                                }
                             Err(e) => {
                                 error!("redis server connection  error: {}", e);
                             }

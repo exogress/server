@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::clients::ClientTunnels;
-use crate::url_mapping;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::rate_limiter::{RateLimiter, RateLimiterKind, RateLimiters};
 use crate::url_mapping::registry::Configs;
 use crate::url_mapping::targets::TargetsProcessor;
 use crate::url_mapping::url_prefix::UrlPrefix;
@@ -18,6 +18,7 @@ use itertools::Itertools;
 use lru_time_cache::LruCache;
 use percent_encoding::NON_ALPHANUMERIC;
 use smallvec::SmallVec;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use url::Url;
 
@@ -25,7 +26,7 @@ use url::Url;
 pub struct Client {
     reqwest: reqwest::Client,
     retrieve_configs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
-    certificates: Arc<parking_lot::Mutex<LruCache<String, CertificateResponse>>>,
+    certificates: Arc<parking_lot::Mutex<LruCache<String, Option<CertificateResponse>>>>,
     configs: Configs,
     base_url: Url,
 }
@@ -122,102 +123,6 @@ pub struct ConfigsResponse {
     configs: SmallVec<[ConfigData; 8]>,
 }
 
-impl url_mapping::mapping::Mapping {
-    // pub fn try_from_message(mapping_schema: SchemaMapping) -> Result<Self, MappingConversionError> {
-    //     let jwt_secret_message = mapping_schema
-    //         .jwt_secret
-    //         .ok_or(MappingConversionError::NoJwtSecret)?;
-    //
-    //     let rate_limiter = if let Some(rate_limiter) = mapping_schema.rate_limiter {
-    //         let replenish_one_per = rate_limiter
-    //             .replenish_one_per
-    //             .ok_or(MappingConversionError::RateLimiterReplenishIntervalEmpty)?;
-    //
-    //         let mut quota = Quota::with_period(replenish_one_per.try_into().map_err(|_| {
-    //             MappingConversionError::RateLimiterReplenishIntervalConversionError
-    //         })?)
-    //         .unwrap();
-    //
-    //         if rate_limiter.allow_max_burst > 0 {
-    //             quota = quota.allow_burst(NonZeroU32::new(rate_limiter.allow_max_burst).unwrap());
-    //         }
-    //
-    //         Some(Arc::new(Mutex::new(RateLimiter::direct_with_clock(
-    //             quota,
-    //             &MonotonicClock::default(),
-    //         ))))
-    //     } else {
-    //         None
-    //     };
-    //
-    //     match jwt_secret::Digest::from_i32(jwt_secret_message.kind) {
-    //         Some(jwt_secret::Digest::Sha256) => {}
-    //         _ => {
-    //             return Err(MappingConversionError::UnsupportedJwtKind(
-    //                 jwt_secret_message.kind,
-    //             ));
-    //         }
-    //     }
-    //
-    //     let generated_at: DateTime<Utc> = SystemTime::try_from(
-    //         mapping_schema
-    //             .generated_at
-    //             .ok_or(MappingConversionError::GeneratedAtNotProvided)?,
-    //     )
-    //     .map_err(|_| MappingConversionError::TimestampError)?
-    //     .into();
-    //
-    //     let from_url_prefix: MatchPattern = mapping_schema.from_url_prefix.parse()?;
-    //
-    //     let auth_providers: Vec<_> = mapping_schema
-    //         .auth_providers
-    //         .into_iter()
-    //         .map(|auth_provider| match auth_provider.config {
-    //             Some(auth_provider_config::Config::Oauth2(auth_provider_config::Oauth2Sso {
-    //                 provider,
-    //             })) => match auth_provider_config::Oauth2Provider::from_i32(provider) {
-    //                 Some(auth_provider_config::Oauth2Provider::Google) => {
-    //                     Ok(AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //                         provider: Oauth2Provider::Google,
-    //                     }))
-    //                 }
-    //                 Some(auth_provider_config::Oauth2Provider::Github) => {
-    //                     Ok(AuthProviderConfig::Oauth2(Oauth2SsoClient {
-    //                         provider: Oauth2Provider::Github,
-    //                     }))
-    //                 }
-    //                 _ => Err(MappingConversionError::UnknownOauth2Provider(provider)),
-    //             },
-    //             _ => Err(MappingConversionError::BadAuthConfig),
-    //         })
-    //         .collect::<Result<Vec<_>, _>>()?;
-    //
-    //     if auth_providers.len() != 1 {
-    //         return Err(MappingConversionError::BadProvidersCount(
-    //             auth_providers.len(),
-    //         ));
-    //     }
-    //
-    //     let auth_provider = auth_providers.into_iter().next();
-    //
-    //     Ok(url_mapping::mapping::Mapping {
-    //         match_pattern: from_url_prefix,
-    //         // proxy_matched_to: ProxyMatchedTo::new_exteral(
-    //         //     &mapping_schema.to_url_prefix,
-    //         //     mapping_schema.target_is_tls,
-    //         // )?,
-    //         proxy_matched_to: ProxyMatchedTo::new(
-    //             &mapping_schema.to_url_prefix,
-    //             ConfigName::zero(),
-    //         )?,
-    //         generated_at,
-    //         jwt_secret: jwt_secret_message.secret_key,
-    //         auth_type: auth_provider.unwrap(),
-    //         rate_limiter,
-    //     })
-    // }
-}
-
 impl Client {
     pub fn new(ttl: Duration, base_url: Url) -> Self {
         Client {
@@ -279,22 +184,16 @@ impl Client {
         external_port: u16,
         proto: Protocol,
         tunnels: ClientTunnels,
-    ) -> Result<
-        Option<(
-            MappingAction,
-            // Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
-        )>,
-        Error,
-    > {
+    ) -> Result<Option<(MappingAction, RateLimiters)>, Error> {
         // Try to read from cache
         if let Some((cached, matched_prefix)) =
             self.configs
                 .resolve(url_prefix.clone(), tunnels.clone(), external_port, proto)
         {
             match cached {
-                Some(data) => {
+                Some((data, rate_limiters)) => {
                     // mapping exist
-                    return Ok(Some(data));
+                    return Ok(Some((data, rate_limiters)));
                 }
                 None if matched_prefix == url_prefix.to_string() => {
                     return Ok(None);
@@ -407,6 +306,19 @@ impl Client {
                                                         account: config_response.account,
                                                         project: config_response.project,
                                                         config_name: config_data.config.name,
+                                                        rate_limiters: RateLimiters::new(vec![
+                                                            RateLimiter::new(
+                                                                "free_plan".parse().unwrap(),
+                                                                RateLimiterKind::Wait,
+                                                                governor::Quota::with_period(
+                                                                    Duration::from_millis(700),
+                                                                )
+                                                                .unwrap()
+                                                                .allow_burst(
+                                                                    NonZeroU32::new(25).unwrap(),
+                                                                ),
+                                                            ),
+                                                        ]),
                                                     }),
                                                 );
                                             }
@@ -467,7 +379,10 @@ impl Client {
         self.certificates.lock().remove(&domain);
     }
 
-    pub async fn get_certificate(&self, domain: String) -> Result<CertificateResponse, Error> {
+    pub async fn get_certificate(
+        &self,
+        domain: String,
+    ) -> Result<Option<CertificateResponse>, Error> {
         let cached_cert = self.certificates.lock().get(&domain).cloned();
 
         if let Some(certs) = cached_cert {
@@ -476,12 +391,13 @@ impl Client {
         } else {
             match self.retrieve_certificate(&domain).await {
                 Ok(certs) => {
-                    self.certificates.lock().insert(domain, certs.clone());
-                    Ok(certs)
+                    self.certificates.lock().insert(domain, Some(certs.clone()));
+                    Ok(Some(certs))
                 }
                 Err(e) => {
                     warn!("error retrieving certificate for {}: {}", domain, e);
-                    Err(e)
+                    self.certificates.lock().insert(domain, None);
+                    Ok(None)
                 }
             }
         }

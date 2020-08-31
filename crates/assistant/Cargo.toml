@@ -25,6 +25,8 @@ shadow-clone = "1.2.1"
 tracing = "0.1"
 tracing-subscriber = "0.2"
 tracing-futures = "0.2.4"
+hashbrown = { version = "0.8", features = ["serde"] }
+chrono = { version = "0.4.11", features = ["serde"] }
 
 exogress-server-common = { path = "../common" }
 exogress-common-utils = { path = "../../deps/exogress/crates/common-utils" }

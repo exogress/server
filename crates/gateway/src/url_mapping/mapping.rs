@@ -13,6 +13,7 @@ use exogress_config_core::Config;
 use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 
 use crate::clients::ClientTunnels;
+use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::targets::TargetsProcessor;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -378,7 +379,7 @@ pub struct Mapping {
     pub config_name: ConfigName,
     // pub jwt_secret: Vec<u8>,
     // pub auth_type: AuthProviderConfig,
-    // pub rate_limiter: Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>
+    pub rate_limiters: RateLimiters,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -430,13 +431,7 @@ impl Mapping {
         _tunnels: ClientTunnels,
         external_port: u16,
         proto: Protocol,
-    ) -> Result<
-        (
-            MappingAction,
-            // Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
-        ),
-        UrlMappingError,
-    > {
+    ) -> Result<(MappingAction, RateLimiters), UrlMappingError> {
         if let Some(m) = url.clone().matches(self.match_pattern.clone()) {
             info!("matched = {:?}", m);
             info!("self = {:?}", self);
@@ -467,7 +462,7 @@ impl Mapping {
                     // jwt_secret: self.jwt_secret.clone(),
                     external_base_url: base_url,
                 },
-                // self.rate_limiter.clone(),
+                self.rate_limiters.clone(),
             ))
         } else {
             Err(UrlMappingError::DoesNotBelongToPrefix {

@@ -9,6 +9,7 @@ use smartstring::alias::*;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::rate_limiter::RateLimiters;
 
 struct Inner {
     // List of prefix with expiration according to policies
@@ -107,12 +108,12 @@ impl Configs {
         external_port: u16,
         proto: Protocol,
     ) -> Option<
-        //first option indicate, if the data exist in registrty
+        //first option indicate, if the data exist in registry
         (
             Option<(
                 //second option indicate if there is an actual mapping, or 404 should be returned
                 MappingAction,
-                // Option<Arc<Mutex<RateLimiter<NotKeyed, InMemoryState, MonotonicClock>>>>,
+                RateLimiters,
             )>,
             String,
         ),

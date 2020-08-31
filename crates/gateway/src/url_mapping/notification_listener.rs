@@ -80,7 +80,7 @@ impl Consumer {
     }
 
     pub async fn spawn(mut self) {
-        info!("spawning redis consumer...");
+        info!("spawning assistant client consumer...");
 
         let stop_handle = self.stop_handle.clone();
 

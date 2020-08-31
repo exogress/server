@@ -4,6 +4,8 @@
 extern crate shadow_clone;
 #[macro_use]
 extern crate tracing;
+#[macro_use]
+extern crate serde;
 
 use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
@@ -17,6 +19,7 @@ use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 
 mod http;
+pub mod reporting;
 mod termination;
 
 #[global_allocator]
@@ -37,7 +40,7 @@ fn main() {
             Arg::with_name("redis_addr")
                 .long("redis-addr")
                 .value_name("URL")
-                .default_value("redis://127.0.0.1")
+                .default_value("redis://127.0.0.1/12")
                 .required(true)
                 .help("Set redis addr")
                 .takes_value(true),
