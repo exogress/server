@@ -5,9 +5,9 @@ use futures::StreamExt;
 use crate::clients::ClientTunnels;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
+use crate::url_mapping::url_prefix::UrlPrefix;
 use crate::webapp;
 use exogress_common_utils::ws_client::{connect_ws, Error};
-use smartstring::alias::*;
 use tokio::net::TcpStream;
 use tokio_either::Either;
 use tokio_rustls::client::TlsStream;
@@ -21,7 +21,7 @@ use url::Url;
 #[serde(tag = "type")]
 pub enum Action {
     #[serde(rename = "invalidate_url_prefixes")]
-    InvalidateUrlPrefixes { url_prefixes: Vec<String> },
+    InvalidateUrlPrefixes { url_prefixes: Vec<UrlPrefix> },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -100,21 +100,16 @@ impl Consumer {
                             match notification.action {
                                 Action::InvalidateUrlPrefixes { url_prefixes } => {
                                     for url_prefix in url_prefixes.into_iter() {
+                                        let domain_only = url_prefix.domain_only();
                                         self.mappings.remove_by_notification_if_time_applicable(
-                                            url_prefix.clone(),
+                                            &domain_only,
                                             notification.generated_at,
                                         );
-                                        match Url::parse(format!("http://{}", url_prefix).as_str())
-                                        {
-                                            Ok(url) if url.host_str().is_some() => {
-                                                let host = url.host_str().unwrap().to_string();
-                                                info!("invalidate certificate for: {}", host);
-                                                self.webapp_client.forget_certificate(host)
-                                            }
-                                            r => {
-                                                warn!("could not invalidate certificate: {:?}", r);
-                                            }
-                                        };
+
+                                        let host = url_prefix.host().to_string();
+
+                                        info!("invalidate certificate for: {}", host);
+                                        self.webapp_client.forget_certificate(host);
 
                                         // FIXME: should rely on invalidation message
                                         self.client_tunnels.close_all();
@@ -140,6 +135,7 @@ impl Consumer {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_deserialize() {
@@ -160,7 +156,7 @@ mod test {
         assert!(matches!(
             n.action,
             Action::InvalidateUrlPrefixes { url_prefixes }
-                if url_prefixes.as_slice() == [String::from("test.exg.link/prefix")]
+                if url_prefixes.as_slice() == [UrlPrefix::from_str("test.exg.link/prefix").unwrap()]
         ));
     }
 }

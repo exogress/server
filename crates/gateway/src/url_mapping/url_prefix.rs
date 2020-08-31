@@ -45,6 +45,41 @@ pub enum UrlPrefixError {
     Malformed,
 }
 
+impl UrlPrefix {
+    pub fn domain_only(&self) -> UrlPrefix {
+        let url = Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME");
+        UrlPrefix::from_str(format!("{}/", url.host_str().expect("FIXME")).as_str()).expect("FIXME")
+    }
+
+    pub fn host(&self) -> String {
+        let url = Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME");
+        url.host_str().expect("FIXME").to_string().into()
+    }
+
+    pub fn is_subpath_of_or_equal(&self, other: &UrlPrefix) -> bool {
+        if self.inner.len() > other.inner.len() {
+            return false;
+        }
+        if !other.inner.starts_with(self.inner.as_str()) {
+            return false;
+        }
+
+        //last symbol
+        if other.inner.len() == self.inner.len() {
+            return true;
+        }
+
+        let cur_char = other.inner.chars().nth(self.inner.len() - 1).unwrap();
+        if self.inner.ends_with('/') && cur_char == '/' {
+            return true;
+        }
+
+        //is next symbol == '\'
+        let next_char = other.inner.chars().nth(self.inner.len()).unwrap();
+        next_char == '/'
+    }
+}
+
 impl FromStr for UrlPrefix {
     type Err = UrlPrefixError;
 
@@ -76,12 +111,19 @@ impl FromStr for UrlPrefix {
         }
 
         let restored = url.to_string()[7..].to_string();
-
         if restored != s {
             return Err(UrlPrefixError::Malformed);
         }
 
-        Ok(UrlPrefix { inner: s.into() })
+        let mut inner: String = restored.into();
+
+        if url.path().is_empty() {
+            inner.push('/');
+        } else if url.path() != "/" {
+            inner = inner.trim_end_matches('/').into();
+        }
+
+        Ok(UrlPrefix { inner })
     }
 }
 
@@ -139,5 +181,38 @@ mod test {
     fn test_deserialize() {
         serde_json::from_str::<UrlPrefix>("\"asd\"").err().unwrap();
         serde_json::from_str::<UrlPrefix>("\"link.com/\"").unwrap();
+    }
+
+    #[test]
+    fn test_subpath() {
+        assert!(UrlPrefix::from_str("host/")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/d").unwrap()));
+
+        assert!(!UrlPrefix::from_str("host/d")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/").unwrap()));
+
+        assert!(UrlPrefix::from_str("host/a/b")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b").unwrap()));
+
+        assert!(UrlPrefix::from_str("host/a/b/")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b").unwrap()));
+        assert!(UrlPrefix::from_str("host/a/b")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b/").unwrap()));
+        assert!(UrlPrefix::from_str("host/a/b")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b/c").unwrap()));
+
+        assert!(!UrlPrefix::from_str("host/a/b")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/bb/c").unwrap()));
+
+        assert!(!UrlPrefix::from_str("host/a/b")
+            .unwrap()
+            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a").unwrap()));
     }
 }

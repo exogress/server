@@ -10,6 +10,7 @@ use smartstring::alias::*;
 use crate::clients::ClientTunnels;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::rate_limiter::RateLimiters;
+use crate::url_mapping::url_prefix::UrlPrefix;
 
 struct Inner {
     // List of prefix with expiration according to policies
@@ -26,15 +27,21 @@ impl Inner {
         }
     }
 
-    fn upsert(&mut self, url: &UrlForRewriting, mapping: Option<Mapping>) {
-        let from_key = url.clone();
+    fn upsert(
+        &mut self,
+        url_prefix: &UrlPrefix,
+        mapping: Option<Mapping>,
+        generated_at: DateTime<Utc>,
+    ) {
+        //cleanup all Mappings overlapping with this one
+        self.remove_by_notification_if_time_applicable(url_prefix, generated_at);
+
+        let from_key: String = url_prefix.to_string().into();
 
         let for_lru = mapping.map(Arc::new);
         let for_trie = for_lru.as_ref().map(|arc| Arc::downgrade(arc));
 
-        let (_, evicted) = self
-            .lru_storage
-            .notify_insert(from_key.to_string().into(), for_lru);
+        let (_, evicted) = self.lru_storage.notify_insert(from_key.clone(), for_lru);
 
         self.process_evicted(evicted);
 
@@ -43,26 +50,49 @@ impl Inner {
 
     fn remove_by_notification_if_time_applicable(
         &mut self,
-        from_host_and_path: String,
+        url_prefix: &UrlPrefix,
         generated_at: DateTime<Utc>,
     ) {
-        let (maybe_mapping, evicted) = self.lru_storage.notify_get(&from_host_and_path);
+        let s: String = url_prefix.to_string().into();
 
-        if let Some(Some(mapping)) = maybe_mapping {
-            if generated_at <= mapping.generated_at {
-                // ignore if stale. process evicted before returning
-                self.process_evicted(evicted);
-                return;
+        info!("Cleanup all mappings with prefix: {}", s);
+
+        let items_for_invalidation = self
+            .from_prefix_lookup_tree
+            .iter_prefix(s.as_ref())
+            .map(|(k, _)| k)
+            .collect::<Vec<_>>();
+        for k in items_for_invalidation {
+            let found_url_prefix: UrlPrefix = std::str::from_utf8(k.as_ref())
+                .expect("corrupted data in patricia tree")
+                .parse()
+                .expect("Corrupted data in patricia tree");
+
+            if !url_prefix.is_subpath_of_or_equal(&found_url_prefix) {
+                info!("{} is not a subpath of {}", url_prefix, found_url_prefix);
+                continue;
             }
+
+            info!("Remove data with key {}", found_url_prefix);
+
+            let found_url_prefix_string: String = found_url_prefix.to_string().into();
+
+            let (maybe_mapping, evicted) = self.lru_storage.notify_get(&found_url_prefix_string);
+
+            if let Some(Some(mapping)) = maybe_mapping {
+                if generated_at <= mapping.generated_at {
+                    // ignore if stale. process evicted before returning
+                    self.process_evicted(evicted);
+                    continue;
+                }
+            }
+
+            self.process_evicted(evicted);
+
+            self.lru_storage.remove(&found_url_prefix_string);
+            self.from_prefix_lookup_tree
+                .remove(&found_url_prefix_string);
         }
-
-        self.process_evicted(evicted);
-
-        // remove notification comes when mapping invalidated. it may be update or delete.
-        // Delete the data completle, to trigger actual request and retrieve new data
-
-        self.lru_storage.remove(&from_host_and_path);
-        self.from_prefix_lookup_tree.remove(&from_host_and_path);
     }
 
     fn find_mapping(
@@ -139,7 +169,7 @@ impl Configs {
 
     pub fn remove_by_notification_if_time_applicable(
         &self,
-        url_prefix: String,
+        url_prefix: &UrlPrefix,
         generated_at: DateTime<Utc>,
     ) {
         self.inner
@@ -147,8 +177,13 @@ impl Configs {
             .remove_by_notification_if_time_applicable(url_prefix, generated_at)
     }
 
-    pub fn upsert(&self, url: &UrlForRewriting, mapping: Option<Mapping>) {
-        self.inner.lock().upsert(url, mapping)
+    pub fn upsert(
+        &self,
+        url_prefix: &UrlPrefix,
+        mapping: Option<Mapping>,
+        generated_at: DateTime<Utc>,
+    ) {
+        self.inner.lock().upsert(url_prefix, mapping, generated_at)
     }
 }
 

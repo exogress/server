@@ -15,6 +15,7 @@ use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 use crate::clients::ClientTunnels;
 use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::targets::TargetsProcessor;
+use crate::url_mapping::url_prefix::UrlPrefix;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TlsConfig {
@@ -48,6 +49,13 @@ pub struct UrlForRewriting {
     path: String,
     username: String,
     password: Option<String>,
+}
+
+impl UrlForRewriting {
+    pub fn to_url_prefix(&self) -> UrlPrefix {
+        let s = format!("{}{}", self.host, self.path);
+        UrlPrefix::from_str(s.as_ref()).expect("unexpected bad data in UrlForRewriting")
+    }
 }
 
 impl fmt::Display for UrlForRewriting {

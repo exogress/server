@@ -180,38 +180,33 @@ impl Client {
 
     pub async fn resolve_url(
         &self,
-        url_prefix: UrlForRewriting,
+        url_for_rewriting: UrlForRewriting,
         external_port: u16,
         proto: Protocol,
         tunnels: ClientTunnels,
     ) -> Result<Option<(MappingAction, RateLimiters)>, Error> {
         // Try to read from cache
-        if let Some((cached, matched_prefix)) =
-            self.configs
-                .resolve(url_prefix.clone(), tunnels.clone(), external_port, proto)
-        {
+        if let Some((cached, _matched_prefix)) = self.configs.resolve(
+            url_for_rewriting.clone(),
+            tunnels.clone(),
+            external_port,
+            proto,
+        ) {
             match cached {
                 Some((data, rate_limiters)) => {
                     // mapping exist
                     return Ok(Some((data, rate_limiters)));
                 }
-                None if matched_prefix == url_prefix.to_string() => {
-                    return Ok(None);
-                }
                 None => {
-                    info!(
-                        "Found in cache, but for higher-level prefix: {}. Query was: {}",
-                        matched_prefix, url_prefix
-                    );
-                    // go ahead, and ask again on subpath, since it may be another oath
+                    return Ok(None);
                 }
             }
         }
 
         // no info in cache
-        info!("No data in cache for {}", url_prefix);
+        info!("No data in cache for {}", url_for_rewriting);
 
-        let host = url_prefix.host();
+        let host = url_for_rewriting.host();
 
         // take lock and deal with in_flight queries
         let in_flight_request = self
@@ -219,7 +214,7 @@ impl Client {
             .lock()
             .entry(host.clone().into())
             .or_insert_with({
-                shadow_clone!(url_prefix);
+                shadow_clone!(url_for_rewriting);
                 shadow_clone!(tunnels);
 
                 let base_url = self.base_url.clone();
@@ -239,7 +234,7 @@ impl Client {
                         async move {
                             info!(
                                 "Initiating new request to retrieve mapping for {}",
-                                url_prefix
+                                url_for_rewriting
                             );
 
                             let mut url = base_url.clone();
@@ -254,7 +249,7 @@ impl Client {
                                 format!(
                                     "url={}",
                                     percent_encoding::utf8_percent_encode(
-                                        format!("{}", url_prefix).as_str(),
+                                        format!("{}", url_for_rewriting).as_str(),
                                         NON_ALPHANUMERIC,
                                     )
                                 )
@@ -293,7 +288,7 @@ impl Client {
                                                 );
 
                                                 configs.upsert(
-                                                    &url_prefix,
+                                                    &config_response.url_prefix,
                                                     Some(Mapping {
                                                         match_pattern: config_response
                                                             .url_prefix
@@ -320,6 +315,7 @@ impl Client {
                                                             ),
                                                         ]),
                                                     }),
+                                                    config_response.generated_at,
                                                 );
                                             }
                                             Err(e) => {
@@ -330,7 +326,11 @@ impl Client {
                                             }
                                         }
                                     } else if res.status() == StatusCode::NOT_FOUND {
-                                        configs.upsert(&url_prefix, None);
+                                        configs.upsert(
+                                            &url_for_rewriting.to_url_prefix(),
+                                            None,
+                                            Utc::now(), //FIXME: return generated_at in 404 resp
+                                        );
                                     } else {
                                         error!(
                                             "Bad status on configs retrieving: {}",
@@ -364,9 +364,9 @@ impl Client {
             }
         }
 
-        if let Some((cached, _)) = self
-            .configs
-            .resolve(url_prefix, tunnels, external_port, proto)
+        if let Some((cached, _)) =
+            self.configs
+                .resolve(url_for_rewriting, tunnels, external_port, proto)
         {
             Ok(cached)
         } else {
