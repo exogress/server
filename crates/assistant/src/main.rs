@@ -19,7 +19,7 @@ use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 
 mod http;
-pub mod reporting;
+// pub mod reporting;
 mod termination;
 
 #[global_allocator]
