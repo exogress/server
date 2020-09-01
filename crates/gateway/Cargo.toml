@@ -23,7 +23,7 @@ reqwest = { version = "0.10.6", features = ["gzip", "brotli", "trust-dns", "nati
 bytes = "0.5"
 warp = { version = "=0.2.4", features = ["websocket", "tls", "compression"] }
 url = "2.1.1"
-lru_time_cache = "0.10.0"
+lru_time_cache = "0.11.0"
 parking_lot = "0.10.2"
 nonzero_ext = "0.2.0"
 rand = { version = "0.7", features = ["small_rng"] }
@@ -48,7 +48,6 @@ tokio-rustls = "0.14.0"
 serde_qs = "0.5.2"
 serde_with = "1.4.0"
 tower = "0.3.1"
-mimalloc = "0.1.19"
 byteorder = "1.3.4"
 smartstring = "0.2.3"
 smallvec = { version = "1.4.1", features = ["serde"] }

@@ -22,7 +22,6 @@ use clap::{crate_version, App, Arg};
 use futures::io::BufWriter;
 use futures_util::io::AsyncWriteExt;
 
-// use mimalloc::MiMalloc;
 use progress_bar::progress_bar::ProgressBar;
 use reqwest::header;
 use stop_handle::stop_handle;
@@ -39,9 +38,6 @@ use exogress_common_utils::termination::stop_signal_listener;
 use tokio::runtime::{Builder, Handle};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
-
-// #[global_allocator]
-// static GLOBAL: MiMalloc = MiMalloc;
 
 mod clients;
 mod dbip;

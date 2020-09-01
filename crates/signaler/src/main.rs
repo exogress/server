@@ -13,7 +13,6 @@ use std::panic;
 use clap::{crate_version, App, Arg};
 use futures::FutureExt;
 use lazy_static::lazy_static;
-// use mimalloc::MiMalloc;
 use redis::Client;
 use smartstring::alias::String;
 use stop_handle::stop_handle;
@@ -28,9 +27,6 @@ use tokio::runtime::Builder;
 mod http;
 mod presence;
 mod termination;
-
-// #[global_allocator]
-// static GLOBAL: MiMalloc = MiMalloc;
 
 lazy_static! {
     static ref DEFAULT_HOSTNAME: std::string::String = hostname::get()
