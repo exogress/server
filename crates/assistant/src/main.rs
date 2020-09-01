@@ -9,7 +9,7 @@ use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
 use exogress_common_utils::termination::stop_signal_listener;
 use futures::FutureExt;
-use mimalloc::MiMalloc;
+// use mimalloc::MiMalloc;
 use redis::Client;
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
@@ -20,8 +20,8 @@ mod http;
 // pub mod reporting;
 mod termination;
 
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+// #[global_allocator]
+// static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
     let spawn_args = App::new("spawn")
