@@ -4,8 +4,6 @@
 extern crate shadow_clone;
 #[macro_use]
 extern crate tracing;
-#[macro_use]
-extern crate serde;
 
 use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
