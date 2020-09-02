@@ -306,11 +306,11 @@ impl Client {
                                                                 "free_plan".parse().unwrap(),
                                                                 RateLimiterKind::Wait,
                                                                 governor::Quota::with_period(
-                                                                    Duration::from_millis(700),
+                                                                    Duration::from_millis(1),
                                                                 )
                                                                 .unwrap()
                                                                 .allow_burst(
-                                                                    NonZeroU32::new(25).unwrap(),
+                                                                    NonZeroU32::new(2500).unwrap(),
                                                                 ),
                                                             ),
                                                         ]),
