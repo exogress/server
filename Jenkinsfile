@@ -69,22 +69,22 @@ node("linux-docker") {
             }
 
             stage('build_base') {
-                sh "docker build --target=builder -t ${IMAGE}:${TAG} ."
+                sh "docker build --no-cache --target=builder -t ${IMAGE}:${TAG} ."
                 sh "docker tag ${IMAGE}:${TAG} ${IMAGE}:latest"
             }
 
             stage('build_signaler') {
-                sh "docker build --target=signaler -t ${IMAGE_SIGNALER}:${TAG} ."
+                sh "docker build --no-cache --target=signaler -t ${IMAGE_SIGNALER}:${TAG} ."
                 sh "docker tag ${IMAGE_SIGNALER}:${TAG} ${IMAGE_SIGNALER}:latest"
             }
 
             stage('build_gateway') {
-                sh "docker build --target=gateway -t ${IMAGE_GATEWAY}:${TAG} ."
+                sh "docker build --no-cache --target=gateway -t ${IMAGE_GATEWAY}:${TAG} ."
                 sh "docker tag ${IMAGE_GATEWAY}:${TAG} ${IMAGE_GATEWAY}:latest"
             }
 
             stage('build_assistant') {
-                sh "docker build --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} ."
+                sh "docker build --no-cache --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} ."
                 sh "docker tag ${IMAGE_ASSISTANT}:${TAG} ${IMAGE_ASSISTANT}:latest"
             }
 
