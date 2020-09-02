@@ -304,7 +304,7 @@ impl Client {
                                                         rate_limiters: RateLimiters::new(vec![
                                                             RateLimiter::new(
                                                                 "free_plan".parse().unwrap(),
-                                                                RateLimiterKind::Wait,
+                                                                RateLimiterKind::FailResponse,
                                                                 governor::Quota::with_period(
                                                                     Duration::from_millis(1),
                                                                 )
