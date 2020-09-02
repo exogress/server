@@ -18,6 +18,7 @@ use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
 use futures::channel::oneshot;
+use generational_arena::Arena;
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))
@@ -114,6 +115,8 @@ pub async fn spawn(
                         let instance_id = tunnel_hello.instance_id;
                         let config_name = tunnel_hello.config_name;
 
+                        let arena_index;
+
                         info!("new instance connected");
 
                         {
@@ -127,27 +130,38 @@ pub async fn spawn(
 
                             let locked = &mut *tunnels.inner.lock();
 
-                            match locked.entry(config_name.clone()) {
+                            match locked.0.entry(config_name.clone()) {
                                 Entry::Occupied(mut rec) => {
                                     match rec.get_mut() {
                                         TunnelConnectionState::Requested(reset_event) => {
                                             let mut c = HashMap::new();
-                                            c.insert(instance_id, new_connected_tunnel);
+                                            let mut arena = Arena::new();
+                                            arena_index = arena.insert(new_connected_tunnel);
+                                            c.insert(instance_id, arena);
                                             reset_event.set();
                                             rec.insert(TunnelConnectionState::Connected(c));
                                         }
                                         TunnelConnectionState::Connected(c) => {
-                                            if c.contains_key(&instance_id) {
-                                                // TODO: allow multiple connections
-                                            } else {
-                                                c.insert(instance_id, new_connected_tunnel);
-                                            };
+                                            match c.entry(instance_id) {
+                                                Entry::Occupied(mut e) => {
+                                                    arena_index =
+                                                        e.get_mut().insert(new_connected_tunnel);
+                                                }
+                                                Entry::Vacant(e) => {
+                                                    let mut arena = Arena::new();
+                                                    arena_index =
+                                                        arena.insert(new_connected_tunnel);
+                                                    e.insert(arena);
+                                                }
+                                            }
                                         }
                                     };
                                 }
                                 Entry::Vacant(rec) => {
                                     let mut c = HashMap::new();
-                                    c.insert(instance_id, new_connected_tunnel);
+                                    let mut arena = Arena::new();
+                                    arena_index = arena.insert(new_connected_tunnel);
+                                    c.insert(instance_id, arena);
                                     rec.insert(TunnelConnectionState::Connected(c));
                                 }
                             }
@@ -173,11 +187,22 @@ pub async fn spawn(
 
                         crate::statistics::TUNNELS_GAUGE.dec();
 
-                        if let Entry::Occupied(mut client) = tunnels.inner.lock().entry(config_name)
+                        if let Entry::Occupied(mut client) =
+                            tunnels.inner.lock().0.entry(config_name)
                         {
                             let should_delete_client = match client.get_mut() {
                                 TunnelConnectionState::Connected(conns) => {
-                                    conns.remove(&instance_id);
+                                    if let Entry::Occupied(mut arena_entry) =
+                                        conns.entry(instance_id)
+                                    {
+                                        arena_entry.get_mut().remove(arena_index);
+                                        if arena_entry.get().is_empty() {
+                                            arena_entry.remove_entry();
+                                        }
+                                    } else {
+                                        unreachable!("should never happen")
+                                    };
+
                                     conns.is_empty()
                                 }
                                 _ => false,
@@ -186,10 +211,12 @@ pub async fn spawn(
                             if should_delete_client {
                                 client.remove_entry();
                             }
+                        } else {
+                            error!("should never happen. could not find client config")
                         }
                     }
                     Err(e) => {
-                        warn!("could not accept tunnel connnection: {}", e);
+                        warn!("could not accept tunnel connection: {}", e);
                     }
                 }
             }

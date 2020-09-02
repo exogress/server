@@ -31,7 +31,10 @@ pub async fn request_connection(
         .build()
         .expect("could not create reqwest client");
 
-    let msg = TunnelRequest { hostname };
+    let msg = TunnelRequest {
+        hostname,
+        max_tunnels_count: 32,
+    };
 
     info!("requesting connection for config_name {}", config_name);
 

@@ -558,7 +558,7 @@ pub async fn server(
                 shadow_clone!(dbip);
                 shadow_clone!(tunnels);
                 shadow_clone!(individual_hostname);
-                shadow_clone!(tunnels);
+                shadow_clone!(mut tunnels);
 
                 let remote_addr = remote_addr.unwrap().ip();
                 let local_addr = local_addr.unwrap().ip();

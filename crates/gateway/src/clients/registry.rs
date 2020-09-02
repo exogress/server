@@ -12,6 +12,8 @@ use exogress_tunnel::Connector;
 use crate::clients::signaling::request_connection;
 use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 use futures::channel::oneshot;
+use generational_arena::Arena;
+use rand::prelude::*;
 use url::Url;
 
 #[derive(Clone, Debug)]
@@ -26,13 +28,13 @@ pub struct ConnectedTunnel {
 #[derive(Debug)]
 pub enum TunnelConnectionState {
     Requested(Arc<ManualResetEvent>),
-    Connected(HashMap<InstanceId, ConnectedTunnel>),
+    Connected(HashMap<InstanceId, Arena<ConnectedTunnel>>),
     // Blocked,
 }
 
 #[derive(Clone)]
 pub struct ClientTunnels {
-    pub inner: Arc<Mutex<HashMap<ConfigName, TunnelConnectionState>>>,
+    pub inner: Arc<Mutex<(HashMap<ConfigName, TunnelConnectionState>, SmallRng)>>,
     pub int_base_url: Url,
 }
 
@@ -41,20 +43,20 @@ const WAIT_TIME: Duration = Duration::from_secs(10);
 impl ClientTunnels {
     pub fn new(int_base_url: Url) -> Self {
         ClientTunnels {
-            inner: Arc::new(Mutex::new(Default::default())),
+            inner: Arc::new(Mutex::new((Default::default(), SmallRng::from_entropy()))),
             int_base_url,
         }
     }
 
     pub fn close_all(&self) {
-        self.inner.lock().clear();
+        self.inner.lock().0.clear();
     }
 
     /// Return active client tunnel if exists.
     /// Otherwise, request new tunnel through signalling channel and
     /// wait for the actual connection
     pub async fn retrieve_client_tunnel(
-        &self,
+        &mut self,
         account_name: AccountName,
         project_name: ProjectName,
         config_name: ConfigName,
@@ -66,7 +68,7 @@ impl ClientTunnels {
         // 2. figure out how to request all connections
 
         let (maybe_reset_event, should_request) = {
-            let locked = &mut *self.inner.lock();
+            let (locked, _) = &mut *self.inner.lock();
             let maybe_clients = locked.get(&config_name);
 
             match maybe_clients {
@@ -101,7 +103,7 @@ impl ClientTunnels {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error requesting connection: {}", e);
-                    self.inner.lock().remove(&config_name);
+                    self.inner.lock().0.remove(&config_name);
                     return None;
                 }
             }
@@ -110,18 +112,25 @@ impl ClientTunnels {
         if let Some(reset_event) = maybe_reset_event {
             if let Err(_e) = timeout(WAIT_TIME, reset_event.wait()).await {
                 error!("Timeout waiting for tunnel");
-                self.inner.lock().remove(&config_name);
+                self.inner.lock().0.remove(&config_name);
                 return None;
             }
         }
 
         // at this point we probably have connection accepted
         {
-            match self.inner.lock().get(&config_name) {
+            let (storage, rng) = &mut *self.inner.lock();
+
+            match storage.get(&config_name) {
                 None => {}
                 Some(state) => {
                     if let TunnelConnectionState::Connected(connections) = state {
-                        return connections.get(&instance_id).cloned();
+                        return connections.get(&instance_id).and_then(|arena| {
+                            arena
+                                .iter()
+                                .choose(rng)
+                                .map(|(_idx, tunnel)| tunnel.clone())
+                        });
                     }
                 }
             }
