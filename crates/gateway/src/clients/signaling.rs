@@ -1,3 +1,4 @@
+use crate::clients::tunnel::MAX_ALLOWED_TUNNELS;
 use exogress_entities::{AccountName, ConfigName, ProjectName};
 use exogress_signaling::TunnelRequest;
 use smartstring::alias::*;
@@ -33,7 +34,7 @@ pub async fn request_connection(
 
     let msg = TunnelRequest {
         hostname,
-        max_tunnels_count: 32,
+        max_tunnels_count: MAX_ALLOWED_TUNNELS as u16,
     };
 
     info!("requesting connection for config_name {}", config_name);

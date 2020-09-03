@@ -48,6 +48,8 @@ fn load_keys(path: &str) -> io::Result<Vec<PrivateKey>> {
     Ok(rsa)
 }
 
+pub const MAX_ALLOWED_TUNNELS: usize = 32;
+
 pub async fn spawn(
     addr: SocketAddr,
     tls_cert_path: String,
@@ -79,8 +81,6 @@ pub async fn spawn(
             async move {
                 match acceptor.accept(tunnel_stream).await {
                     Ok(mut tls_conn) => {
-                        crate::statistics::TUNNELS_GAUGE.inc();
-
                         let read_tunnel_hello = async {
                             let len = tls_conn.read_u16().await?;
                             let mut payload = vec![0u8; len.into()];
@@ -144,6 +144,10 @@ pub async fn spawn(
                                         TunnelConnectionState::Connected(c) => {
                                             match c.entry(instance_id) {
                                                 Entry::Occupied(mut e) => {
+                                                    if e.get().len() >= MAX_ALLOWED_TUNNELS {
+                                                        warn!("Client tried to connect more than {} tunnels. Reject connection", MAX_ALLOWED_TUNNELS);
+                                                        return;
+                                                    }
                                                     arena_index =
                                                         e.get_mut().insert(new_connected_tunnel);
                                                 }
@@ -167,8 +171,7 @@ pub async fn spawn(
                             }
                         }
 
-                        info!("tunnels = {:?}", &*tunnels.inner.lock());
-
+                        crate::statistics::TUNNELS_GAUGE.inc();
                         tokio::select! {
                             res = bg => {
                                 match res {
@@ -184,7 +187,6 @@ pub async fn spawn(
                                 info!("tunnel terminated by request");
                             },
                         }
-
                         crate::statistics::TUNNELS_GAUGE.dec();
 
                         if let Entry::Occupied(mut client) =
