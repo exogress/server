@@ -35,6 +35,7 @@ use crate::url_mapping::targets::TargetsProcessor;
 use crate::webapp::Client;
 use chrono::{DateTime, Utc};
 use exogress_entities::RateLimiterName;
+use http::uri::Authority;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::io;
@@ -70,9 +71,9 @@ pub async fn server(
             filters::query::raw()
                 .or_else(|_| futures::future::ready(Ok::<(_,), Rejection>(("".to_string(),)))),
         )
-        .and(filters::host::host())
+        .and(filters::host::optional())
         .map(
-            move |path: warp::filters::path::FullPath, query: String, host: Option<String>| {
+            move |path: warp::filters::path::FullPath, query: String, host: Option<Authority>| {
                 let mut path_and_query = path.as_str().to_string();
 
                 if !query.is_empty() {
@@ -96,12 +97,12 @@ pub async fn server(
         );
 
     let acme = warp::path!(".well-known" / "acme-challenge" / String)
-        .and(filters::host::host())
+        .and(filters::host::optional())
         .and_then({
             shadow_clone!(webapp_client);
             shadow_clone!(webroot);
 
-            move |token: String, host: Option<String>| {
+            move |token: String, host: Option<Authority>| {
                 shadow_clone!(webapp_client);
                 shadow_clone!(webroot);
 
@@ -136,7 +137,10 @@ pub async fn server(
                             );
 
                             let res = webapp_client
-                                .acme_http_challenge_verification(&hostname, filename.as_str())
+                                .acme_http_challenge_verification(
+                                    hostname.as_str(),
+                                    filename.as_str(),
+                                )
                                 .await;
 
                             match res {
@@ -349,7 +353,7 @@ pub async fn server(
         })
         .and(warp::ws().or(filters::body::stream()))
         .and(filters::header::headers_cloned())
-        .and(filters::host::host())
+        .and(filters::host::optional())
         // find mapping
         .and_then({
             shadow_clone!(webapp_client);
@@ -359,14 +363,15 @@ pub async fn server(
             move |(path, query): (warp::filters::path::FullPath, String),
                   ws_or_body,
                   headers: http::HeaderMap,
-                  maybe_host: Option<String>| {
+                  authority: Option<Authority>| {
                 shadow_clone!(webapp_client);
                 shadow_clone!(individual_hostname);
                 shadow_clone!(tunnels);
 
                 async move {
-                    let host = maybe_host.expect("unknown host");
-                    let host_without_port = host.split(':').next().unwrap();
+                    let authority = authority.expect("unknown host");
+
+                    let host_without_port = authority.host();
 
                     let url_for_rewriting = UrlForRewriting::from_components(
                         host_without_port,
