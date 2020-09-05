@@ -33,7 +33,6 @@ use crate::clients::{ClientTunnels, ConnectedTunnel};
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::auth;
 use crate::stop_reasons::AppStopWait;
-use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::mapping::{
     AuthProviderConfig, JwtEcdsa, MappingAction, Oauth2Provider, Oauth2SsoClient, Protocol,
     UrlForRewriting,
@@ -688,7 +687,7 @@ pub async fn server(
                                         ..Default::default()
                                     },
                                 ) {
-                                    Ok(token) => {
+                                    Ok(_token) => {
                                         info!("jwt-token parse and verified. go ahead");
                                     }
                                     Err(e) => {
@@ -696,33 +695,21 @@ pub async fn server(
                                             e.kind()
                                         {
                                             info!("jwt-token parsed but not verified");
-                                            return Err::<_, _>(warp::reject::custom(
-                                                NotAuthorized {
-                                                    auth_type,
-                                                    requested_url: requested_url.clone(),
-                                                    base_url: mount_point_base_url.clone(),
-                                                    proto,
-                                                    is_jwt_token_included: true,
-                                                    jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
-                                                },
-                                            ));
                                         } else {
                                             info!(
                                                 "JWT token error: {:?}. Token: {}",
                                                 e,
                                                 token.value()
                                             );
-                                            return Err::<_, _>(warp::reject::custom(
-                                                NotAuthorized {
-                                                    auth_type,
-                                                    requested_url: requested_url.clone(),
-                                                    base_url: mount_point_base_url.clone(),
-                                                    proto,
-                                                    is_jwt_token_included: true,
-                                                    jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
-                                                },
-                                            ));
-                                        }
+                                        };
+                                        return Err::<_, _>(warp::reject::custom(NotAuthorized {
+                                            auth_type,
+                                            requested_url: requested_url.clone(),
+                                            base_url: mount_point_base_url.clone(),
+                                            proto,
+                                            is_jwt_token_included: true,
+                                            jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
+                                        }));
                                     }
                                 }
                             } else {
