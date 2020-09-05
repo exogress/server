@@ -1,5 +1,8 @@
 use crate::termination::StopReason;
+use exogress_server_common::assistant::{GetValue, SetValue};
 use futures::{FutureExt, SinkExt, StreamExt};
+use redis::AsyncCommands;
+use std::convert::TryInto;
 use std::net::SocketAddr;
 use stop_handle::StopWait;
 use tokio::sync::mpsc;
@@ -16,9 +19,11 @@ pub async fn server(
 ) {
     info!("Will spawn HTTP server on {}", listen_addr);
 
-    let api = warp::path!("api" / "v1" / "gateways" / String / "notifications")
+    let notifications = warp::path!("api" / "v1" / "gateways" / String / "notifications")
         .and(warp::filters::ws::ws())
         .map({
+            shadow_clone!(redis);
+
             move |gw_hostname: String, ws: warp::ws::Ws| {
                 shadow_clone!(mut redis);
 
@@ -98,7 +103,7 @@ pub async fn server(
                                         error!("couldn't subscribe to invalidations: {}", e)
                                     }
                                 }
-                                }
+                            }
                             Err(e) => {
                                 error!("redis server connection  error: {}", e);
                             }
@@ -106,13 +111,92 @@ pub async fn server(
 
                         let _ = websocket.send(warp::filters::ws::Message::close()).await;
                     }
-                    .instrument(tracing::info_span!("gw", host = gw_hostname.as_str()))
+                        .instrument(tracing::info_span!("gw", host = gw_hostname.as_str()))
                 })
             }
         });
 
+    let save_kv = warp::path!("api" / "v1" / "keys" / String)
+        .and(warp::filters::method::post())
+        .and(warp::filters::body::json::<SetValue>())
+        .and_then({
+            shadow_clone!(redis);
+
+            move |key: String, body: SetValue| {
+                shadow_clone!(redis);
+
+                async move {
+                    let res: Result<(), redis::RedisError> = async move {
+                        let mut redis_conn = redis.get_async_connection().await?;
+
+                        info!("set key: {} => {:?}", key, body);
+                        redis_conn
+                            .set_ex(
+                                key.as_str(),
+                                body.payload,
+                                body.ttl.as_secs().try_into().unwrap(),
+                            )
+                            .await?;
+
+                        Ok(())
+                    }
+                    .await;
+
+                    match res {
+                        Ok(()) => Ok::<_, warp::reject::Rejection>(warp::reply::json(&())),
+                        Err(e) => {
+                            error!("redis error: {}", e);
+                            Err(warp::reject())
+                        }
+                    }
+                }
+            }
+        });
+
+    let get_kv = warp::path!("api" / "v1" / "keys" / String)
+        .and(warp::filters::method::get())
+        .and_then({
+            shadow_clone!(redis);
+
+            move |key: String| {
+                shadow_clone!(redis);
+
+                async move {
+                    let res: Result<String, redis::RedisError> = async move {
+                        let mut redis_conn = redis.get_async_connection().await?;
+
+                        info!("retrieve key: {}", key);
+                        let r = redis_conn.get(key.as_str()).await?;
+                        redis_conn.del(key.as_str()).await?;
+                        info!("result: {}", r);
+
+                        Ok(r)
+                    }
+                    .await;
+
+                    match res {
+                        Ok(payload) => {
+                            Ok::<_, warp::reject::Rejection>(warp::reply::json::<GetValue>(
+                                &GetValue { payload },
+                            ))
+                        }
+                        Err(e) => {
+                            error!("redis error: {}", e);
+                            Err(warp::reject())
+                        }
+                    }
+                }
+            }
+        });
+
     info!("Spawning...");
-    let (_, server) = warp::serve(api.with(warp::trace::request())).bind_with_graceful_shutdown(
+    let (_, server) = warp::serve(
+        notifications
+            .or(save_kv)
+            .or(get_kv)
+            .with(warp::trace::request()),
+    )
+    .bind_with_graceful_shutdown(
         listen_addr,
         stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),
     );

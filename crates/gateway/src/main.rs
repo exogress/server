@@ -32,6 +32,8 @@ use crate::clients::{spawn_tunnel, ClientTunnels};
 // use crate::http_serve::auth::github::GithubOauth2Client;
 // use crate::http_serve::auth::google::GoogleOauth2Client;
 
+use crate::http_serve::auth::github::GithubOauth2Client;
+use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::url_mapping::notification_listener::Consumer;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
@@ -293,17 +295,17 @@ fn main() {
         .parse()
         .expect("bad assistant URL format");
 
-    // let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
-    // let google_oauth2_client_secret = matches
-    //     .value_of("google_oauth2_client_secret")
-    //     .unwrap()
-    //     .into();
+    let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
+    let google_oauth2_client_secret = matches
+        .value_of("google_oauth2_client_secret")
+        .unwrap()
+        .into();
 
-    // let github_oauth2_client_id = matches.value_of("github_oauth2_client_id").unwrap().into();
-    // let github_oauth2_client_secret = matches
-    //     .value_of("github_oauth2_client_secret")
-    //     .unwrap()
-    //     .into();
+    let github_oauth2_client_id = matches.value_of("github_oauth2_client_id").unwrap().into();
+    let github_oauth2_client_secret = matches
+        .value_of("github_oauth2_client_secret")
+        .unwrap()
+        .into();
 
     let cache_ttl: Duration = Duration::from_secs(
         matches
@@ -523,7 +525,7 @@ fn main() {
         .unwrap();
 
         let consumer = Consumer::new(
-            assistant_base_url,
+            assistant_base_url.clone(),
             &individual_hostname,
             &api_client.mappings(),
             &client_tunnels,
@@ -536,19 +538,21 @@ fn main() {
 
         tokio::spawn(consumer.spawn());
 
-        // let google_oauth2_client = GoogleOauth2Client::new(
-        //     Duration::from_secs(60),
-        //     google_oauth2_client_id,
-        //     google_oauth2_client_secret,
-        //     public_base_url.clone(),
-        // );
-        //
-        // let github_oauth2_client = GithubOauth2Client::new(
-        //     Duration::from_secs(60),
-        //     github_oauth2_client_id,
-        //     github_oauth2_client_secret,
-        //     public_base_url.clone(),
-        // );
+        let google_oauth2_client = GoogleOauth2Client::new(
+            Duration::from_secs(60),
+            google_oauth2_client_id,
+            google_oauth2_client_secret,
+            public_base_url.clone(),
+            assistant_base_url.clone(),
+        );
+
+        let github_oauth2_client = GithubOauth2Client::new(
+            Duration::from_secs(60),
+            github_oauth2_client_id,
+            github_oauth2_client_secret,
+            public_base_url.clone(),
+            assistant_base_url.clone(),
+        );
 
         http_serve::handle::server(
             client_tunnels,
@@ -562,8 +566,8 @@ fn main() {
             public_base_url,
             individual_hostname,
             webroot,
-            // google_oauth2_client,
-            // github_oauth2_client,
+            google_oauth2_client,
+            github_oauth2_client,
             dbip,
             resolver,
         )

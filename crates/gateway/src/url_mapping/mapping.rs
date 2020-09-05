@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
 
-use exogress_config_core::Config;
+use exogress_config_core::{AuthProvider, Config};
 use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 
 use crate::clients::ClientTunnels;
@@ -359,23 +359,42 @@ impl ProxyMatchedTo {
     }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct Oauth2SsoClient {
-//     pub provider: Oauth2Provider,
-// }
+#[derive(Debug, Clone, Copy)]
+pub struct Oauth2SsoClient {
+    pub provider: Oauth2Provider,
+}
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub enum Oauth2Provider {
-//     #[serde(rename = "google")]
-//     Google,
-//     #[serde(rename = "github")]
-//     Github,
-// }
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+pub enum Oauth2Provider {
+    #[serde(rename = "google")]
+    Google,
+    #[serde(rename = "github")]
+    Github,
+}
 
-// #[derive(Debug, Clone)]
-// pub enum AuthProviderConfig {
-//     Oauth2(Oauth2SsoClient),
-// }
+#[derive(Debug, Clone, Copy)]
+pub enum AuthProviderConfig {
+    Oauth2(Oauth2SsoClient),
+}
+
+impl From<AuthProvider> for AuthProviderConfig {
+    fn from(provider: AuthProvider) -> Self {
+        match provider {
+            AuthProvider::Google => AuthProviderConfig::Oauth2(Oauth2SsoClient {
+                provider: Oauth2Provider::Google,
+            }),
+            AuthProvider::Github => AuthProviderConfig::Oauth2(Oauth2SsoClient {
+                provider: Oauth2Provider::Github,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JwtEcdsa {
+    pub private_key: Vec<u8>,
+    pub public_key: Vec<u8>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Mapping {
@@ -385,8 +404,8 @@ pub struct Mapping {
     pub account: AccountName,
     pub project: ProjectName,
     pub config_name: ConfigName,
-    // pub jwt_secret: Vec<u8>,
-    // pub auth_type: AuthProviderConfig,
+    pub jwt_ecdsa: JwtEcdsa,
+    pub auth_type: Option<AuthProviderConfig>,
     pub rate_limiters: RateLimiters,
 }
 
@@ -414,8 +433,8 @@ pub struct ClientTarget {
 #[derive(Clone)]
 pub struct MappingAction {
     pub target: ClientTarget,
-    // pub auth_type: AuthProviderConfig,
-    // pub jwt_secret: Vec<u8>,
+    pub auth_type: Option<AuthProviderConfig>,
+    pub jwt_ecdsa: JwtEcdsa,
     pub external_base_url: Url,
 }
 
@@ -466,8 +485,8 @@ impl Mapping {
             Ok((
                 MappingAction {
                     target,
-                    // auth_type: self.auth_type.clone(),
-                    // jwt_secret: self.jwt_secret.clone(),
+                    auth_type: self.auth_type.clone(),
+                    jwt_ecdsa: self.jwt_ecdsa.clone(),
                     external_base_url: base_url,
                 },
                 self.rate_limiters.clone(),

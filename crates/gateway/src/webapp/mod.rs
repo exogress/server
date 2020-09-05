@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::clients::ClientTunnels;
-use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::mapping::{JwtEcdsa, Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::rate_limiter::{RateLimiter, RateLimiterKind, RateLimiters};
 use crate::url_mapping::registry::Configs;
 use crate::url_mapping::targets::TargetsProcessor;
@@ -113,6 +113,12 @@ pub struct ConfigData {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct JwtEcdsaResponse {
+    pub private_key: String,
+    pub public_key: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct ConfigsResponse {
     #[serde(with = "ts_milliseconds")]
     generated_at: DateTime<Utc>,
@@ -121,6 +127,7 @@ pub struct ConfigsResponse {
     project: ProjectName,
     mount_point: MountPointName,
     configs: SmallVec<[ConfigData; 8]>,
+    jwt_ecdsa: JwtEcdsaResponse,
 }
 
 impl Client {
@@ -184,9 +191,9 @@ impl Client {
         external_port: u16,
         proto: Protocol,
         tunnels: ClientTunnels,
-    ) -> Result<Option<(MappingAction, RateLimiters)>, Error> {
+    ) -> Result<Option<(MappingAction, RateLimiters, UrlPrefix)>, Error> {
         // Try to read from cache
-        if let Some((cached, _matched_prefix)) = self.configs.resolve(
+        if let Some((cached, url_prefix)) = self.configs.resolve(
             url_for_rewriting.clone(),
             tunnels.clone(),
             external_port,
@@ -195,7 +202,7 @@ impl Client {
             match cached {
                 Some((data, rate_limiters)) => {
                     // mapping exist
-                    return Ok(Some((data, rate_limiters)));
+                    return Ok(Some((data, rate_limiters, url_prefix)));
                 }
                 None => {
                     return Ok(None);
@@ -301,6 +308,27 @@ impl Client {
                                                         account: config_response.account,
                                                         project: config_response.project,
                                                         config_name: config_data.config.name,
+                                                        jwt_ecdsa: JwtEcdsa {
+                                                            private_key: config_response
+                                                                .jwt_ecdsa
+                                                                .private_key
+                                                                .into(),
+                                                            public_key: config_response
+                                                                .jwt_ecdsa
+                                                                .public_key
+                                                                .into(),
+                                                        },
+                                                        auth_type: config_data
+                                                            .config
+                                                            .exposes
+                                                            .iter()
+                                                            .next()
+                                                            .and_then(|(_, mount)| {
+                                                                mount
+                                                                    .auth
+                                                                    .as_ref()
+                                                                    .map(|r| (*r).into())
+                                                            }),
                                                         rate_limiters: RateLimiters::new(vec![
                                                             RateLimiter::new(
                                                                 "free_plan".parse().unwrap(),
@@ -364,11 +392,11 @@ impl Client {
             }
         }
 
-        if let Some((cached, _)) =
+        if let Some((cached, url_prefix)) =
             self.configs
                 .resolve(url_for_rewriting, tunnels, external_port, proto)
         {
-            Ok(cached)
+            Ok(cached.map(|(a, b)| (a, b, url_prefix)))
         } else {
             error!("Still can't resolve after successful reset event happened");
             Err(Error::CouldNotRetrieve)

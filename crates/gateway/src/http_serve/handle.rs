@@ -9,7 +9,10 @@ use futures_util::sink::SinkExt;
 use futures_util::stream::{Stream, StreamExt};
 use futures_util::TryStreamExt;
 use hashbrown::HashMap;
-use http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, HOST, UPGRADE};
+use http::header::{
+    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE,
+    UPGRADE,
+};
 use http::status::StatusCode;
 use http::{Response, Uri};
 use memmap::Mmap;
@@ -28,22 +31,38 @@ use hyper::Body;
 use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::dbip::LocationAndIsp;
+use crate::http_serve::auth;
 use crate::stop_reasons::AppStopWait;
-use crate::url_mapping::mapping::{MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::mapping::{
+    AuthProviderConfig, JwtEcdsa, MappingAction, Oauth2Provider, Oauth2SsoClient, Protocol,
+    UrlForRewriting,
+};
 use crate::url_mapping::rate_limiter::{RateLimiterResponse, RateLimiters};
 use crate::url_mapping::targets::TargetsProcessor;
+use crate::url_mapping::url_prefix::UrlPrefix;
 use crate::webapp::Client;
 use chrono::{DateTime, Utc};
+use cookie::Cookie;
 use exogress_entities::RateLimiterName;
 use http::uri::Authority;
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
+use lru_time_cache::LruCache;
+use parking_lot::Mutex;
+use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 use std::io;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
-// pub const AUTH_COOKIE_NAME: &str = "exg_auth";
+pub const AUTH_COOKIE_NAME: &str = "exg_auth";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    idp: String,
+    exp: usize,
+}
 
 pub async fn server(
     tunnels: ClientTunnels,
@@ -57,8 +76,8 @@ pub async fn server(
     public_base_url: Url,
     individual_hostname: String,
     webroot: PathBuf,
-    // google_oauth2_client: auth::google::GoogleOauth2Client,
-    // github_oauth2_client: auth::github::GithubOauth2Client,
+    google_oauth2_client: auth::google::GoogleOauth2Client,
+    github_oauth2_client: auth::github::GithubOauth2Client,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
     resolver: TokioAsyncResolver,
 ) {
@@ -182,9 +201,9 @@ pub async fn server(
 
     tokio::spawn(http_server);
 
-    // let auth_finalizers = Arc::new(Mutex::new(LruCache::with_expiry_duration(
-    //     Duration::from_secs(10),
-    // )));
+    let auth_finalizers = Arc::new(Mutex::new(LruCache::with_expiry_duration(
+        Duration::from_secs(10),
+    )));
 
     let client = reqwest::ClientBuilder::new()
         .gzip(true)
@@ -197,128 +216,127 @@ pub async fn server(
         .build()
         .unwrap();
 
-    // let oauth2_callback = warp::path!("_exg" / String / "callback")
-    //     .and(filters::query::query::<HashMap<String, String>>())
-    //     .and_then({
-    //         shadow_clone!(google_oauth2_client);
-    //         shadow_clone!(github_oauth2_client);
-    //         shadow_clone!(auth_finalizers);
-    //
-    //         move |provider: String, params| {
-    //             shadow_clone!(google_oauth2_client);
-    //             shadow_clone!(github_oauth2_client);
-    //
-    //             shadow_clone!(auth_finalizers);
-    //
-    //             async move {
-    //                 let oauth2_result = match provider.as_str() {
-    //                     "google" => google_oauth2_client.process_callback(params).await,
-    //                     "github" => github_oauth2_client.process_callback(params).await,
-    //                     _ => fixme!("unsupported provider"),
-    //                 };
-    //
-    //                 let mut resp = Response::new("");
-    //
-    //                 match oauth2_result {
-    //                     Ok(res) => {
-    //                         info!("oauth2 result: {:?}", res);
-    //                         let secret: String =
-    //                             thread_rng().sample_iter(&Alphanumeric).take(30).collect();
-    //
-    //                         let mut redirect_to = res.oauth2_flow_data.requested_url.clone();
-    //
-    //                         {
-    //                             let mut segments = redirect_to.path_segments_mut().unwrap();
-    //                             segments.clear();
-    //                             segments.push("_exg").push("authorized").push(&secret);
-    //                         }
-    //
-    //                         redirect_to.set_query(None);
-    //                         redirect_to.set_fragment(None);
-    //                         redirect_to.set_scheme("https").unwrap();
-    //
-    //                         auth_finalizers.lock().insert(secret, res.oauth2_flow_data);
-    //
-    //                         resp.headers_mut()
-    //                             .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-    //
-    //                         resp.headers_mut()
-    //                             .insert(LOCATION, redirect_to.to_string().try_into().unwrap());
-    //
-    //                         *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-    //                     }
-    //                     Err(e) => {
-    //                         warn!("Error from Google: {:?}", e);
-    //
-    //                         *resp.status_mut() = StatusCode::FORBIDDEN;
-    //                         *resp.body_mut() = "Forbidden";
-    //                     }
-    //                 }
-    //
-    //                 Ok::<_, Rejection>(resp)
-    //             }
-    //         }
-    //     });
+    let oauth2_callback = warp::path!("_exg" / String / "callback")
+        .and(filters::query::query::<HashMap<String, String>>())
+        .and_then({
+            shadow_clone!(google_oauth2_client);
+            shadow_clone!(github_oauth2_client);
+            shadow_clone!(auth_finalizers);
 
-    // let authorized_callback = warp::path!("_exg" / "authorized" / String).with(warp::trace::request()).and_then({
-    //     shadow_clone!(auth_finalizers);
-    //
-    //     move |secret| {
-    //         shadow_clone!(auth_finalizers);
-    //
-    //         let mut resp = Response::new("");
-    //
-    //         async move {
-    //             match auth_finalizers.lock().remove(&secret) {
-    //                 Some(res) => {
-    //                     resp.headers_mut()
-    //                         .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-    //
-    //                     resp.headers_mut()
-    //                         .insert(LOCATION, res.requested_url.as_str().try_into().unwrap());
-    //
-    //                     *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-    //
-    //                     let header: jwt::Header = Default::default();
-    //                     let mut claims = jwt::Claims::new(jwt::claims::Registered {
-    //                         iss: None,
-    //                         sub: None,
-    //                         aud: None,
-    //                         exp: None,
-    //                         nbf: None,
-    //                         iat: None,
-    //                         jti: None,
-    //                     });
-    //
-    //                     claims
-    //                         .private
-    //                         .insert("idp".into(), serde_json::to_value(res.provider).unwrap());
-    //
-    //                     let token = jwt::Token::new(header, claims);
-    //                     let token_str = token
-    //                         .signed(res.jwt_secret.as_ref(), sha2::Sha256::new())
-    //                         .unwrap();
-    //
-    //                     let set_cookie = Cookie::build(AUTH_COOKIE_NAME, token_str)
-    //                         .path(res.base_url.path())
-    //                         .max_age(time::Duration::hours(24))
-    //                         .http_only(true)
-    //                         .secure(true)
-    //                         .finish();
-    //
-    //                     resp.headers_mut()
-    //                         .insert(SET_COOKIE, set_cookie.to_string().try_into().unwrap());
-    //                 }
-    //                 None => {
-    //                     *resp.status_mut() = StatusCode::FORBIDDEN;
-    //                     *resp.body_mut() = "Forbidden";
-    //                 }
-    //             }
-    //
-    //             Ok::<_, Rejection>(resp)
-    //         }
-    //     }
-    // });
+            move |provider: String, params| {
+                shadow_clone!(google_oauth2_client);
+                shadow_clone!(github_oauth2_client);
+
+                shadow_clone!(auth_finalizers);
+
+                async move {
+                    let oauth2_result = match provider.as_str() {
+                        "google" => google_oauth2_client.process_callback(params).await,
+                        "github" => github_oauth2_client.process_callback(params).await,
+                        _ => todo!("unsupported provider"),
+                    };
+
+                    let mut resp = Response::new("");
+
+                    match oauth2_result {
+                        Ok(res) => {
+                            info!("oauth2 result: {:?}", res);
+                            let secret: String =
+                                thread_rng().sample_iter(&Alphanumeric).take(30).collect();
+
+                            let mut redirect_to = res.oauth2_flow_data.requested_url.clone();
+
+                            {
+                                let mut segments = redirect_to.path_segments_mut().unwrap();
+                                segments.clear();
+                                segments.push("_exg").push("authorized").push(&secret);
+                            }
+
+                            redirect_to.set_query(None);
+                            redirect_to.set_fragment(None);
+                            redirect_to.set_scheme("https").unwrap();
+
+                            auth_finalizers.lock().insert(secret, res.oauth2_flow_data);
+
+                            resp.headers_mut()
+                                .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+
+                            resp.headers_mut()
+                                .insert(LOCATION, redirect_to.to_string().try_into().unwrap());
+
+                            *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+                        }
+                        Err(e) => {
+                            warn!("Error from Google: {:?}", e);
+
+                            *resp.status_mut() = StatusCode::FORBIDDEN;
+                            *resp.body_mut() = "Forbidden";
+                        }
+                    }
+
+                    Ok::<_, Rejection>(resp)
+                }
+            }
+        });
+
+    let authorized_callback = warp::path!("_exg" / "authorized" / String).and_then({
+        shadow_clone!(auth_finalizers);
+
+        move |secret| {
+            shadow_clone!(auth_finalizers);
+
+            let mut resp = Response::new("");
+
+            async move {
+                match auth_finalizers.lock().remove(&secret) {
+                    Some(res) => {
+                        resp.headers_mut()
+                            .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+
+                        resp.headers_mut()
+                            .insert(LOCATION, res.requested_url.to_string().try_into().unwrap());
+
+                        *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+
+                        let claims = Claims {
+                            idp: serde_json::to_value(res.provider).unwrap().to_string(),
+                            exp: (Utc::now() + chrono::Duration::hours(24))
+                                .timestamp()
+                                .try_into()
+                                .unwrap(),
+                        };
+
+                        let token = jsonwebtoken::encode(
+                            &Header {
+                                alg: jsonwebtoken::Algorithm::ES256,
+                                ..Default::default()
+                            },
+                            &claims,
+                            &EncodingKey::from_ec_pem(res.jwt_ecdsa.private_key.as_ref())
+                                .expect("FIXME"),
+                        )
+                        .expect("FIXME");
+
+                        let set_cookie = Cookie::build(AUTH_COOKIE_NAME, token)
+                            .path(res.base_url.path())
+                            .max_age(time::Duration::hours(24))
+                            .http_only(true)
+                            .secure(true)
+                            .finish();
+
+                        resp.headers_mut()
+                            .insert(SET_COOKIE, set_cookie.to_string().try_into().unwrap());
+                    }
+                    None => {
+                        *resp.status_mut() = StatusCode::FORBIDDEN;
+                        *resp.body_mut() = "Forbidden";
+                    }
+                }
+
+                Ok::<_, Rejection>(resp)
+            }
+        }
+    });
 
     let server = warp::any()
         .and(filters::path::full())
@@ -373,6 +391,10 @@ pub async fn server(
 
                     let host_without_port = authority.host();
 
+                    let requested_url = format!("https://{}{}?{}", authority, path.as_str(), query)
+                        .parse()
+                        .expect("FIXME: bad URL");
+
                     let url_for_rewriting = UrlForRewriting::from_components(
                         host_without_port,
                         path.as_str(),
@@ -395,13 +417,17 @@ pub async fn server(
                         .await;
 
                     match handle_result {
-                        Ok(Some((mapping_action, maybe_rate_limiter))) => Ok((
-                            ws_or_body,
-                            headers,
-                            path,
-                            maybe_rate_limiter,
-                            mapping_action,
-                        )),
+                        Ok(Some((mapping_action, maybe_rate_limiter, mount_point_base_url))) => {
+                            Ok((
+                                ws_or_body,
+                                headers,
+                                path,
+                                maybe_rate_limiter,
+                                mapping_action,
+                                requested_url,
+                                mount_point_base_url,
+                            ))
+                        }
                         Ok(None) => Err(warp::reject::not_found()),
                         Err(e) => {
                             error!("Error resolving URL: {:?}", e);
@@ -413,12 +439,22 @@ pub async fn server(
         })
         // check rate limits
         .and_then({
-            move |(ws_or_body, headers, path, rate_limiters, action): (
+            move |(
+                ws_or_body,
+                headers,
+                path,
+                rate_limiters,
+                action,
+                requested_url,
+                mount_point_base_url,
+            ): (
                 _,
                 http::HeaderMap,
                 warp::filters::path::FullPath,
                 RateLimiters,
                 MappingAction,
+                _,
+                _,
             )| {
                 async move {
                     let delayed_for = match rate_limiters.process().await {
@@ -442,101 +478,131 @@ pub async fn server(
                         RateLimiterResponse::Passthrough => None,
                     };
 
-                    Ok((ws_or_body, headers, delayed_for, path, action))
+                    Ok((
+                        ws_or_body,
+                        headers,
+                        delayed_for,
+                        path,
+                        action,
+                        requested_url,
+                        mount_point_base_url,
+                    ))
                 }
             }
         })
         .and(filters::query::query::<HashMap<String, String>>())
-        // ...
         // validate JWT token from cookies
-        // .and_then({
-        //     move |(
-        //         ws_or_body,
-        //         headers,
-        //         path,
-        //         proxy_to,
-        //         base_url,
-        //         auth_type,
-        //         jwt_secret,
-        //         connector,
-        //     ): (
-        //         _,
-        //         http::HeaderMap,
-        //         warp::filters::path::FullPath,
-        //         Url,
-        //         Url,
-        //         AuthProviderConfig,
-        //         Vec<u8>,
-        //         _,
-        //     )| {
-        //         let cookies = headers.get_all(COOKIE);
-        //
-        //         let proto = match &ws_or_body {
-        //             warp::Either::A(_) => Protocol::WebSockets,
-        //             warp::Either::B(_) => Protocol::Http,
-        //         };
-        //
-        //         let jwt_token = cookies
-        //             .iter()
-        //             .map(|header| {
-        //                 header
-        //                     .to_str()
-        //                     .unwrap()
-        //                     .split(';')
-        //                     .map(|s| s.trim_start().trim_end().to_string())
-        //             })
-        //             .flatten()
-        //             .filter_map(move |s| Cookie::parse(s).ok())
-        //             .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
-        //
-        //         async move {
-        //             if let Some(token) = jwt_token {
-        //                 match jwt::Token::<jwt::Header, jwt::Claims>::parse(&token.value()) {
-        //                     Ok(token) if token.verify(jwt_secret.as_ref(), sha2::Sha256::new()) => {
-        //                         info!("jwt-token parse and verified");
-        //                         Ok((ws_or_body, headers, path, proxy_to, token.claims, connector))
-        //                     }
-        //                     Ok(_token) => {
-        //                         info!(
-        //                             "jwt-token parsed but not verified with secret {:?}",
-        //                             jwt_secret
-        //                         );
-        //                         Err::<_, _>(warp::reject::custom(NotAuthorized {
-        //                             auth_type: Some(auth_type),
-        //                             requested_url: base_url.clone(),
-        //                             base_url,
-        //                             jwt_secret,
-        //                             proto,
-        //                             is_jwt_token_included: true,
-        //                         }))
-        //                     }
-        //                     Err(e) => {
-        //                         info!("JWT token error: {:?}. Token: {}", e, token.value());
-        //                         Err::<_, _>(warp::reject::custom(NotAuthorized {
-        //                             auth_type: Some(auth_type),
-        //                             requested_url: base_url.clone(),
-        //                             base_url,
-        //                             jwt_secret,
-        //                             proto,
-        //                             is_jwt_token_included: true,
-        //                         }))
-        //                     }
-        //                 }
-        //             } else {
-        //                 info!("jwt-token not found");
-        //
-        //                 Err::<_, _>(warp::reject::custom(NotAuthorized {
-        //                     auth_type: Some(auth_type),
-        //                     requested_url: base_url.clone(),
-        //                     base_url,
-        //                     jwt_secret,
-        //                     proto,
-        //                     is_jwt_token_included: false,
-        //                 }))
-        //             }
-        //         }
-        //     }
-        // })
+        .and_then({
+            move |(
+                ws_or_body,
+                headers,
+                delayed_for,
+                path,
+                action,
+                requested_url,
+                mount_point_base_url,
+            ): (_, http::HeaderMap, _, _, MappingAction, Url, UrlPrefix),
+                  params| {
+                async move {
+                    match &action.auth_type {
+                        Some(auth_provider) => {
+                            let cookies = headers.get_all(COOKIE);
+
+                            let proto = match &ws_or_body {
+                                warp::Either::A(_) => Protocol::WebSockets,
+                                warp::Either::B(_) => Protocol::Http,
+                            };
+
+                            let jwt_token = cookies
+                                .iter()
+                                .map(|header| {
+                                    header
+                                        .to_str()
+                                        .unwrap()
+                                        .split(';')
+                                        .map(|s| s.trim_start().trim_end().to_string())
+                                })
+                                .flatten()
+                                .filter_map(move |s| Cookie::parse(s).ok())
+                                .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
+
+                            let auth_type = Some(*auth_provider);
+
+                            info!(
+                                "requested_url = {:?} mount_point_base_url = {:?}",
+                                requested_url, mount_point_base_url
+                            );
+
+                            if let Some(token) = jwt_token {
+                                match jsonwebtoken::decode::<Claims>(
+                                    &token.value(),
+                                    &DecodingKey::from_ec_pem(&action.jwt_ecdsa.public_key)
+                                        .expect("FIXME"),
+                                    &Validation {
+                                        algorithms: vec![jsonwebtoken::Algorithm::ES256],
+                                        ..Default::default()
+                                    },
+                                ) {
+                                    Ok(token) => {
+                                        info!("jwt-token parse and verified");
+                                        Ok((
+                                            ws_or_body,
+                                            headers,
+                                            delayed_for,
+                                            path,
+                                            action,
+                                            Some(token.claims),
+                                            params,
+                                        ))
+                                    }
+                                    Err(e) => {
+                                        if let jsonwebtoken::errors::ErrorKind::InvalidSignature =
+                                            e.kind()
+                                        {
+                                            info!("jwt-token parsed but not verified");
+                                            Err::<_, _>(warp::reject::custom(NotAuthorized {
+                                                auth_type,
+                                                requested_url,
+                                                base_url: mount_point_base_url,
+                                                proto,
+                                                is_jwt_token_included: true,
+                                                jwt_ecdsa: action.jwt_ecdsa,
+                                            }))
+                                        } else {
+                                            info!(
+                                                "JWT token error: {:?}. Token: {}",
+                                                e,
+                                                token.value()
+                                            );
+                                            Err::<_, _>(warp::reject::custom(NotAuthorized {
+                                                auth_type,
+                                                requested_url,
+                                                base_url: mount_point_base_url,
+                                                proto,
+                                                is_jwt_token_included: true,
+                                                jwt_ecdsa: action.jwt_ecdsa,
+                                            }))
+                                        }
+                                    }
+                                }
+                            } else {
+                                info!("jwt-token not found");
+
+                                Err::<_, _>(warp::reject::custom(NotAuthorized {
+                                    auth_type,
+                                    requested_url,
+                                    base_url: mount_point_base_url,
+                                    proto,
+                                    is_jwt_token_included: false,
+                                    jwt_ecdsa: action.jwt_ecdsa,
+                                }))
+                            }
+                        }
+                        None => Ok((ws_or_body, headers, delayed_for, path, action, None, params)),
+                    }
+                }
+            }
+        })
         .and(warp::method())
         .and(filters::addr::remote())
         .and(filters::addr::local())
@@ -547,14 +613,15 @@ pub async fn server(
             shadow_clone!(individual_hostname);
             shadow_clone!(tunnels);
 
-            move |(ws_or_body, headers, delayed_for, _path, mapping_action): (
+            move |(ws_or_body, headers, delayed_for, path, mapping_action, claims, params): (
                 _,
                 _,
                 Option<Duration>,
                 _,
                 MappingAction,
+                Option<Claims>,
+                _,
             ),
-                  _params,
                   method,
                   remote_addr: Option<SocketAddr>,
                   local_addr: Option<SocketAddr>| {
@@ -680,23 +747,23 @@ pub async fn server(
             }
         })
         .recover({
-            // shadow_clone!(google_oauth2_client);
-            // shadow_clone!(github_oauth2_client);
+            shadow_clone!(google_oauth2_client);
+            shadow_clone!(github_oauth2_client);
 
             move |r| {
-                // shadow_clone!(google_oauth2_client);
-                // shadow_clone!(github_oauth2_client);
+                shadow_clone!(google_oauth2_client);
+                shadow_clone!(github_oauth2_client);
 
                 warn!("Error: {:?}", r);
 
-                handle_rejection(r)
+                handle_rejection(r, google_oauth2_client, github_oauth2_client)
             }
         });
 
     let (_, https_server) = warp::serve(
-        // oauth2_callback
         health
-            // .or(authorized_callback)
+            .or(oauth2_callback)
+            .or(authorized_callback)
             .or(server)
             .with(warp::trace::request()),
     )
@@ -778,8 +845,8 @@ pub enum Error {
 
 async fn handle_rejection(
     err: Rejection,
-    // google_oauth2_client: auth::google::GoogleOauth2Client,
-    // github_oauth2_client: auth::github::GithubOauth2Client,
+    google_oauth2_client: auth::google::GoogleOauth2Client,
+    github_oauth2_client: auth::github::GithubOauth2Client,
 ) -> Result<impl Reply, Infallible> {
     let mut resp = Response::new("");
 
@@ -814,47 +881,49 @@ async fn handle_rejection(
 
         *resp.status_mut() = StatusCode::TOO_MANY_REQUESTS;
         *resp.body_mut() = "Rate Limited"
-    // } else if let Some(NotAuthorized {
-    //     auth_type: Some(AuthProviderConfig::Oauth2(Oauth2SsoClient { provider })),
-    //     requested_url,
-    //     jwt_secret,
-    //     base_url,
-    //     proto,
-    //     is_jwt_token_included,
-    // }) = err.find::<NotAuthorized>()
-    // {
-    //     let redirect_to = match provider {
-    //         Oauth2Provider::Google => {
-    //             google_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
-    //         }
-    //         Oauth2Provider::Github => {
-    //             github_oauth2_client.authorization_url(base_url, jwt_secret, requested_url)
-    //         }
-    //     };
-    //
-    //     let delete_cookie = Cookie::build(AUTH_COOKIE_NAME, "deleted")
-    //         .http_only(true)
-    //         .secure(true)
-    //         .path(base_url.path())
-    //         .expires(time::OffsetDateTime::unix_epoch())
-    //         .finish();
-    //
-    //     resp.headers_mut()
-    //         .insert(SET_COOKIE, delete_cookie.to_string().try_into().unwrap());
-    //
-    //     match proto {
-    //         Protocol::Http => {
-    //             resp.headers_mut()
-    //                 .insert(LOCATION, redirect_to.try_into().unwrap());
-    //             *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-    //         }
-    //         Protocol::WebSockets if *is_jwt_token_included => {
-    //             *resp.status_mut() = StatusCode::UNAUTHORIZED;
-    //         }
-    //         Protocol::WebSockets => {
-    //             *resp.status_mut() = StatusCode::FORBIDDEN;
-    //         }
-    //     }
+    } else if let Some(NotAuthorized {
+        auth_type: Some(AuthProviderConfig::Oauth2(Oauth2SsoClient { provider })),
+        requested_url,
+        jwt_ecdsa,
+        base_url,
+        proto,
+        is_jwt_token_included,
+    }) = err.find::<NotAuthorized>()
+    {
+        let redirect_to = match provider {
+            Oauth2Provider::Google => google_oauth2_client
+                .save_state_and_retrieve_authorization_url(base_url, jwt_ecdsa, requested_url)
+                .await
+                .expect("FIXME"),
+            Oauth2Provider::Github => github_oauth2_client
+                .save_state_and_retrieve_authorization_url(base_url, jwt_ecdsa, requested_url)
+                .await
+                .expect("FIXME"),
+        };
+
+        let delete_cookie = Cookie::build(AUTH_COOKIE_NAME, "deleted")
+            .http_only(true)
+            .secure(true)
+            .path(base_url.path())
+            .expires(time::OffsetDateTime::unix_epoch())
+            .finish();
+
+        resp.headers_mut()
+            .insert(SET_COOKIE, delete_cookie.to_string().try_into().unwrap());
+
+        match proto {
+            Protocol::Http => {
+                resp.headers_mut()
+                    .insert(LOCATION, redirect_to.try_into().unwrap());
+                *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+            }
+            Protocol::WebSockets if *is_jwt_token_included => {
+                *resp.status_mut() = StatusCode::UNAUTHORIZED;
+            }
+            Protocol::WebSockets => {
+                *resp.status_mut() = StatusCode::FORBIDDEN;
+            }
+        }
     } else if err.find::<NotSupported>().is_some() {
         *resp.status_mut() = StatusCode::NOT_IMPLEMENTED;
     } else if err.find::<InjectionFound>().is_some() {
@@ -1244,17 +1313,17 @@ struct RateLimited {
 
 impl Reject for RateLimited {}
 
-// #[derive(Debug)]
-// struct NotAuthorized {
-//     auth_type: Option<AuthProviderConfig>,
-//     base_url: Url,
-//     requested_url: Url,
-//     jwt_secret: Vec<u8>,
-//     proto: Protocol,
-//     is_jwt_token_included: bool,
-// }
+#[derive(Debug)]
+struct NotAuthorized {
+    auth_type: Option<AuthProviderConfig>,
+    base_url: UrlPrefix,
+    requested_url: Url,
+    jwt_ecdsa: JwtEcdsa,
+    proto: Protocol,
+    is_jwt_token_included: bool,
+}
 
-// impl Reject for NotAuthorized {}
+impl Reject for NotAuthorized {}
 
 #[derive(Debug)]
 struct NotSupported {}

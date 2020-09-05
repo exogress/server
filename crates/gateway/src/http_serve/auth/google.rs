@@ -1,17 +1,18 @@
-use std::sync::Arc;
 use std::time::Duration;
 
-use crate::http_serve::auth::FlowData;
-// use crate::url_mapping::mapping::Oauth2Provider;
+use crate::http_serve::auth::{
+    retrieve_assistant_key, save_assistant_key, AssistantError, CallbackResult, FlowData,
+    Oauth2FlowError,
+};
+use crate::url_mapping::mapping::{JwtEcdsa, Oauth2Provider};
+use crate::url_mapping::url_prefix::UrlPrefix;
 use hashbrown::HashMap;
-use lru_time_cache::LruCache;
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     AsyncCodeTokenRequest, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenUrl,
 };
-use parking_lot::Mutex;
 use url::Url;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -43,19 +44,17 @@ impl GoogleClientCreds {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Oauth2FlowData {
     pkce_code_verifier: PkceCodeVerifier,
     data: FlowData,
 }
 
-pub struct Inner {
-    verifiers: LruCache<String, Oauth2FlowData>,
-}
-
 #[derive(Clone)]
 pub struct GoogleOauth2Client {
-    inner: Arc<Mutex<Inner>>,
+    assistant_base_url: Url,
     creds: GoogleClientCreds,
+    ttl: Duration,
 }
 
 impl GoogleOauth2Client {
@@ -64,6 +63,7 @@ impl GoogleOauth2Client {
         client_id: String,
         client_secret: String,
         public_base_url: Url,
+        assistant_base_url: Url,
     ) -> Self {
         let mut redirect_url = public_base_url;
 
@@ -75,23 +75,22 @@ impl GoogleOauth2Client {
             .push("callback");
 
         GoogleOauth2Client {
-            inner: Arc::new(Mutex::new(Inner {
-                verifiers: LruCache::with_expiry_duration(ttl),
-            })),
+            assistant_base_url,
             creds: GoogleClientCreds {
                 client_id,
                 client_secret,
                 redirect_url: redirect_url.to_string(),
             },
+            ttl,
         }
     }
 
-    pub fn authorization_url(
+    pub async fn save_state_and_retrieve_authorization_url(
         &self,
-        base_url: &Url,
-        jwt_secret: &[u8],
+        base_url: &UrlPrefix,
+        jwt_ecdsa: &JwtEcdsa,
         requested_url: &Url,
-    ) -> String {
+    ) -> Result<String, AssistantError> {
         let client = self.creds.client();
 
         let (pkce_code_challenge, pkce_code_verifier) = PkceCodeChallenge::new_random_sha256();
@@ -102,20 +101,23 @@ impl GoogleOauth2Client {
             .set_pkce_challenge(pkce_code_challenge)
             .url();
 
-        self.inner.lock().verifiers.insert(
-            csrf_state.secret().clone(),
-            Oauth2FlowData {
+        save_assistant_key(
+            &self.assistant_base_url,
+            csrf_state.secret().as_str(),
+            &Oauth2FlowData {
                 pkce_code_verifier,
                 data: FlowData {
                     requested_url: requested_url.clone(),
-                    // jwt_secret: jwt_secret.to_vec(),
+                    jwt_ecdsa: jwt_ecdsa.clone(),
                     base_url: base_url.clone(),
-                    // provider: Oauth2Provider::Google,
+                    provider: Oauth2Provider::Google,
                 },
             },
-        );
+            self.ttl,
+        )
+        .await?;
 
-        authorize_url.to_string()
+        Ok(authorize_url.to_string())
     }
 
     pub async fn process_callback(
@@ -128,12 +130,11 @@ impl GoogleOauth2Client {
                 .ok_or(Oauth2FlowError::NoStateInCallback)?,
         );
 
-        let oauth2_flow_data = self
-            .inner
-            .lock()
-            .verifiers
-            .remove(received_state.secret())
-            .ok_or(Oauth2FlowError::StateNotFound)?;
+        let oauth2_flow_data = retrieve_assistant_key::<Oauth2FlowData>(
+            &self.assistant_base_url,
+            received_state.secret(),
+        )
+        .await?;
 
         let code = AuthorizationCode::new(
             params

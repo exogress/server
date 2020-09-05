@@ -56,6 +56,11 @@ impl UrlPrefix {
         url.host_str().expect("FIXME").to_string().into()
     }
 
+    pub fn path(&self) -> std::string::String {
+        let url = Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME");
+        url.path().to_string()
+    }
+
     pub fn is_subpath_of_or_equal(&self, other: &UrlPrefix) -> bool {
         if self.inner.len() > other.inner.len() {
             return false;

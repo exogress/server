@@ -98,7 +98,7 @@ impl Inner {
     fn find_mapping(
         &mut self,
         url_prefix: &UrlForRewriting,
-    ) -> Option<(Option<Arc<Mapping>>, String)> {
+    ) -> Option<(Option<Arc<Mapping>>, UrlPrefix)> {
         self.from_prefix_lookup_tree
             .get_longest_common_prefix(url_prefix.to_string().as_str())
             .map(|(prefix, v)| {
@@ -110,7 +110,10 @@ impl Inner {
                             panic!("Unexpected dangling weak pointer in from- PatriciaTree")
                         }
                     }),
-                    std::str::from_utf8(prefix).expect("FIXME").into(),
+                    std::str::from_utf8(prefix)
+                        .expect("FIXME")
+                        .parse()
+                        .expect("FIXME"),
                 )
             })
     }
@@ -145,7 +148,7 @@ impl Configs {
                 MappingAction,
                 RateLimiters,
             )>,
-            String,
+            UrlPrefix,
         ),
     > {
         self.inner
