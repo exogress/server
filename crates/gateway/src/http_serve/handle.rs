@@ -826,6 +826,9 @@ pub enum Error {
 
     #[error("request error")]
     RequestError(#[from] hyper::Error),
+
+    #[error("request timeout")]
+    Timeout,
 }
 
 async fn handle_rejection(
@@ -1163,6 +1166,9 @@ fn proxy_request_headers(
     res
 }
 
+const HTTP_REQ_TIMEOUT: Duration = Duration::from_secs(60 * 5);
+const HTTP_BYTES_TIMEOUT: Duration = Duration::from_secs(60);
+
 async fn proxy_http_request<
     T: Stream<Item = Result<impl Buf + 'static, warp::Error>> + Send + Sync + 'static,
 >(
@@ -1192,22 +1198,38 @@ async fn proxy_http_request<
         );
     }
 
-    match hyper
-        .request(
+    let r = tokio::time::timeout(
+        HTTP_REQ_TIMEOUT,
+        hyper.request(
             proxy_req
                 .body(hyper::Body::wrap_stream(
-                    to_bytes_stream_and_check_injections(body_stream),
+                    tokio::stream::StreamExt::timeout(
+                        to_bytes_stream_and_check_injections(body_stream),
+                        HTTP_BYTES_TIMEOUT,
+                    )
+                    .map(|r| match r {
+                        Err(e) => Err(anyhow::Error::new(e)),
+                        Ok(Err(e)) => Err(anyhow::Error::new(e)),
+                        Ok(Ok(r)) => Ok(r),
+                    }), //Timeout on data
                 ))
                 .expect("FIXME"),
-        )
-        .await
-    {
-        Err(e) => {
+        ),
+    )
+    .await;
+
+    match r {
+        Err(_) => {
+            info!("timeout processing request");
+
+            Err(Error::Timeout)
+        }
+        Ok(Err(e)) => {
             info!("error requesting client connection: {}", e);
 
             Err(Error::RequestError(e))
         }
-        Ok(hyper_response) => {
+        Ok(Ok(hyper_response)) => {
             let mut resp = Response::builder().status(match hyper_response.status() {
                 StatusCode::PERMANENT_REDIRECT => StatusCode::TEMPORARY_REDIRECT,
                 code => code,

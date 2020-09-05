@@ -292,6 +292,23 @@ pub async fn server(
                             if let Err(e) = r {
                                 error!("error forwarding WS: {}", e);
                             }
+
+                            let mut set_offline_backoff =
+                                Backoff::new(Duration::from_millis(100), Duration::from_secs(1));
+
+                            for _ in 0..10 {
+                                if let Err(e) = presence_client
+                                    .set_offline(&instance_id, &authorization)
+                                    .await
+                                {
+                                    error!("could not unset presence: {}", e);
+                                } else {
+                                    return;
+                                }
+                                set_offline_backoff.next().await;
+                            }
+
+                            stop_handle.stop(StopReason::SetOfflineError);
                         }
                         Err(_e) => {
                             info!("timeout waiting for the first config");
@@ -300,23 +317,6 @@ pub async fn server(
                             info!("config error: {}", e);
                         }
                     }
-
-                    let mut set_offline_backoff =
-                        Backoff::new(Duration::from_millis(100), Duration::from_secs(1));
-
-                    for _ in 0..10 {
-                        if let Err(e) = presence_client
-                            .set_offline(&instance_id, &authorization)
-                            .await
-                        {
-                            error!("could not unset presence: {}", e);
-                        } else {
-                            return;
-                        }
-                        set_offline_backoff.next().await;
-                    }
-
-                    stop_handle.stop(StopReason::SetOfflineError);
 
                     futures::future::pending::<()>().await;
                 })
