@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use crate::clients::ClientTunnels;
+use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::mapping::{JwtEcdsa, Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::rate_limiter::{RateLimiter, RateLimiterKind, RateLimiters};
 use crate::url_mapping::registry::Configs;
-use crate::url_mapping::targets::TargetsProcessor;
 use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
@@ -281,7 +281,7 @@ impl Client {
                                                     .next()
                                                     .expect("FIXME");
 
-                                                let targets_processor = TargetsProcessor::new(
+                                                let handlers_processor = HandlersProcessor::new(
                                                     config_data
                                                         .config
                                                         .exposes
@@ -289,7 +289,7 @@ impl Client {
                                                         .next()
                                                         .as_ref()
                                                         .expect("FIXME")
-                                                        .targets
+                                                        .handlers
                                                         .iter(),
                                                     config_data.instance_ids.iter(),
                                                 );
@@ -303,8 +303,8 @@ impl Client {
                                                             .parse()
                                                             .expect("FIXME"),
                                                         generated_at: config_response.generated_at,
-                                                        // targets_processor,
-                                                        targets_processor,
+                                                        // handlers_processor,
+                                                        handlers_processor,
                                                         account: config_response.account,
                                                         project: config_response.project,
                                                         config_name: config_data.config.name,
@@ -318,17 +318,6 @@ impl Client {
                                                                 .public_key
                                                                 .into(),
                                                         },
-                                                        auth_type: config_data
-                                                            .config
-                                                            .exposes
-                                                            .iter()
-                                                            .next()
-                                                            .and_then(|(_, mount)| {
-                                                                mount
-                                                                    .auth
-                                                                    .as_ref()
-                                                                    .map(|r| (*r).into())
-                                                            }),
                                                         rate_limiters: RateLimiters::new(vec![
                                                             RateLimiter::new(
                                                                 "free_plan".parse().unwrap(),

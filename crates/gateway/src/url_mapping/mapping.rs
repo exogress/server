@@ -13,8 +13,8 @@ use exogress_config_core::{AuthProvider, Config};
 use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
 
 use crate::clients::ClientTunnels;
+use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::rate_limiter::RateLimiters;
-use crate::url_mapping::targets::TargetsProcessor;
 use crate::url_mapping::url_prefix::UrlPrefix;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,11 +172,11 @@ pub struct Matched {
 }
 
 impl Matched {
-    pub fn resolve_target(
+    pub fn resolve_handler(
         self,
         rewrite_to: &ProxyMatchedTo,
         protocol: Protocol,
-    ) -> Result<ClientTarget, url::ParseError> {
+    ) -> Result<ClientHandler, url::ParseError> {
         let mut rewritten_str = self.url.inner.clone();
 
         rewritten_str.replace_range(0..self.pattern.matchable_prefix.len() - 1, "localhost");
@@ -197,14 +197,14 @@ impl Matched {
 
         match rewrite_to {
             ProxyMatchedTo::Client {
-                targets_processor,
+                handlers_processor,
                 config_name,
                 account_name,
                 project_name,
                 ..
-            } => Ok(ClientTarget {
+            } => Ok(ClientHandler {
                 account_name: account_name.clone(),
-                targets_processor: targets_processor.clone(),
+                handlers_processor: handlers_processor.clone(),
                 config_name: config_name.clone(),
                 url,
                 project_name: project_name.clone(),
@@ -336,7 +336,7 @@ pub enum RewriteMatchedToError {
 #[derive(Clone)]
 pub enum ProxyMatchedTo {
     Client {
-        targets_processor: TargetsProcessor,
+        handlers_processor: HandlersProcessor,
         account_name: AccountName,
         project_name: ProjectName,
         config_name: ConfigName,
@@ -348,10 +348,10 @@ impl ProxyMatchedTo {
         account_name: AccountName,
         project_name: ProjectName,
         config_name: ConfigName,
-        targets_processor: &TargetsProcessor,
+        handlers_processor: &HandlersProcessor,
     ) -> Result<Self, RewriteMatchedToError> {
         Ok(ProxyMatchedTo::Client {
-            targets_processor: targets_processor.clone(),
+            handlers_processor: handlers_processor.clone(),
             account_name,
             project_name,
             config_name,
@@ -400,12 +400,11 @@ pub struct JwtEcdsa {
 pub struct Mapping {
     pub match_pattern: MatchPattern,
     pub generated_at: DateTime<Utc>,
-    pub targets_processor: TargetsProcessor,
+    pub handlers_processor: HandlersProcessor,
     pub account: AccountName,
     pub project: ProjectName,
     pub config_name: ConfigName,
     pub jwt_ecdsa: JwtEcdsa,
-    pub auth_type: Option<AuthProviderConfig>,
     pub rate_limiters: RateLimiters,
 }
 
@@ -422,18 +421,17 @@ pub enum UrlMappingError {
 }
 
 #[derive(Clone, Debug)]
-pub struct ClientTarget {
+pub struct ClientHandler {
     pub account_name: AccountName,
     pub project_name: ProjectName,
     pub config_name: ConfigName,
-    pub targets_processor: TargetsProcessor,
+    pub handlers_processor: HandlersProcessor,
     pub url: Url,
 }
 
 #[derive(Clone)]
 pub struct MappingAction {
-    pub target: ClientTarget,
-    pub auth_type: Option<AuthProviderConfig>,
+    pub handler: ClientHandler,
     pub jwt_ecdsa: JwtEcdsa,
     pub external_base_url: Url,
 }
@@ -441,7 +439,7 @@ pub struct MappingAction {
 impl MappingAction {
     #[allow(dead_code)]
     pub fn rewrite_to_url(&self) -> Url {
-        self.target.url.clone()
+        self.handler.url.clone()
     }
 }
 
@@ -467,25 +465,24 @@ impl Mapping {
                 .generate_url(proto, Some(external_port), "");
             info!("base_url = {:?}", base_url);
 
-            let target = m
-                .resolve_target(
+            let handler = m
+                .resolve_handler(
                     &ProxyMatchedTo::new(
                         self.account.clone(),
                         self.project.clone(),
                         self.config_name.clone(),
-                        &self.targets_processor,
+                        &self.handlers_processor,
                     )
                     .expect("FIXME"),
                     proto,
                 )
                 .expect("FIXME");
 
-            info!("proxy_target = {:?}", target);
+            info!("proxy_handler = {:?}", handler);
 
             Ok((
                 MappingAction {
-                    target,
-                    auth_type: self.auth_type.clone(),
+                    handler,
                     jwt_ecdsa: self.jwt_ecdsa.clone(),
                     external_base_url: base_url,
                 },
@@ -515,7 +512,7 @@ impl Mapping {
 //         {
 //             "revision": 12345,
 //             "version": "0.0.1",
-//             "targets": [
+//             "handlers": [
 //                 {
 //                     "definition": {
 //                         "type": "static_app",

@@ -1,30 +1,48 @@
-use exogress_config_core::{Target, TargetVariant};
-use exogress_entities::{InstanceId, TargetName};
+use exogress_config_core::{Auth, Handler, HandlerVariant};
+use exogress_entities::{HandlerName, InstanceId};
 use exogress_tunnel::ConnectTarget;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use smartstring::alias::String;
+use std::path::Path;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ServerTarget {
+pub struct ServerHandler {
     base_path_matcher: String,
-    pub(crate) name: TargetName,
-    pub(crate) variant: TargetVariant,
+    pub(crate) name: HandlerName,
+    pub(crate) variant: HandlerVariant,
+}
+
+impl ServerHandler {
+    pub fn connect_to(&self, path: impl AsRef<Path>) -> Option<ConnectTarget> {
+        match &self.variant {
+            HandlerVariant::Proxy(proxy) => Some(ConnectTarget::Upstream(proxy.upstream.clone())),
+            HandlerVariant::StaticDir(_) => Some(ConnectTarget::Internal(self.name.clone())),
+            _ => None,
+        }
+    }
+
+    pub fn auth(&self) -> Option<Auth> {
+        match &self.variant {
+            HandlerVariant::Auth(auth) => Some(auth.clone()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct TargetsProcessor {
-    targets: SmallVec<[ServerTarget; 4]>,
+pub struct HandlersProcessor {
+    pub handlers: SmallVec<[ServerHandler; 4]>,
     pub instance_ids: SmallVec<[InstanceId; 4]>,
 }
 
-impl TargetsProcessor {
+impl HandlersProcessor {
     pub fn new<'a>(
-        targets: impl Iterator<Item = (&'a TargetName, &'a Target)>,
+        handlers: impl Iterator<Item = (&'a HandlerName, &'a Handler)>,
         instances: impl Iterator<Item = &'a InstanceId>,
-    ) -> TargetsProcessor {
-        let inner = targets
-            .map(|(target_name, t)| {
+    ) -> HandlersProcessor {
+        let inner = handlers
+            .map(|(handler_name, t)| {
                 let base_path = t
                     .base_path
                     .clone()
@@ -34,9 +52,9 @@ impl TargetsProcessor {
                     .join("/")
                     .into();
                 (
-                    ServerTarget {
+                    ServerHandler {
                         base_path_matcher: base_path,
-                        name: target_name.clone(),
+                        name: handler_name.clone(),
                         variant: t.variant.clone().into(),
                     },
                     t.priority,
@@ -46,26 +64,17 @@ impl TargetsProcessor {
             .map(|(s, _)| s)
             .collect();
 
-        TargetsProcessor {
-            targets: inner,
+        HandlersProcessor {
+            handlers: inner,
             instance_ids: instances.cloned().collect(),
         }
     }
 
-    fn seq_for_rest_path<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a ServerTarget> {
-        self.targets
-            .iter()
-            .filter(move |item| path.starts_with(item.base_path_matcher.as_str()))
-    }
-
-    pub fn connect_targets(&self, path: &str) -> SmallVec<[ConnectTarget; 4]> {
-        self.seq_for_rest_path(path)
-            .map(|target| match &target.variant {
-                TargetVariant::Proxy(proxy) => ConnectTarget::Upstream(proxy.upstream.clone()),
-                TargetVariant::StaticDir(_) => ConnectTarget::Internal(target.name.clone()),
-            })
-            .collect()
-    }
+    // fn seq_for_rest_path<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a ServerHandler> {
+    //     self.handlers
+    //         .iter()
+    //         .filter(move |item| path.starts_with(item.base_path_matcher.as_str()))
+    // }
 }
 
 #[cfg(test)]
@@ -76,7 +85,7 @@ mod test {
     use std::str::FromStr;
 
     #[test]
-    pub fn test_targets() {
+    pub fn test_handlers() {
         const YAML: &str = r#"---
 version: 0.0.1
 revision: 10
@@ -86,7 +95,7 @@ upstreams:
     port: 3000
 exposes:
   mount_point:
-    targets:
+    handlers:
       directory1:
         type: static_dir
         priority: 1000
@@ -105,29 +114,29 @@ exposes:
 "#;
         let cfg = serde_yaml::from_str::<Config>(YAML).unwrap();
 
-        let targets = TargetsProcessor::new(
+        let handlers = HandlersProcessor::new(
             cfg.exposes
                 .get(&MountPointName::from_str("mount_point").unwrap())
                 .unwrap()
-                .targets
+                .handlers
                 .iter(),
             vec![].iter(),
         );
 
         assert_eq!(
-            targets.seq_for_rest_path("").cloned().collect::<Vec<_>>(),
+            handlers.seq_for_rest_path("").cloned().collect::<Vec<_>>(),
             vec![
-                ServerTarget {
+                ServerHandler {
                     base_path_matcher: "".into(),
                     name: "main".parse().unwrap(),
-                    variant: TargetVariant::Proxy(Proxy {
+                    variant: HandlerVariant::Proxy(Proxy {
                         upstream: "backend".parse().unwrap(),
                     }),
                 },
-                ServerTarget {
+                ServerHandler {
                     base_path_matcher: "".into(),
                     name: "directory1".parse().unwrap(),
-                    variant: TargetVariant::StaticDir(StaticDir {
+                    variant: HandlerVariant::StaticDir(StaticDir {
                         dir: "./dir1".parse().unwrap(),
                     }),
                 },
@@ -135,29 +144,29 @@ exposes:
         );
 
         assert_eq!(
-            targets
+            handlers
                 .seq_for_rest_path("asd/ads/hello")
                 .cloned()
                 .collect::<Vec<_>>(),
             vec![
-                ServerTarget {
+                ServerHandler {
                     base_path_matcher: "asd/ads".into(),
                     name: "directory2".parse().unwrap(),
-                    variant: TargetVariant::StaticDir(StaticDir {
+                    variant: HandlerVariant::StaticDir(StaticDir {
                         dir: "./dir2".parse().unwrap(),
                     }),
                 },
-                ServerTarget {
+                ServerHandler {
                     base_path_matcher: "".into(),
                     name: "main".parse().unwrap(),
-                    variant: TargetVariant::Proxy(Proxy {
+                    variant: HandlerVariant::Proxy(Proxy {
                         upstream: "backend".parse().unwrap(),
                     }),
                 },
-                ServerTarget {
+                ServerHandler {
                     base_path_matcher: "".into(),
                     name: "directory1".parse().unwrap(),
-                    variant: TargetVariant::StaticDir(StaticDir {
+                    variant: HandlerVariant::StaticDir(StaticDir {
                         dir: "./dir1".parse().unwrap(),
                     }),
                 },
