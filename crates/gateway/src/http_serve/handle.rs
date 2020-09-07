@@ -412,6 +412,7 @@ pub async fn server(
                             external_https_port,
                             proto,
                             tunnels,
+                            individual_hostname.clone(),
                         )
                         .await;
 
@@ -536,23 +537,22 @@ pub async fn server(
                     info!("GEO IP: {:?}", resolved);
                 }
 
-                let mut rng = thread_rng();
-                let mut ordered_instances = mapping_action
-                    .handler
-                    .handlers_processor
-                    .instance_ids
-                    .clone();
-                ordered_instances.shuffle(&mut rng);
-
                 async move {
                     let account_name = mapping_action.handler.account_name;
                     let project_name = mapping_action.handler.project_name;
-                    let config_name = mapping_action.handler.config_name;
                     let url = mapping_action.handler.url;
                     let handlers_processor = mapping_action.handler.handlers_processor;
 
                     for handler in &handlers_processor.handlers {
-                        if let Some(connect_target) = handler.connect_to("") {
+                        info!("HANDLER: {:?}", handler);
+
+                        let mut ordered_instances = handler.instances_ids.clone();
+                        {
+                            let mut rng = thread_rng();
+                            ordered_instances.shuffle(&mut rng);
+                        }
+
+                        if let Some(connect_target) = handler.connect_target("") {
                             for instance_id in ordered_instances.iter() {
                                 info!("try proxy to {}", instance_id);
                                 let (connector, hyper, proxy_to) =
@@ -562,7 +562,7 @@ pub async fn server(
                                         .retrieve_client_tunnel(
                                             account_name.clone(),
                                             project_name.clone(),
-                                            config_name.clone(),
+                                            handler.config_name.clone(),
                                             instance_id.clone(),
                                             individual_hostname.clone().into(),
                                         )
@@ -829,6 +829,9 @@ pub enum Error {
 
     #[error("request timeout")]
     Timeout,
+
+    #[error("websocket connect error")]
+    WebSocketError(#[from] tungstenite::Error),
 }
 
 async fn handle_rejection(
@@ -984,16 +987,12 @@ async fn proxy_ws(
     info!("connected");
 
     let (proxied_ws, proxied_response) = if should_use_tls {
-        let (s, resp) = tokio_tungstenite::client_async_tls(proxy_req, transport)
-            .await
-            .expect("FIXME");
+        let (s, resp) = tokio_tungstenite::client_async_tls(proxy_req, transport).await?;
 
         (Either::Left(s), resp)
     } else {
         info!("PLAIN");
-        let (s, resp) = tokio_tungstenite::client_async(proxy_req, transport)
-            .await
-            .unwrap();
+        let (s, resp) = tokio_tungstenite::client_async(proxy_req, transport).await?;
 
         (Either::Right(s), resp)
     };

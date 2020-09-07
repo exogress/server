@@ -56,7 +56,7 @@ impl ClientTunnels {
     /// Otherwise, request new tunnel through signalling channel and
     /// wait for the actual connection
     pub async fn retrieve_client_tunnel(
-        &mut self,
+        &self,
         account_name: AccountName,
         project_name: ProjectName,
         config_name: ConfigName,

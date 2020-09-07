@@ -92,10 +92,10 @@ pub async fn spawn(
                             .await
                         {
                             Ok(Ok(tunnel_hello)) => {
-                                warn!(
-                                    "accepted new TLS tunnel with tunnel_hello {:?}",
-                                    tunnel_hello
-                                );
+                                // warn!(
+                                //     "accepted new TLS tunnel with tunnel_hello {:?}",
+                                //     tunnel_hello
+                                // );
 
                                 tunnel_hello
                             }
@@ -117,7 +117,7 @@ pub async fn spawn(
 
                         let arena_index;
 
-                        info!("new instance connected");
+                        // info!("new instance connected");
 
                         {
                             let new_connected_tunnel = ConnectedTunnel {

@@ -9,13 +9,20 @@ use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
 
-use exogress_config_core::{AuthProvider, Config};
-use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
+use exogress_config_core::{AuthProvider, Config, Probe};
+use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName, Upstream};
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::url_prefix::UrlPrefix;
+use crate::webapp::ConfigsResponse;
+use exogress_tunnel::ConnectTarget;
+use futures::channel::oneshot;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use hashbrown::HashMap;
+use tokio::time::delay_for;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TlsConfig {
@@ -198,14 +205,12 @@ impl Matched {
         match rewrite_to {
             ProxyMatchedTo::Client {
                 handlers_processor,
-                config_name,
                 account_name,
                 project_name,
                 ..
             } => Ok(ClientHandler {
                 account_name: account_name.clone(),
                 handlers_processor: handlers_processor.clone(),
-                config_name: config_name.clone(),
                 url,
                 project_name: project_name.clone(),
             }),
@@ -339,7 +344,6 @@ pub enum ProxyMatchedTo {
         handlers_processor: HandlersProcessor,
         account_name: AccountName,
         project_name: ProjectName,
-        config_name: ConfigName,
     },
 }
 
@@ -347,14 +351,12 @@ impl ProxyMatchedTo {
     pub fn new(
         account_name: AccountName,
         project_name: ProjectName,
-        config_name: ConfigName,
         handlers_processor: &HandlersProcessor,
     ) -> Result<Self, RewriteMatchedToError> {
         Ok(ProxyMatchedTo::Client {
             handlers_processor: handlers_processor.clone(),
             account_name,
             project_name,
-            config_name,
         })
     }
 }
@@ -396,16 +398,172 @@ pub struct JwtEcdsa {
     pub public_key: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Mapping {
-    pub match_pattern: MatchPattern,
-    pub generated_at: DateTime<Utc>,
-    pub handlers_processor: HandlersProcessor,
-    pub account: AccountName,
-    pub project: ProjectName,
-    pub config_name: ConfigName,
-    pub jwt_ecdsa: JwtEcdsa,
-    pub rate_limiters: RateLimiters,
+    match_pattern: MatchPattern,
+    pub(crate) generated_at: DateTime<Utc>,
+    handlers_processor: HandlersProcessor,
+    account: AccountName,
+    project: ProjectName,
+    jwt_ecdsa: JwtEcdsa,
+    rate_limiters: RateLimiters,
+    healthcheck_stop_tx: oneshot::Sender<()>,
+}
+
+impl Mapping {
+    pub fn new(
+        config_response: ConfigsResponse,
+        handlers_processor: HandlersProcessor,
+        rate_limiters: RateLimiters,
+        client_tunnels: ClientTunnels,
+        individual_hostname: String,
+    ) -> Mapping {
+        let match_pattern = config_response.url_prefix.as_str().parse().expect("FIXME");
+
+        let account = config_response.account.clone();
+        let project = config_response.project.clone();
+        let generated_at = config_response.generated_at.clone();
+
+        let jwt_ecdsa = JwtEcdsa {
+            private_key: config_response.jwt_ecdsa.private_key.clone().into(),
+            public_key: config_response.jwt_ecdsa.public_key.clone().into(),
+        };
+
+        let (healthcheck_stop_tx, healthcheck_stop_rx) = oneshot::channel();
+
+        info!("spawn healthcheck");
+
+        let healthcheck = {
+            shadow_clone!(individual_hostname);
+            shadow_clone!(handlers_processor);
+            shadow_clone!(client_tunnels);
+
+            shadow_clone!(account);
+            shadow_clone!(project);
+
+            async move {
+                shadow_clone!(project);
+
+                loop {
+                    shadow_clone!(client_tunnels);
+                    shadow_clone!(project);
+
+                    let futures = FuturesUnordered::new();
+
+                    for config in &config_response.configs {
+                        if config.instance_ids.is_empty() || config.config.upstreams.is_empty() {
+                            return;
+                        }
+
+                        let config_name = config.config_name.clone();
+
+                        for instance_id in &config.instance_ids {
+                            for (upstream, upstream_definition) in &config.config.upstreams {
+                                let check = {
+                                    shadow_clone!(individual_hostname);
+                                    shadow_clone!(handlers_processor);
+                                    shadow_clone!(client_tunnels);
+
+                                    shadow_clone!(account);
+                                    shadow_clone!(project);
+
+                                    let maybe_client_tunnel = client_tunnels
+                                        .retrieve_client_tunnel(
+                                            account.clone(),
+                                            project.clone(),
+                                            config.config.name.clone(),
+                                            instance_id.clone(),
+                                            individual_hostname.clone().into(),
+                                        )
+                                        .await;
+
+                                    if let Some(client_tunnel) = maybe_client_tunnel {
+                                        let connect_target =
+                                            ConnectTarget::Upstream(upstream.clone());
+
+                                        for probe in &upstream_definition.health {
+                                            let hyper = client_tunnel.hyper.clone();
+
+                                            futures.push({
+                                                shadow_clone!(connect_target);
+
+                                                async move {
+                                                    shadow_clone!(connect_target);
+
+
+                                                    let url = connect_target
+                                                        .with_path(probe.target.path.as_str())
+                                                        .expect("FIXME: URL error");
+
+                                                    info!(
+                                                        "healthcheck connect target {:?} to instance {}. probe: {:?}. URL = {}",
+                                                        connect_target, instance_id, probe, url
+                                                    );
+
+                                                    let r = tokio::time::timeout(
+                                                        probe.target.timeout,
+                                                        hyper.get(
+                                                            url.to_string().parse().expect("FIXME"),
+                                                        ),
+                                                    )
+                                                        .await;
+
+                                                    match r {
+                                                        Ok(Ok(resp)) if resp.status().is_success() => info!(
+                                                            "healthcheck ok instance_id={}, upstream={}",
+                                                            instance_id, upstream
+                                                        ),
+                                                        Ok(Ok(resp)) => info!(
+                                                            "healthcheck bad status {:?} instance_id={}, upstream={}",
+                                                            resp.status(),
+                                                            instance_id,
+                                                            upstream
+                                                        ),
+                                                        Ok(Err(e)) => info!(
+                                                            "healthcheck error {:?} instance_id={}, upstream={}",
+                                                            e, instance_id, upstream
+                                                        ),
+                                                        Err(e) => error!(
+                                                            "healthcheck timeout instance_id={}, upstream={}",
+                                                            instance_id, upstream
+                                                        ),
+                                                    }
+
+                                                    delay_for(probe.target.period).await;
+                                                }
+                                            });
+                                        }
+                                    }
+                                };
+                            }
+                        }
+                    }
+
+                    futures.collect::<Vec<_>>().await;
+                }
+            }
+        };
+
+        tokio::spawn(async move {
+            tokio::select! {
+              _ = healthcheck => {},
+              _ = healthcheck_stop_rx => {},
+            }
+        });
+
+        let mapping = Mapping {
+            match_pattern,
+            generated_at,
+            handlers_processor,
+            account,
+            project,
+            jwt_ecdsa,
+            rate_limiters,
+            healthcheck_stop_tx,
+        };
+
+        mapping
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -424,7 +582,6 @@ pub enum UrlMappingError {
 pub struct ClientHandler {
     pub account_name: AccountName,
     pub project_name: ProjectName,
-    pub config_name: ConfigName,
     pub handlers_processor: HandlersProcessor,
     pub url: Url,
 }
@@ -453,24 +610,19 @@ impl Mapping {
     pub fn handle(
         &self,
         url: UrlForRewriting,
-        _tunnels: ClientTunnels,
         external_port: u16,
         proto: Protocol,
     ) -> Result<(MappingAction, RateLimiters), UrlMappingError> {
         if let Some(m) = url.clone().matches(self.match_pattern.clone()) {
-            info!("matched = {:?}", m);
-            info!("self = {:?}", self);
             let base_url = self
                 .match_pattern
                 .generate_url(proto, Some(external_port), "");
-            info!("base_url = {:?}", base_url);
 
             let handler = m
                 .resolve_handler(
                     &ProxyMatchedTo::new(
                         self.account.clone(),
                         self.project.clone(),
-                        self.config_name.clone(),
                         &self.handlers_processor,
                     )
                     .expect("FIXME"),
@@ -478,12 +630,9 @@ impl Mapping {
                 )
                 .expect("FIXME");
 
-            info!("proxy_handler = {:?}", handler);
-
             Ok((
                 MappingAction {
                     handler,
-                    // auth_type: None, //self.auth_type.clone(),
                     jwt_ecdsa: self.jwt_ecdsa.clone(),
                     external_base_url: base_url,
                 },

@@ -156,13 +156,11 @@ impl Configs {
             .find_mapping(&url_prefix)
             .map(move |(maybe_mapping, matched_prefix)| {
                 (
-                    maybe_mapping.and_then(|r| {
-                        match r.handle(url_prefix, tunnels, external_port, proto) {
-                            Ok(r) => Some(r),
-                            Err(e) => {
-                                error!("error handling URL: {:?}", e);
-                                None
-                            }
+                    maybe_mapping.and_then(|r| match r.handle(url_prefix, external_port, proto) {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            error!("error handling URL: {:?}", e);
+                            None
                         }
                     }),
                     matched_prefix,

@@ -9,7 +9,9 @@ use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use exogress_config_core::{Config, Revision};
-use exogress_entities::{AccountName, InstanceId, MountPointName, ProjectName};
+use exogress_entities::{
+    AccountName, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
+};
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
@@ -110,6 +112,7 @@ pub struct ConfigData {
     pub instance_ids: SmallVec<[InstanceId; 4]>,
     pub config: Config,
     pub revision: Revision,
+    pub config_name: ConfigName,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -121,13 +124,13 @@ pub struct JwtEcdsaResponse {
 #[derive(Deserialize, Clone, Debug)]
 pub struct ConfigsResponse {
     #[serde(with = "ts_milliseconds")]
-    generated_at: DateTime<Utc>,
-    url_prefix: UrlPrefix,
-    account: AccountName,
-    project: ProjectName,
-    mount_point: MountPointName,
-    configs: SmallVec<[ConfigData; 8]>,
-    jwt_ecdsa: JwtEcdsaResponse,
+    pub generated_at: DateTime<Utc>,
+    pub url_prefix: UrlPrefix,
+    pub account: AccountName,
+    pub project: ProjectName,
+    pub mount_point: MountPointName,
+    pub configs: SmallVec<[ConfigData; 8]>,
+    pub jwt_ecdsa: JwtEcdsaResponse,
 }
 
 impl Client {
@@ -191,6 +194,7 @@ impl Client {
         external_port: u16,
         proto: Protocol,
         tunnels: ClientTunnels,
+        individual_hostname: String,
     ) -> Result<Option<(MappingAction, RateLimiters, UrlPrefix)>, Error> {
         // Try to read from cache
         if let Some((cached, url_prefix)) = self.configs.resolve(
@@ -216,157 +220,165 @@ impl Client {
         let host = url_for_rewriting.host();
 
         // take lock and deal with in_flight queries
-        let in_flight_request = self
-            .retrieve_configs
-            .lock()
-            .entry(host.clone().into())
-            .or_insert_with({
-                shadow_clone!(url_for_rewriting);
-                shadow_clone!(tunnels);
+        let in_flight_request =
+            self.retrieve_configs
+                .lock()
+                .entry(host.clone().into())
+                .or_insert_with({
+                    shadow_clone!(url_for_rewriting);
+                    shadow_clone!(tunnels);
 
-                let base_url = self.base_url.clone();
-                let reqwest = self.reqwest.clone();
-                let configs = self.configs.clone();
+                    let base_url = self.base_url.clone();
+                    let reqwest = self.reqwest.clone();
+                    let configs = self.configs.clone();
 
-                move || {
-                    let ready_event = Arc::new(ManualResetEvent::new(false));
+                    move || {
+                        let ready_event = Arc::new(ManualResetEvent::new(false));
 
-                    // initiate query
-                    tokio::spawn({
-                        shadow_clone!(ready_event);
-                        shadow_clone!(tunnels);
-                        shadow_clone!(reqwest);
-                        shadow_clone!(base_url);
+                        // initiate query
+                        tokio::spawn({
+                            shadow_clone!(ready_event);
+                            shadow_clone!(tunnels);
+                            shadow_clone!(reqwest);
+                            shadow_clone!(base_url);
 
-                        async move {
-                            info!(
-                                "Initiating new request to retrieve mapping for {}",
-                                url_for_rewriting
-                            );
+                            async move {
+                                info!(
+                                    "Initiating new request to retrieve mapping for {}",
+                                    url_for_rewriting
+                                );
 
-                            let mut url = base_url.clone();
-                            url.path_segments_mut()
-                                .unwrap()
-                                .push("int")
-                                .push("api")
-                                .push("v1")
-                                .push("configs");
+                                let mut url = base_url.clone();
+                                url.path_segments_mut()
+                                    .unwrap()
+                                    .push("int")
+                                    .push("api")
+                                    .push("v1")
+                                    .push("configs");
 
-                            url.set_query(Some(
-                                format!(
-                                    "url={}",
-                                    percent_encoding::utf8_percent_encode(
-                                        format!("{}", url_for_rewriting).as_str(),
-                                        NON_ALPHANUMERIC,
+                                url.set_query(Some(
+                                    format!(
+                                        "url={}",
+                                        percent_encoding::utf8_percent_encode(
+                                            format!("{}", url_for_rewriting).as_str(),
+                                            NON_ALPHANUMERIC,
+                                        )
                                     )
-                                )
-                                .as_str(),
-                            ));
+                                    .as_str(),
+                                ));
 
-                            match reqwest.get(url).send().await {
-                                Ok(res) => {
-                                    if res.status().is_success() {
-                                        match res.json::<ConfigsResponse>().await {
-                                            Ok(config_response) => {
-                                                info!(
-                                                    "Configs retrieved successfully: `{:?}`",
-                                                    config_response
-                                                );
+                                match reqwest.get(url).send().await {
+                                    Ok(res) => {
+                                        if res.status().is_success() {
+                                            match res.json::<ConfigsResponse>().await {
+                                                Ok(config_response) => {
+                                                    info!(
+                                                        "Configs retrieved successfully: `{:?}`",
+                                                        config_response
+                                                    );
 
-                                                let config_data = config_response
-                                                    .configs
-                                                    .iter()
-                                                    .cloned()
-                                                    .sorted_by(|a, b| a.revision.cmp(&b.revision))
-                                                    .next()
-                                                    .expect("FIXME");
+                                                    let grouped = config_response
+                                                        .configs
+                                                        .iter()
+                                                        .group_by(|elt| elt.config_name.clone());
 
-                                                let handlers_processor = HandlersProcessor::new(
-                                                    config_data
-                                                        .config
-                                                        .exposes
-                                                        .values()
-                                                        .next()
-                                                        .as_ref()
-                                                        .expect("FIXME")
-                                                        .handlers
-                                                        .iter(),
-                                                    config_data.instance_ids.iter(),
-                                                );
+                                                    let handlers = grouped
+                                                        .into_iter()
+                                                        .map(|(config_name, config_entries)| {
+                                                            let config_entry = config_entries
+                                                                .into_iter()
+                                                                .sorted_by(|left, right| {
+                                                                    left.revision
+                                                                        .cmp(&right.revision)
+                                                                        .reverse()
+                                                                })
+                                                                .next() // Take last revision only
+                                                                .expect("FIXME");
 
-                                                configs.upsert(
-                                                    &config_response.url_prefix,
-                                                    Some(Mapping {
-                                                        match_pattern: config_response
-                                                            .url_prefix
-                                                            .as_str()
-                                                            .parse()
-                                                            .expect("FIXME"),
-                                                        generated_at: config_response.generated_at,
-                                                        // handlers_processor,
-                                                        handlers_processor,
-                                                        account: config_response.account,
-                                                        project: config_response.project,
-                                                        config_name: config_data.config.name,
-                                                        jwt_ecdsa: JwtEcdsa {
-                                                            private_key: config_response
-                                                                .jwt_ecdsa
-                                                                .private_key
-                                                                .into(),
-                                                            public_key: config_response
-                                                                .jwt_ecdsa
-                                                                .public_key
-                                                                .into(),
-                                                        },
-                                                        rate_limiters: RateLimiters::new(vec![
-                                                            RateLimiter::new(
-                                                                "free_plan".parse().unwrap(),
-                                                                RateLimiterKind::FailResponse,
-                                                                governor::Quota::with_period(
-                                                                    Duration::from_millis(1),
+                                                            let instances_ids =
+                                                                config_entry.instance_ids.clone();
+
+                                                            config_entry
+                                                            .config
+                                                            .mount_points
+                                                            .values()
+                                                            .next()
+                                                            .expect("FIXME")
+                                                            .handlers
+                                                            .iter()
+                                                            .map(move |(handler_name, handler)| {
+                                                                (
+                                                                    handler_name.clone(),
+                                                                    handler.clone(),
+                                                                    config_name.clone(),
+                                                                    instances_ids.clone(),
                                                                 )
-                                                                .unwrap()
-                                                                .allow_burst(
-                                                                    NonZeroU32::new(2500).unwrap(),
-                                                                ),
+                                                            })
+                                                        })
+                                                        .flatten();
+
+                                                    // info!("handlers = {:#?}", handlers);
+                                                    let handlers_processor =
+                                                        HandlersProcessor::new(handlers);
+
+                                                    let mapping = Mapping::new(
+                                                        config_response.clone(),
+                                                        handlers_processor,
+                                                        RateLimiters::new(vec![RateLimiter::new(
+                                                            "free_plan".parse().unwrap(),
+                                                            RateLimiterKind::FailResponse,
+                                                            governor::Quota::with_period(
+                                                                Duration::from_millis(1),
+                                                            )
+                                                            .unwrap()
+                                                            .allow_burst(
+                                                                NonZeroU32::new(2500).unwrap(),
                                                             ),
-                                                        ]),
-                                                    }),
-                                                    config_response.generated_at,
-                                                );
+                                                        )]),
+                                                        tunnels.clone(),
+                                                        individual_hostname.clone().into(),
+                                                    );
+
+                                                    info!("mapping = {:?}", mapping);
+
+                                                    configs.upsert(
+                                                        &config_response.url_prefix,
+                                                        Some(mapping),
+                                                        config_response.generated_at,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    error!(
+                                                        "Could not parse retrieved config body: {}",
+                                                        e
+                                                    );
+                                                }
                                             }
-                                            Err(e) => {
-                                                error!(
-                                                    "Could not parse retrieved config body: {}",
-                                                    e
-                                                );
-                                            }
+                                        } else if res.status() == StatusCode::NOT_FOUND {
+                                            configs.upsert(
+                                                &url_for_rewriting.to_url_prefix(),
+                                                None,
+                                                Utc::now(), //FIXME: return generated_at in 404 resp
+                                            );
+                                        } else {
+                                            error!(
+                                                "Bad status on configs retrieving: {}",
+                                                res.status()
+                                            );
                                         }
-                                    } else if res.status() == StatusCode::NOT_FOUND {
-                                        configs.upsert(
-                                            &url_for_rewriting.to_url_prefix(),
-                                            None,
-                                            Utc::now(), //FIXME: return generated_at in 404 resp
-                                        );
-                                    } else {
-                                        error!(
-                                            "Bad status on configs retrieving: {}",
-                                            res.status()
-                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("Error retrieving configs: {}", e);
                                     }
                                 }
-                                Err(e) => {
-                                    error!("Error retrieving configs: {}", e);
-                                }
-                            }
 
-                            ready_event.set();
-                        }
-                    });
-                    ready_event
-                }
-            })
-            .clone();
+                                ready_event.set();
+                            }
+                        });
+                        ready_event
+                    }
+                })
+                .clone();
 
         in_flight_request.wait().await;
 
