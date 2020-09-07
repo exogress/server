@@ -11,7 +11,7 @@ use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     AsyncCodeTokenRequest, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenUrl,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use url::Url;
 
@@ -20,6 +20,11 @@ pub struct GoogleClientCreds {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GoogleUserResponse {
+    email: String,
 }
 
 impl GoogleClientCreds {
@@ -98,6 +103,9 @@ impl GoogleOauth2Client {
         let (authorize_url, csrf_state) = client
             .authorize_url(CsrfToken::new_random)
             .add_scope(Scope::new("https://www.googleapis.com/auth/plus.me".into()))
+            .add_scope(Scope::new(
+                "https://www.googleapis.com/auth/userinfo.email".into(),
+            ))
             .set_pkce_challenge(pkce_code_challenge)
             .url();
 
@@ -151,9 +159,35 @@ impl GoogleOauth2Client {
             .await
             .map_err(Oauth2FlowError::RequestTokenError)?;
 
-        Ok(CallbackResult {
-            token_response: token,
-            oauth2_flow_data: oauth2_flow_data.data,
-        })
+        let user_resp = reqwest::Client::new()
+            .get("https://www.googleapis.com/oauth2/v3/userinfo")
+            .header(
+                "Authorization",
+                format!("Bearer {}", token.access_token().secret()),
+            )
+            .send()
+            .await
+            .map_err(Oauth2FlowError::RetrieveUserInfoError)?;
+
+        let status = user_resp.status();
+
+        if !status.is_success() {
+            let text = user_resp.text().await;
+            info!("Error retrieving user data: {:?}", text);
+
+            Err(Oauth2FlowError::RetrieveUserInfoBadStatus(status))
+        } else {
+            let user_info = user_resp
+                .json::<GoogleUserResponse>()
+                .await
+                .map_err(Oauth2FlowError::RetrieveUserInfoBadResponse)?;
+
+            info!("user_info = {:?}", user_info);
+
+            Ok(CallbackResult {
+                token_response: token,
+                oauth2_flow_data: oauth2_flow_data.data,
+            })
+        }
     }
 }

@@ -11,7 +11,7 @@ use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     AsyncCodeTokenRequest, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    RedirectUrl, Scope, TokenUrl,
+    RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use url::Url;
 
@@ -20,6 +20,12 @@ pub struct GithubClientCreds {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GithubUserResponse {
+    login: String,
+    email: Option<String>,
 }
 
 impl GithubClientCreds {
@@ -141,9 +147,39 @@ impl GithubOauth2Client {
             .await
             .map_err(Oauth2FlowError::RequestTokenError)?;
 
-        Ok(CallbackResult {
-            token_response: token,
-            oauth2_flow_data: oauth2_flow_data.data,
-        })
+        let user_resp = reqwest::Client::new()
+            .get("https://api.github.com/user")
+            .header(
+                "Authorization",
+                format!("token {}", token.access_token().secret()),
+            )
+            .header(
+                "User-Agent",
+                format!("Exogress Gateway/{}", clap::crate_version!()),
+            )
+            .send()
+            .await
+            .map_err(Oauth2FlowError::RetrieveUserInfoError)?;
+
+        let status = user_resp.status();
+
+        if !status.is_success() {
+            let text = user_resp.text().await;
+            info!("Error retrieving user data: {:?}", text);
+
+            Err(Oauth2FlowError::RetrieveUserInfoBadStatus(status))
+        } else {
+            let user_info = user_resp
+                .json::<GithubUserResponse>()
+                .await
+                .map_err(Oauth2FlowError::RetrieveUserInfoBadResponse)?;
+
+            info!("user_info = {:?}", user_info);
+
+            Ok(CallbackResult {
+                token_response: token,
+                oauth2_flow_data: oauth2_flow_data.data,
+            })
+        }
     }
 }

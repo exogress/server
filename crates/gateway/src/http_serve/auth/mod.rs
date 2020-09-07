@@ -27,6 +27,15 @@ pub struct CallbackResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Oauth2FlowError {
+    #[error("error retrieving user info: {_0}")]
+    RetrieveUserInfoError(reqwest::Error),
+
+    #[error("retrieving user info bad status: {_0}")]
+    RetrieveUserInfoBadStatus(reqwest::StatusCode),
+
+    #[error("retrieving user info bad response: {_0}")]
+    RetrieveUserInfoBadResponse(reqwest::Error),
+
     #[error("error in persisting state: {_0}")]
     PersistentStateError(#[from] AssistantError),
 

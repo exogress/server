@@ -266,7 +266,7 @@ pub async fn server(
                             *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
                         }
                         Err(e) => {
-                            warn!("Error from Google: {:?}", e);
+                            warn!("Error from Identity Provider: {:?}", e);
 
                             *resp.status_mut() = StatusCode::FORBIDDEN;
                             *resp.body_mut() = "Forbidden";
@@ -504,7 +504,7 @@ pub async fn server(
                 ws_or_body,
                 headers,
                 delayed_for,
-                path,
+                _path,
                 mapping_action,
                 requested_url,
                 mount_point_base_url,
@@ -517,7 +517,7 @@ pub async fn server(
                 Url,
                 UrlPrefix,
             ),
-                  params,
+                  _params,
                   method,
                   remote_addr: Option<SocketAddr>,
                   local_addr: Option<SocketAddr>| {

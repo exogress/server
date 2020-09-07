@@ -483,6 +483,7 @@ impl Mapping {
             Ok((
                 MappingAction {
                     handler,
+                    // auth_type: None, //self.auth_type.clone(),
                     jwt_ecdsa: self.jwt_ecdsa.clone(),
                     external_base_url: base_url,
                 },
