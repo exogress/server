@@ -459,82 +459,79 @@ impl Mapping {
 
                         for instance_id in &config.instance_ids {
                             for (upstream, upstream_definition) in &config.config.upstreams {
-                                let check = {
-                                    shadow_clone!(individual_hostname);
-                                    shadow_clone!(handlers_processor);
-                                    shadow_clone!(client_tunnels);
+                                shadow_clone!(individual_hostname);
+                                shadow_clone!(handlers_processor);
+                                shadow_clone!(client_tunnels);
 
-                                    shadow_clone!(account);
-                                    shadow_clone!(project);
+                                shadow_clone!(account);
+                                shadow_clone!(project);
 
-                                    let maybe_client_tunnel = client_tunnels
-                                        .retrieve_client_tunnel(
-                                            account.clone(),
-                                            project.clone(),
-                                            config.config.name.clone(),
-                                            instance_id.clone(),
-                                            individual_hostname.clone().into(),
-                                        )
-                                        .await;
+                                let maybe_client_tunnel = client_tunnels
+                                    .retrieve_client_tunnel(
+                                        account.clone(),
+                                        project.clone(),
+                                        config.config.name.clone(),
+                                        instance_id.clone(),
+                                        individual_hostname.clone().into(),
+                                    )
+                                    .await;
 
-                                    if let Some(client_tunnel) = maybe_client_tunnel {
-                                        let connect_target =
-                                            ConnectTarget::Upstream(upstream.clone());
+                                if let Some(client_tunnel) = maybe_client_tunnel {
+                                    let connect_target = ConnectTarget::Upstream(upstream.clone());
 
-                                        for probe in &upstream_definition.health {
-                                            let hyper = client_tunnel.hyper.clone();
+                                    for probe in &upstream_definition.health {
+                                        let hyper = client_tunnel.hyper.clone();
 
-                                            futures.push({
+                                        futures.push({
+                                            shadow_clone!(connect_target);
+
+                                            async move {
                                                 shadow_clone!(connect_target);
 
-                                                async move {
-                                                    shadow_clone!(connect_target);
 
+                                                let url = connect_target
+                                                    .with_path(probe.target.path.as_str())
+                                                    .expect("FIXME: URL error");
 
-                                                    let url = connect_target
-                                                        .with_path(probe.target.path.as_str())
-                                                        .expect("FIXME: URL error");
+                                                info!(
+                                                    "healthcheck connect target {:?} to instance {}. probe: {:?}. URL = {}",
+                                                    connect_target, instance_id, probe, url
+                                                );
 
-                                                    info!(
-                                                        "healthcheck connect target {:?} to instance {}. probe: {:?}. URL = {}",
-                                                        connect_target, instance_id, probe, url
-                                                    );
+                                                let r = tokio::time::timeout(
+                                                    probe.target.timeout,
+                                                    hyper.get(
+                                                        url.to_string().parse().expect("FIXME"),
+                                                    ),
+                                                )
+                                                    .await;
 
-                                                    let r = tokio::time::timeout(
-                                                        probe.target.timeout,
-                                                        hyper.get(
-                                                            url.to_string().parse().expect("FIXME"),
-                                                        ),
-                                                    )
-                                                        .await;
-
-                                                    match r {
-                                                        Ok(Ok(resp)) if resp.status().is_success() => info!(
-                                                            "healthcheck ok instance_id={}, upstream={}",
-                                                            instance_id, upstream
-                                                        ),
-                                                        Ok(Ok(resp)) => info!(
-                                                            "healthcheck bad status {:?} instance_id={}, upstream={}",
-                                                            resp.status(),
-                                                            instance_id,
-                                                            upstream
-                                                        ),
-                                                        Ok(Err(e)) => info!(
-                                                            "healthcheck error {:?} instance_id={}, upstream={}",
-                                                            e, instance_id, upstream
-                                                        ),
-                                                        Err(e) => error!(
-                                                            "healthcheck timeout instance_id={}, upstream={}",
-                                                            instance_id, upstream
-                                                        ),
-                                                    }
-
-                                                    delay_for(probe.target.period).await;
+                                                match r {
+                                                    Ok(Ok(resp)) if resp.status().is_success() => info!(
+                                                        "healthcheck ok instance_id={}, upstream={}",
+                                                        instance_id, upstream
+                                                    ),
+                                                    Ok(Ok(resp)) => info!(
+                                                        "healthcheck bad status {:?} instance_id={}, upstream={}",
+                                                        resp.status(),
+                                                        instance_id,
+                                                        upstream
+                                                    ),
+                                                    Ok(Err(e)) => info!(
+                                                        "healthcheck error {:?} instance_id={}, upstream={}",
+                                                        e, instance_id, upstream
+                                                    ),
+                                                    Err(e) => error!(
+                                                        "healthcheck timeout instance_id={}, upstream={}",
+                                                        instance_id, upstream
+                                                    ),
                                                 }
-                                            });
-                                        }
+
+                                                delay_for(probe.target.period).await;
+                                            }
+                                        });
                                     }
-                                };
+                                }
                             }
                         }
                     }

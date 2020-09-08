@@ -1190,7 +1190,10 @@ async fn proxy_http_request<
         .uri(proxy_to.to_string())
         .method(method);
 
+    debug!("Request built");
+
     for (header, value) in proxy_headers.into_iter() {
+        debug!("copy header {:?}: {:?}", header, value);
         proxy_req.headers_mut().unwrap().append(
             HeaderName::from_bytes(header.as_bytes()).unwrap(),
             HeaderValue::from_str(&value).unwrap(),
@@ -1206,16 +1209,21 @@ async fn proxy_http_request<
                         to_bytes_stream_and_check_injections(body_stream),
                         HTTP_BYTES_TIMEOUT,
                     )
-                    .map(|r| match r {
-                        Err(e) => Err(anyhow::Error::new(e)),
-                        Ok(Err(e)) => Err(anyhow::Error::new(e)),
-                        Ok(Ok(r)) => Ok(r),
+                    .map(|r| {
+                        debug!("streaming data {:?}", r);
+                        match r {
+                            Err(e) => Err(anyhow::Error::new(e)),
+                            Ok(Err(e)) => Err(anyhow::Error::new(e)),
+                            Ok(Ok(r)) => Ok(r),
+                        }
                     }), //Timeout on data
                 ))
                 .expect("FIXME"),
         ),
     )
     .await;
+
+    debug!("finished request {:?}", r);
 
     match r {
         Err(_) => {
@@ -1229,11 +1237,13 @@ async fn proxy_http_request<
             Err(Error::RequestError(e))
         }
         Ok(Ok(hyper_response)) => {
+            debug!("building response");
             let mut resp = Response::builder().status(match hyper_response.status() {
                 StatusCode::PERMANENT_REDIRECT => StatusCode::TEMPORARY_REDIRECT,
                 code => code,
             });
 
+            debug!("copy headers to response");
             for (header, value) in hyper_response.headers().into_iter() {
                 if header.as_str().to_lowercase().starts_with("x-exg") {
                     info!("Trying to proxy already proxied request (prevent loops)");
@@ -1253,6 +1263,8 @@ async fn proxy_http_request<
             resp.headers_mut()
                 .unwrap()
                 .insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
+
+            debug!("set exg-proxy. sending body");
 
             Ok(resp.body(hyper_response.into_body()).expect("FIXME"))
         }
