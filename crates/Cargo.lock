@@ -466,12 +466,12 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-channel"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ee0cc8804d5393478d743b035099520087a5186f3b93fa58cec08fa62407b6"
+checksum = "b153fe7cbef478c567df0f972e02e6d736db11affe43dfc9c56a9374d1adfb87"
 dependencies = [
- "cfg-if",
  "crossbeam-utils",
+ "maybe-uninit",
 ]
 
 [[package]]
@@ -680,7 +680,7 @@ dependencies = [
  "exogress-entities",
  "exogress-server-common",
  "futures",
- "hashbrown",
+ "hashbrown 0.8.2",
  "pin-project",
  "rand 0.7.3",
  "redis",
@@ -714,7 +714,7 @@ dependencies = [
  "exogress-signaling",
  "exogress-tunnel",
  "futures",
- "hashbrown",
+ "hashbrown 0.8.2",
  "hostname",
  "http 0.2.1",
  "jsonwebtoken",
@@ -780,7 +780,7 @@ version = "0.1.0"
 dependencies = [
  "bytes 0.5.6",
  "exogress-entities",
- "hashbrown",
+ "hashbrown 0.8.2",
  "http 0.2.1",
  "http-serde",
  "humantime-serde",
@@ -836,7 +836,7 @@ dependencies = [
  "futures-util",
  "generational-arena",
  "governor",
- "hashbrown",
+ "hashbrown 0.8.2",
  "http 0.2.1",
  "httparse",
  "hyper",
@@ -950,7 +950,7 @@ dependencies = [
  "exogress-config-core",
  "exogress-entities",
  "futures",
- "hashbrown",
+ "hashbrown 0.8.2",
  "hyper",
  "lru_time_cache",
  "parking_lot 0.11.0",
@@ -1289,6 +1289,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00d63df3d41950fb462ed38308eea019113ad1508da725bbedcd0fa5a85ef5f7"
+
+[[package]]
 name = "headers"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1496,12 +1502,12 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "1.5.2"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e47a3566dd4fd4eec714ae6ceabdee0caec795be835c223d92c2d40f1e8cf1c"
+checksum = "55e2e4c765aa53a0424761bf9f41aa7a6ac1efa87238f59560640e27fca028f2"
 dependencies = [
  "autocfg 1.0.1",
- "hashbrown",
+ "hashbrown 0.9.0",
 ]
 
 [[package]]
@@ -1887,9 +1893,9 @@ dependencies = [
 
 [[package]]
 name = "net2"
-version = "0.2.34"
+version = "0.2.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ba7c918ac76704fb42afcbbb43891e72731f3dcca3bef2a19786297baf14af7"
+checksum = "3ebc3ec692ed7c9a255596c67808dee269f64655d8baf7b4f0638e51ba1d6853"
 dependencies = [
  "cfg-if",
  "libc",
@@ -1902,7 +1908,7 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b93853da6d84c2e3c7d730d6473e8817692dd89be387eb01b94d7f108ecb5b8c"
 dependencies = [
- "hashbrown",
+ "hashbrown 0.8.2",
 ]
 
 [[package]]
@@ -3151,9 +3157,9 @@ dependencies = [
 
 [[package]]
 name = "smartstring"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bdec7d62192ad94e7b16d49856c007d81ae1cf541cd29b4c04b755df39fd80d"
+checksum = "938800f206ac06b91f147db8f7514846ddc16cf46034eb1af59ca6f286cf5690"
 dependencies = [
  "serde",
  "static_assertions",
@@ -3265,9 +3271,9 @@ checksum = "6446ced80d6c486436db5c078dde11a9f73d42b57fb273121e160b84f63d894c"
 
 [[package]]
 name = "syn"
-version = "1.0.39"
+version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891d8d6567fe7c7f8835a3a98af4208f3846fba258c1bc3c31d6e506239f11f9"
+checksum = "963f7d3cc59b59b9325165add223142bbf1df27655d07789f109896d353d8350"
 dependencies = [
  "proc-macro2",
  "quote",

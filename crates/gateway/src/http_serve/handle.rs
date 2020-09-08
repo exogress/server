@@ -457,31 +457,31 @@ pub async fn server(
                 _,
             )| {
                 async move {
-                    let delayed_for = match rate_limiters.process().await {
-                        RateLimiterResponse::DelayedBy(limiters) => {
-                            info!("Request delayed: {:?}", limiters);
-                            Some(limiters.iter().map(|(_, delay)| delay).sum::<Duration>())
-                        }
-                        RateLimiterResponse::LimitedError {
-                            rate_limiter_name,
-                            not_until,
-                        } => {
-                            info!(
-                                "rate limited by {} at least upto {:?}",
-                                rate_limiter_name, not_until
-                            );
-                            return Err::<_, _>(warp::reject::custom(RateLimited {
-                                not_until,
-                                rate_limiter_name,
-                            }));
-                        }
-                        RateLimiterResponse::Passthrough => None,
-                    };
+                    // let delayed_for = match rate_limiters.process().await {
+                    //     RateLimiterResponse::DelayedBy(limiters) => {
+                    //         info!("Request delayed: {:?}", limiters);
+                    //         Some(limiters.iter().map(|(_, delay)| delay).sum::<Duration>())
+                    //     }
+                    //     RateLimiterResponse::LimitedError {
+                    //         rate_limiter_name,
+                    //         not_until,
+                    //     } => {
+                    //         info!(
+                    //             "rate limited by {} at least upto {:?}",
+                    //             rate_limiter_name, not_until
+                    //         );
+                    //         return Err::<_, _>(warp::reject::custom(RateLimited {
+                    //             not_until,
+                    //             rate_limiter_name,
+                    //         }));
+                    //     }
+                    //     RateLimiterResponse::Passthrough => None,
+                    // };
 
-                    Ok((
+                    Ok::<_, warp::Rejection>((
                         ws_or_body,
                         headers,
-                        delayed_for,
+                        None, //delayed_for,
                         path,
                         action,
                         requested_url,
