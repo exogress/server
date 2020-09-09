@@ -34,9 +34,10 @@ use crate::clients::{spawn_tunnel, ClientTunnels};
 
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::url_mapping::notification_listener::Consumer;
+use crate::url_mapping::notification_listener::AssistantConsumer;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
+use parking_lot::RwLock;
 use tokio::runtime::{Builder, Handle};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
@@ -193,22 +194,6 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("tls_cert_path")
-                .long("tls-cert-path")
-                .value_name("PATH")
-                .help("Certificate to use")
-                .required(true)
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("tls_key_path")
-                .long("tls-key-path")
-                .value_name("PATH")
-                .help("Key file to use")
-                .required(true)
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("download_dbip")
                 .long("download-dbip")
                 .help("Perform DBIP download")
@@ -317,9 +302,6 @@ fn main() {
 
     let individual_tls_cert_path = matches.value_of("individual_tls_cert_path").unwrap();
     let individual_tls_key_path = matches.value_of("individual_tls_key_path").unwrap();
-
-    let tls_cert_path = matches.value_of("tls_cert_path").unwrap();
-    let tls_key_path = matches.value_of("tls_key_path").unwrap();
 
     info!("Use Webapp url at {}", webapp_base_url);
 
@@ -524,11 +506,14 @@ fn main() {
         .await
         .unwrap();
 
-        let consumer = Consumer::new(
+        let tls_gw_common = Arc::new(RwLock::new(None));
+
+        let consumer = AssistantConsumer::new(
             assistant_base_url.clone(),
             &individual_hostname,
             &api_client.mappings(),
             &client_tunnels,
+            tls_gw_common.clone(),
             &api_client,
             resolver.clone(),
             &app_stop_handle,
@@ -561,8 +546,7 @@ fn main() {
             external_https_port,
             api_client,
             app_stop_wait,
-            tls_cert_path.into(),
-            tls_key_path.into(),
+            tls_gw_common,
             public_base_url,
             individual_hostname,
             webroot,

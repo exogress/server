@@ -5,9 +5,13 @@ use futures::StreamExt;
 use crate::clients::ClientTunnels;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
-use crate::url_mapping::url_prefix::UrlPrefix;
 use crate::webapp;
 use exogress_common_utils::ws_client::{connect_ws, Error};
+use exogress_server_common::assistant::{
+    Action, GatewayCommonTlsConfigMessage, Notification, WsMessage,
+};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_either::Either;
 use tokio_rustls::client::TlsStream;
@@ -17,38 +21,26 @@ use tokio_tungstenite::WebSocketStream;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
-pub enum Action {
-    #[serde(rename = "invalidate_url_prefixes")]
-    InvalidateUrlPrefixes { url_prefixes: Vec<UrlPrefix> },
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Notification {
-    #[serde(with = "ts_milliseconds")]
-    generated_at: DateTime<Utc>,
-    action: Action,
-}
-
-pub struct Consumer {
+pub struct AssistantConsumer {
     stream: WebSocketStream<Either<TlsStream<TcpStream>, TcpStream>>,
     client_tunnels: ClientTunnels,
     stop_handle: AppStopHandle,
     webapp_client: webapp::Client,
     mappings: Configs,
+    tls_gw_common: Arc<RwLock<Option<GatewayCommonTlsConfigMessage>>>,
 }
 
-impl Consumer {
+impl AssistantConsumer {
     pub async fn new(
         assistant_base_url: Url,
         individual_hostname: &str,
         mappings: &Configs,
         client_tunnels: &ClientTunnels,
+        tls_gw_common: Arc<RwLock<Option<GatewayCommonTlsConfigMessage>>>,
         webapp_client: &webapp::Client,
         resolver: TokioAsyncResolver,
         app_stop_handle: &AppStopHandle,
-    ) -> Result<Consumer, Error> {
+    ) -> Result<AssistantConsumer, Error> {
         shadow_clone!(mappings);
 
         let mut url = assistant_base_url;
@@ -70,12 +62,13 @@ impl Consumer {
         info!("connecting to notification listener..");
         let (stream, _resp) = connect_ws(notifier_req, resolver).await?;
 
-        Ok(Consumer {
+        Ok(AssistantConsumer {
             client_tunnels: client_tunnels.clone(),
             stream,
             webapp_client: webapp_client.clone(),
             stop_handle: app_stop_handle.clone(),
             mappings,
+            tls_gw_common,
         })
     }
 
@@ -92,28 +85,36 @@ impl Consumer {
                 }
                 Ok(msg) if msg.is_text() => {
                     let text = msg.into_text().unwrap();
-                    info!("Received invalidation message: {:?}", text);
 
-                    match serde_json::from_str::<Notification>(text.as_str()) {
-                        Ok(notification) => {
-                            info!("Process invalidation notification {:?}", notification);
-                            match notification.action {
-                                Action::InvalidateUrlPrefixes { url_prefixes } => {
-                                    for url_prefix in url_prefixes.into_iter() {
-                                        let domain_only = url_prefix.domain_only();
-                                        self.mappings.remove_by_notification_if_time_applicable(
-                                            &domain_only,
-                                            notification.generated_at,
-                                        );
+                    match serde_json::from_str::<WsMessage>(text.as_str()) {
+                        Ok(ws_message) => {
+                            info!("Process message {:?}", ws_message);
+                            match ws_message {
+                                WsMessage::WebAppNotification(notification) => {
+                                    match notification.action {
+                                        Action::InvalidateUrlPrefixes { url_prefixes } => {
+                                            for url_prefix in url_prefixes.into_iter() {
+                                                let domain_only = url_prefix.domain_only();
+                                                self.mappings
+                                                    .remove_by_notification_if_time_applicable(
+                                                        &domain_only,
+                                                        notification.generated_at,
+                                                    );
 
-                                        let host = url_prefix.host().to_string();
+                                                let host = url_prefix.host().to_string();
 
-                                        info!("invalidate certificate for: {}", host);
-                                        self.webapp_client.forget_certificate(host);
+                                                info!("invalidate certificate for: {}", host);
+                                                self.webapp_client.forget_certificate(host);
 
-                                        // FIXME: should rely on invalidation message
-                                        self.client_tunnels.close_all();
+                                                // FIXME: should rely on invalidation message
+                                                self.client_tunnels.close_all();
+                                            }
+                                        }
                                     }
+                                }
+                                WsMessage::GwTls(gw_tls) => {
+                                    info!("Received common gateway TLS config");
+                                    *self.tls_gw_common.write() = Some(gw_tls);
                                 }
                             }
                         }

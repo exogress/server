@@ -38,15 +38,16 @@ use crate::url_mapping::mapping::{
     UrlForRewriting,
 };
 use crate::url_mapping::rate_limiter::{RateLimiterResponse, RateLimiters};
-use crate::url_mapping::url_prefix::UrlPrefix;
 use crate::webapp::Client;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
 use exogress_entities::RateLimiterName;
+use exogress_server_common::assistant::GatewayCommonTlsConfigMessage;
+use exogress_server_common::url_prefix::UrlPrefix;
 use http::uri::Authority;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use lru_time_cache::LruCache;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
@@ -70,8 +71,7 @@ pub async fn server(
     external_https_port: u16,
     webapp_client: Client,
     app_stop_wait: AppStopWait,
-    tls_cert_path: String,
-    tls_key_path: String,
+    tls_gw_common: Arc<RwLock<Option<GatewayCommonTlsConfigMessage>>>,
     public_base_url: Url,
     individual_hostname: String,
     webroot: PathBuf,
@@ -758,8 +758,7 @@ pub async fn server(
         move |maybe_hostname| {
             shadow_clone!(webapp_client);
             shadow_clone!(public_base_url);
-            shadow_clone!(tls_cert_path);
-            shadow_clone!(tls_key_path);
+            shadow_clone!(tls_gw_common);
 
             info!("Serve hostname (from SNI) `{:?}`", maybe_hostname);
 
@@ -774,7 +773,26 @@ pub async fn server(
                     );
 
                     if public_base_url.host().unwrap().to_string() == hostname {
-                        builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
+                        let locked = tls_gw_common.read();
+
+                        match &*locked {
+                            Some(cert_data) if cert_data.hostname == hostname => {
+                                builder = builder
+                                    .cert(cert_data.certificate.as_ref())
+                                    .key(cert_data.private_key.as_ref());
+                            }
+                            Some(cert_data) => {
+                                info!(
+                                    "common cert for wrong hostname found. expected {}, found {}",
+                                    hostname, cert_data.hostname
+                                );
+                                return None;
+                            }
+                            None => {
+                                info!("certificate haven't been set by assistant channel");
+                                return None;
+                            }
+                        }
                     } else {
                         shadow_clone!(webapp_client);
 
@@ -783,10 +801,6 @@ pub async fn server(
                                 builder = builder
                                     .cert(certs.certificate.as_bytes())
                                     .key(certs.private_key.as_bytes());
-                            }
-                            Ok(None) if cfg!(debug_assertions) => {
-                                info!("fallback to default certificates on development");
-                                builder = builder.cert_path(tls_cert_path).key_path(tls_key_path);
                             }
                             Ok(None) => {
                                 info!("certificate not found");

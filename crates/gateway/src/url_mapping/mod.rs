@@ -4,4 +4,3 @@ pub mod mapping;
 pub mod notification_listener;
 pub mod rate_limiter;
 pub mod registry;
-pub mod url_prefix;

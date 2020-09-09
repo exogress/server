@@ -10,7 +10,7 @@ use smartstring::alias::*;
 use crate::clients::ClientTunnels;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::rate_limiter::RateLimiters;
-use crate::url_mapping::url_prefix::UrlPrefix;
+use exogress_server_common::url_prefix::UrlPrefix;
 
 struct Inner {
     // List of prefix with expiration according to policies

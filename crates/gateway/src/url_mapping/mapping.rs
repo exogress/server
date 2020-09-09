@@ -15,8 +15,8 @@ use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName, Upstre
 use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::rate_limiter::RateLimiters;
-use crate::url_mapping::url_prefix::UrlPrefix;
 use crate::webapp::ConfigsResponse;
+use exogress_server_common::url_prefix::UrlPrefix;
 use exogress_tunnel::ConnectTarget;
 use futures::channel::oneshot;
 use futures::stream::FuturesUnordered;

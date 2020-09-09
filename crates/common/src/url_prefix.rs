@@ -1,10 +1,10 @@
 use core::fmt;
-use futures_util::core_reexport::str::FromStr;
 use url::Url;
 
 use serde::de::Visitor;
 use serde::{de, Deserialize, Deserializer};
 use smartstring::alias::*;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, PartialOrd, Ord)]
 #[serde(transparent)]

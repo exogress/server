@@ -4,7 +4,10 @@
 extern crate shadow_clone;
 #[macro_use]
 extern crate tracing;
+#[macro_use]
+extern crate serde;
 
+use crate::http::GatewayCommonTlsConfig;
 use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
 use exogress_common_utils::termination::stop_signal_listener;
@@ -21,6 +24,30 @@ mod termination;
 
 fn main() {
     let spawn_args = App::new("spawn")
+        .arg(
+            Arg::with_name("gw_hostname")
+                .long("gw-hostname")
+                .value_name("HOST")
+                .required(true)
+                .help("Set common GW hostname")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("gw_tls_cert_path")
+                .long("gw-tls-cert-path")
+                .value_name("PATH")
+                .required(true)
+                .help("Set GW common TLS cert path")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("gw_tls_key_path")
+                .long("gw-tls-key-path")
+                .value_name("PATH")
+                .required(true)
+                .help("Set GW common TLS key path")
+                .takes_value(true),
+        )
         .arg(
             Arg::with_name("listen_http")
                 .long("listen-http")
@@ -70,6 +97,19 @@ fn main() {
     exogress_common_utils::clap::log::handle(&matches, "assistant");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
 
+    let gw_tls_key_path: String = matches
+        .value_of("gw_tls_key_path")
+        .expect("no --gw-tls-key-path provided")
+        .into();
+    let gw_tls_cert_path: String = matches
+        .value_of("gw_tls_cert_path")
+        .expect("no --gw-tls-cert-path provided")
+        .into();
+    let gw_hostname: String = matches
+        .value_of("gw_hostname")
+        .expect("no --gw-hostname provided")
+        .into();
+
     let redis_addr: String = matches
         .value_of("redis_addr")
         .expect("no redis addr provided")
@@ -99,7 +139,17 @@ fn main() {
 
             info!("Listening  HTTP on {}", listen_http_addr);
 
-            http::server(listen_http_addr, redis_client, app_stop_wait).await;
+            http::server(
+                listen_http_addr,
+                GatewayCommonTlsConfig {
+                    hostname: gw_hostname,
+                    tls_cert_path: gw_tls_cert_path.parse().unwrap(),
+                    tls_key_path: gw_tls_key_path.parse().unwrap(),
+                },
+                redis_client,
+                app_stop_wait,
+            )
+            .await;
 
             info!("Stop");
         })

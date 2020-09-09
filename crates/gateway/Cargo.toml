@@ -65,6 +65,7 @@ oauth2 = { version = "3.0.0", default-features = false, features = ["reqwest-010
 jsonwebtoken = "7.2.0"
 
 exogress-server-common = { path = "../common", version = "0.1" }
+exogress-assistant = { path = "../assistant", version = "0.1" }
 exogress-common-utils = { path = "../../deps/exogress/crates/common-utils", version = "0.1" }
 exogress-tunnel = { path = "../../deps/exogress/crates/tunnel", version = "0.1" }
 exogress-config-core = { path = "../../deps/exogress/crates/config-core", version = "0.1" }

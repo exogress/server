@@ -5,13 +5,13 @@ use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::mapping::{JwtEcdsa, Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::rate_limiter::{RateLimiter, RateLimiterKind, RateLimiters};
 use crate::url_mapping::registry::Configs;
-use crate::url_mapping::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use exogress_config_core::{Config, Revision};
 use exogress_entities::{
     AccountName, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
 };
+use exogress_server_common::url_prefix::UrlPrefix;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
