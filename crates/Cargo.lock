@@ -892,6 +892,7 @@ dependencies = [
  "clap",
  "sentry",
  "serde",
+ "serde_json",
  "smartstring",
  "thiserror",
  "tracing",
