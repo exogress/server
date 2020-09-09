@@ -136,6 +136,7 @@ impl AssistantConsumer {
 #[cfg(test)]
 mod test {
     use super::*;
+    use exogress_server_common::url_prefix::UrlPrefix;
     use std::str::FromStr;
 
     #[test]
