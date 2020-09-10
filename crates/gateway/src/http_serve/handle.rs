@@ -768,7 +768,7 @@ pub async fn server(
 
                     info!(
                         "compare {:?} with {:?}",
-                        Some(public_base_url.host().unwrap().to_string()),
+                        public_base_url.host().unwrap().to_string(),
                         hostname
                     );
 
@@ -777,6 +777,7 @@ pub async fn server(
 
                         match &*locked {
                             Some(cert_data) if cert_data.hostname == hostname => {
+                                info!("successfully set cert and key");
                                 builder = builder
                                     .cert(cert_data.certificate.as_ref())
                                     .key(cert_data.private_key.as_ref());
@@ -813,7 +814,13 @@ pub async fn server(
                         }
                     }
 
-                    builder.build().ok().map(Arc::new)
+                    match builder.build() {
+                        Err(e) => {
+                            error!("Error in TLS certificate: {}", e);
+                            None
+                        }
+                        Ok(r) => Some(Arc::new(r)),
+                    }
                 } else {
                     None
                 }
