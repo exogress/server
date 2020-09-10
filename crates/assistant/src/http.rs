@@ -26,16 +26,16 @@ pub struct GatewayCommonTlsConfig {
 
 impl GatewayCommonTlsConfig {
     pub async fn ws_message(&self) -> io::Result<GatewayCommonTlsConfigMessage> {
-        let mut certificate = Vec::new();
+        let mut certificate = String::new();
         tokio::fs::File::open(self.tls_cert_path.as_path())
             .await?
-            .read_buf(&mut certificate)
+            .read_to_string(&mut certificate)
             .await?;
 
-        let mut private_key = Vec::new();
+        let mut private_key = String::new();
         tokio::fs::File::open(self.tls_key_path.as_path())
             .await?
-            .read_buf(&mut private_key)
+            .read_to_string(&mut private_key)
             .await?;
 
         Ok(GatewayCommonTlsConfigMessage {

@@ -17,8 +17,8 @@ pub struct GetValue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayCommonTlsConfigMessage {
     pub hostname: String,
-    pub certificate: Vec<u8>,
-    pub private_key: Vec<u8>,
+    pub certificate: String,
+    pub private_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
