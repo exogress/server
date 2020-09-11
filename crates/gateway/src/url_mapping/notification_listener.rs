@@ -78,6 +78,7 @@ impl AssistantConsumer {
         let stop_handle = self.stop_handle.clone();
 
         while let Some(msg) = self.stream.next().await {
+            info!("Got message {:?}", msg);
             match msg {
                 Err(e) => {
                     warn!("Error while receiving from Notifier: {}", e);
@@ -120,6 +121,7 @@ impl AssistantConsumer {
                         }
                         Err(e) => {
                             error!("error parsing notification in redis: {}", e);
+                            stop_handle.stop(StopReason::NotificationChannelError);
                         }
                     }
                 }

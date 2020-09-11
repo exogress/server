@@ -546,183 +546,190 @@ pub async fn server(
                     for handler in &handlers_processor.handlers {
                         info!("HANDLER: {:?}", handler);
 
-                        let mut ordered_instances = handler.instances_ids.clone();
-                        {
-                            let mut rng = thread_rng();
-                            ordered_instances.shuffle(&mut rng);
-                        }
+                        match &handler.client_config_data {
+                            Some((config_name, instances_ids)) => {
+                                let mut ordered_instances = instances_ids.clone();
+                                {
+                                    let mut rng = thread_rng();
+                                    ordered_instances.shuffle(&mut rng);
+                                }
 
-                        if let Some(connect_target) = handler.connect_target("") {
-                            for instance_id in ordered_instances.iter() {
-                                info!("try proxy to {}", instance_id);
-                                let (connector, hyper, proxy_to) =
-                                    if let Some(ConnectedTunnel {
-                                        connector, hyper, ..
-                                    }) = tunnels
-                                        .retrieve_client_tunnel(
-                                            account_name.clone(),
-                                            project_name.clone(),
-                                            handler.config_name.clone(),
-                                            instance_id.clone(),
-                                            individual_hostname.clone().into(),
-                                        )
-                                        .await
-                                    {
-                                        (connector, hyper, url.clone())
-                                    } else {
-                                        info!("No connected tunnels. Try again..");
-                                        continue;
+                                if let Some(connect_target) = handler.connect_target("") {
+                                    for instance_id in ordered_instances.iter() {
+                                        info!("try proxy to {}", instance_id);
+                                        let (connector, hyper, proxy_to) =
+                                            if let Some(ConnectedTunnel {
+                                                            connector, hyper, ..
+                                                        }) = tunnels
+                                                .retrieve_client_tunnel(
+                                                    account_name.clone(),
+                                                    project_name.clone(),
+                                                    config_name.clone(),
+                                                    instance_id.clone(),
+                                                    individual_hostname.clone().into(),
+                                                )
+                                                .await
+                                            {
+                                                (connector, hyper, url.clone())
+                                            } else {
+                                                info!("No connected tunnels. Try again..");
+                                                continue;
+                                            };
+
+                                        info!("HTTP: proxy to {}", proxy_to);
+
+                                        match ws_or_body {
+                                            warp::Either::A((ws,)) => {
+                                                let res = proxy_ws(
+                                                    ws,
+                                                    remote_addr,
+                                                    headers.clone(),
+                                                    proxy_to,
+                                                    local_addr,
+                                                    connector,
+                                                    connect_target.clone(),
+                                                )
+                                                    .await;
+
+                                                match res {
+                                                    Ok(mut r) => {
+                                                        if let Some(delay) = delayed_for {
+                                                            r.headers_mut().insert(
+                                                                "x-exg-delayed-for-ms",
+                                                                delay
+                                                                    .as_millis()
+                                                                    .to_string()
+                                                                    .try_into()
+                                                                    .unwrap(),
+                                                            );
+                                                        }
+
+                                                        return Ok(r);
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Give Up retrying WS. Error: {:?}", e); //FIXME
+                                                        return Err::<_, _>(warp::reject::custom(
+                                                            BadGateway { delayed_for },
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            warp::Either::B((body,)) => {
+                                                let res = proxy_http_request(
+                                                    body,
+                                                    remote_addr,
+                                                    headers.clone(),
+                                                    proxy_to,
+                                                    method,
+                                                    local_addr,
+                                                    hyper,
+                                                    connect_target.clone(),
+                                                )
+                                                    .await;
+
+                                                match res {
+                                                    Ok(mut r) => {
+                                                        if let Some(delay) = delayed_for {
+                                                            r.headers_mut().insert(
+                                                                "x-exg-delayed-for-ms",
+                                                                delay
+                                                                    .as_millis()
+                                                                    .to_string()
+                                                                    .try_into()
+                                                                    .unwrap(),
+                                                            );
+                                                        }
+                                                        return Ok(r);
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Give Up retrying HTTP. error: {:?}", e); //FIXME
+                                                        return Err::<_, _>(warp::reject::custom(
+                                                            BadGateway { delayed_for },
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        };
+                                    }
+                                }
+                            }
+                            None => {
+                                if let Some(auth) = handler.auth() {
+                                    let cookies = headers.get_all(COOKIE);
+
+                                    let proto = match &ws_or_body {
+                                        warp::Either::A(_) => Protocol::WebSockets,
+                                        warp::Either::B(_) => Protocol::Http,
                                     };
 
-                                info!("HTTP: proxy to {}", proxy_to);
+                                    let jwt_token = cookies
+                                        .iter()
+                                        .map(|header| {
+                                            header
+                                                .to_str()
+                                                .unwrap()
+                                                .split(';')
+                                                .map(|s| s.trim_start().trim_end().to_string())
+                                        })
+                                        .flatten()
+                                        .filter_map(move |s| Cookie::parse(s).ok())
+                                        .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
 
-                                match ws_or_body {
-                                    warp::Either::A((ws,)) => {
-                                        let res = proxy_ws(
-                                            ws,
-                                            remote_addr,
-                                            headers.clone(),
-                                            proxy_to,
-                                            local_addr,
-                                            connector,
-                                            connect_target.clone(),
-                                        )
-                                        .await;
+                                    let auth_type = Some(auth.provider.into());
 
-                                        match res {
-                                            Ok(mut r) => {
-                                                if let Some(delay) = delayed_for {
-                                                    r.headers_mut().insert(
-                                                        "x-exg-delayed-for-ms",
-                                                        delay
-                                                            .as_millis()
-                                                            .to_string()
-                                                            .try_into()
-                                                            .unwrap(),
-                                                    );
-                                                }
+                                    info!(
+                                        "requested_url = {:?} mount_point_base_url = {:?}",
+                                        requested_url, mount_point_base_url
+                                    );
 
-                                                return Ok(r);
+                                    if let Some(token) = jwt_token {
+                                        match jsonwebtoken::decode::<Claims>(
+                                            &token.value(),
+                                            &DecodingKey::from_ec_pem(&mapping_action.jwt_ecdsa.public_key)
+                                                .expect("FIXME"),
+                                            &Validation {
+                                                algorithms: vec![jsonwebtoken::Algorithm::ES256],
+                                                ..Default::default()
+                                            },
+                                        ) {
+                                            Ok(_token) => {
+                                                info!("jwt-token parse and verified. go ahead");
                                             }
                                             Err(e) => {
-                                                error!("Give Up retrying WS. Error: {:?}", e); //FIXME
-                                                return Err::<_, _>(warp::reject::custom(
-                                                    BadGateway { delayed_for },
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    warp::Either::B((body,)) => {
-                                        let res = proxy_http_request(
-                                            body,
-                                            remote_addr,
-                                            headers.clone(),
-                                            proxy_to,
-                                            method,
-                                            local_addr,
-                                            hyper,
-                                            connect_target.clone(),
-                                        )
-                                        .await;
-
-                                        match res {
-                                            Ok(mut r) => {
-                                                if let Some(delay) = delayed_for {
-                                                    r.headers_mut().insert(
-                                                        "x-exg-delayed-for-ms",
-                                                        delay
-                                                            .as_millis()
-                                                            .to_string()
-                                                            .try_into()
-                                                            .unwrap(),
+                                                if let jsonwebtoken::errors::ErrorKind::InvalidSignature =
+                                                e.kind()
+                                                {
+                                                    info!("jwt-token parsed but not verified");
+                                                } else {
+                                                    info!(
+                                                        "JWT token error: {:?}. Token: {}",
+                                                        e,
+                                                        token.value()
                                                     );
-                                                }
-                                                return Ok(r);
-                                            }
-                                            Err(e) => {
-                                                error!("Give Up retrying HTTP. error: {:?}", e); //FIXME
-                                                return Err::<_, _>(warp::reject::custom(
-                                                    BadGateway { delayed_for },
-                                                ));
+                                                };
+                                                return Err::<_, _>(warp::reject::custom(NotAuthorized {
+                                                    auth_type,
+                                                    requested_url: requested_url.clone(),
+                                                    base_url: mount_point_base_url.clone(),
+                                                    proto,
+                                                    is_jwt_token_included: true,
+                                                    jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
+                                                }));
                                             }
                                         }
-                                    }
-                                };
-                            }
-                        } else if let Some(auth) = handler.auth() {
-                            let cookies = headers.get_all(COOKIE);
+                                    } else {
+                                        info!("jwt-token not found");
 
-                            let proto = match &ws_or_body {
-                                warp::Either::A(_) => Protocol::WebSockets,
-                                warp::Either::B(_) => Protocol::Http,
-                            };
-
-                            let jwt_token = cookies
-                                .iter()
-                                .map(|header| {
-                                    header
-                                        .to_str()
-                                        .unwrap()
-                                        .split(';')
-                                        .map(|s| s.trim_start().trim_end().to_string())
-                                })
-                                .flatten()
-                                .filter_map(move |s| Cookie::parse(s).ok())
-                                .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
-
-                            let auth_type = Some(auth.provider.into());
-
-                            info!(
-                                "requested_url = {:?} mount_point_base_url = {:?}",
-                                requested_url, mount_point_base_url
-                            );
-
-                            if let Some(token) = jwt_token {
-                                match jsonwebtoken::decode::<Claims>(
-                                    &token.value(),
-                                    &DecodingKey::from_ec_pem(&mapping_action.jwt_ecdsa.public_key)
-                                        .expect("FIXME"),
-                                    &Validation {
-                                        algorithms: vec![jsonwebtoken::Algorithm::ES256],
-                                        ..Default::default()
-                                    },
-                                ) {
-                                    Ok(_token) => {
-                                        info!("jwt-token parse and verified. go ahead");
-                                    }
-                                    Err(e) => {
-                                        if let jsonwebtoken::errors::ErrorKind::InvalidSignature =
-                                            e.kind()
-                                        {
-                                            info!("jwt-token parsed but not verified");
-                                        } else {
-                                            info!(
-                                                "JWT token error: {:?}. Token: {}",
-                                                e,
-                                                token.value()
-                                            );
-                                        };
                                         return Err::<_, _>(warp::reject::custom(NotAuthorized {
                                             auth_type,
                                             requested_url: requested_url.clone(),
                                             base_url: mount_point_base_url.clone(),
                                             proto,
-                                            is_jwt_token_included: true,
-                                            jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
+                                            is_jwt_token_included: false,
+                                            jwt_ecdsa: mapping_action.jwt_ecdsa,
                                         }));
                                     }
                                 }
-                            } else {
-                                info!("jwt-token not found");
-
-                                return Err::<_, _>(warp::reject::custom(NotAuthorized {
-                                    auth_type,
-                                    requested_url: requested_url.clone(),
-                                    base_url: mount_point_base_url.clone(),
-                                    proto,
-                                    is_jwt_token_included: false,
-                                    jwt_ecdsa: mapping_action.jwt_ecdsa,
-                                }));
                             }
                         }
                     }
@@ -804,8 +811,19 @@ pub async fn server(
                                     .key(certs.private_key.as_bytes());
                             }
                             Ok(None) => {
-                                info!("certificate not found");
-                                return None;
+                                let locked = tls_gw_common.read();
+
+                                match &*locked {
+                                    Some(cert_data) if cfg!(debug_assertions) => {
+                                        info!("successfully set cert and key");
+                                        builder = builder
+                                            .cert(cert_data.certificate.as_ref())
+                                            .key(cert_data.private_key.as_ref());
+                                    }
+                                    _ => {
+                                        return None;
+                                    }
+                                }
                             }
                             Err(e) => {
                                 warn!("error retrieving certificate for {}: {}", hostname, e);

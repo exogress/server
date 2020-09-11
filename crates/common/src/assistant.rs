@@ -36,7 +36,11 @@ pub struct Notification {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum WsMessage {
+    #[serde(rename = "webapp_notification")]
     WebAppNotification(Notification),
+
+    #[serde(rename = "gw_tls")]
     GwTls(GatewayCommonTlsConfigMessage),
 }

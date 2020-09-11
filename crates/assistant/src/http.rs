@@ -96,13 +96,11 @@ pub async fn server(
                                                     while let Some(msg) = messages.next().await {
                                                         match msg.get_payload::<String>() {
                                                             Ok(p) => {
+                                                                info!("redis -> assistant: {:?}", p);
                                                                 match serde_json::from_str::<Notification>(&p) {
                                                                     Ok(notification) => {
                                                                         let outgoing_msg = serde_json::to_string(&WsMessage::WebAppNotification(notification))
                                                                             .expect("could not serialize");
-
-                                                                        let (mut to_ws_tx, mut to_ws_rx) = mpsc::channel(16);
-
                                                                         if let Err(e) = to_ws_tx
                                                                             .send(warp::filters::ws::Message::text(
                                                                                 outgoing_msg,

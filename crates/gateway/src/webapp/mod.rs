@@ -7,7 +7,7 @@ use crate::url_mapping::rate_limiter::{RateLimiter, RateLimiterKind, RateLimiter
 use crate::url_mapping::registry::Configs;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
-use exogress_config_core::{Config, Revision};
+use exogress_config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
 use exogress_entities::{
     AccountName, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
 };
@@ -110,8 +110,8 @@ pub struct AcmeHttpChallengeVerificationQueryParams {
 #[derive(Deserialize, Clone, Debug)]
 pub struct ConfigData {
     pub instance_ids: SmallVec<[InstanceId; 4]>,
-    pub config: Config,
-    pub revision: Revision,
+    pub config: ClientConfig,
+    pub revision: ClientConfigRevision,
     pub config_name: ConfigName,
 }
 
@@ -129,6 +129,7 @@ pub struct ConfigsResponse {
     pub account: AccountName,
     pub project: ProjectName,
     pub mount_point: MountPointName,
+    pub project_config: ProjectConfig,
     pub configs: SmallVec<[ConfigData; 8]>,
     pub jwt_ecdsa: JwtEcdsaResponse,
 }
@@ -264,7 +265,7 @@ impl Client {
                                         NON_ALPHANUMERIC,
                                     )
                                 )
-                                .as_str(),
+                                    .as_str(),
                             ));
 
                             match reqwest.get(url).send().await {
@@ -298,22 +299,50 @@ impl Client {
                                                         let instances_ids =
                                                             config_entry.instance_ids.clone();
 
+                                                        let prj_handlers = config_response
+                                                            .project_config
+                                                            .mount_points
+                                                            .values()
+                                                            .next()
+                                                            .map(|mp| {
+                                                                mp
+                                                                    .handlers
+                                                                    .iter()
+                                                                    .map({
+                                                                        move |(handler_name, handler)| {
+                                                                            (
+                                                                                handler_name.clone(),
+                                                                                handler.clone().into(),
+                                                                                None,
+                                                                            )
+                                                                        }
+                                                                    })
+                                                            })
+                                                            .into_iter()
+                                                            .flatten();
+
                                                         config_entry
                                                             .config
                                                             .mount_points
                                                             .values()
                                                             .next()
-                                                            .expect("FIXME")
-                                                            .handlers
-                                                            .iter()
-                                                            .map(move |(handler_name, handler)| {
-                                                                (
-                                                                    handler_name.clone(),
-                                                                    handler.clone(),
-                                                                    config_name.clone(),
-                                                                    instances_ids.clone(),
-                                                                )
+                                                            .map(|mp| {
+                                                                mp.handlers
+                                                                    .iter()
+                                                                    .map(move |(handler_name, handler)| {
+                                                                        (
+                                                                            handler_name.clone(),
+                                                                            handler.clone(),
+                                                                            Some((
+                                                                                config_name.clone(),
+                                                                                instances_ids.clone(),
+                                                                            )),
+                                                                        )
+                                                                    })
                                                             })
+                                                            .into_iter()
+                                                            .flatten()
+                                                            .chain(prj_handlers)
                                                     })
                                                     .flatten();
 

@@ -1,4 +1,4 @@
-use exogress_config_core::{Auth, Handler as HandlerConfig, HandlerVariant};
+use exogress_config_core::{Auth, ClientHandler as ClientHandlerConfig, ClientHandlerVariant};
 use exogress_entities::{ConfigName, HandlerName, InstanceId, Upstream};
 use exogress_tunnel::ConnectTarget;
 use hashbrown::HashMap;
@@ -11,23 +11,24 @@ use std::path::Path;
 pub struct Handler {
     pub base_path_matcher: String,
     pub name: HandlerName,
-    pub variant: HandlerVariant,
-    pub config_name: ConfigName,
-    pub instances_ids: SmallVec<[InstanceId; 4]>,
+    pub variant: ClientHandlerVariant,
+    pub client_config_data: Option<(ConfigName, SmallVec<[InstanceId; 4]>)>,
 }
 
 impl Handler {
     pub fn connect_target(&self, _path: impl AsRef<Path>) -> Option<ConnectTarget> {
         match &self.variant {
-            HandlerVariant::Proxy(proxy) => Some(ConnectTarget::Upstream(proxy.upstream.clone())),
-            HandlerVariant::StaticDir(_) => Some(ConnectTarget::Internal(self.name.clone())),
+            ClientHandlerVariant::Proxy(proxy) => {
+                Some(ConnectTarget::Upstream(proxy.upstream.clone()))
+            }
+            ClientHandlerVariant::StaticDir(_) => Some(ConnectTarget::Internal(self.name.clone())),
             _ => None,
         }
     }
 
     pub fn auth(&self) -> Option<Auth> {
         match &self.variant {
-            HandlerVariant::Auth(auth) => Some(auth.clone()),
+            ClientHandlerVariant::Auth(auth) => Some(auth.clone()),
             _ => None,
         }
     }
@@ -43,38 +44,36 @@ impl HandlersProcessor {
         handlers: impl Iterator<
             Item = (
                 HandlerName,
-                HandlerConfig,
-                ConfigName,
-                SmallVec<[InstanceId; 4]>,
+                ClientHandlerConfig,
+                Option<(ConfigName, SmallVec<[InstanceId; 4]>)>,
             ),
         >,
     ) -> HandlersProcessor {
         let inner = handlers
-            .map(
-                |(handler_name, handler_config, config_name, instances_ids)| {
-                    let base_path = handler_config
-                        .base_path
-                        .clone()
-                        .into_iter()
-                        .map(|bp| bp.as_str().into())
-                        .collect::<Vec<String>>()
-                        .join("/")
-                        .into();
-                    (
-                        Handler {
-                            base_path_matcher: base_path,
-                            name: handler_name.clone(),
-                            variant: handler_config.variant.clone().into(),
-                            config_name,
-                            instances_ids,
-                        },
-                        handler_config.priority,
-                    )
-                },
-            )
+            .map(|(handler_name, handler_config, client_config_data)| {
+                let base_path = handler_config
+                    .base_path
+                    .clone()
+                    .into_iter()
+                    .map(|bp| bp.as_str().into())
+                    .collect::<Vec<String>>()
+                    .join("/")
+                    .into();
+                (
+                    Handler {
+                        base_path_matcher: base_path,
+                        name: handler_name.clone(),
+                        variant: handler_config.variant.clone().into(),
+                        client_config_data,
+                    },
+                    handler_config.priority,
+                )
+            })
             .sorted_by(|a, b| a.1.cmp(&b.1))
             .map(|(s, _)| s)
             .collect();
+
+        info!("handlers = {:?}", inner);
 
         HandlersProcessor { handlers: inner }
     }

@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
 
-use exogress_config_core::{AuthProvider, Config, Probe};
+use exogress_config_core::{AuthProvider, ClientConfig, Probe};
 use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName, Upstream};
 
 use crate::clients::ClientTunnels;
@@ -33,7 +33,7 @@ pub struct TlsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct InstanceSchema {
-    config: Config,
+    config: ClientConfig,
     instance_id: InstanceId,
 }
 
@@ -493,7 +493,7 @@ impl Mapping {
                                                     .with_path(probe.target.path.as_str())
                                                     .expect("FIXME: URL error");
 
-                                                info!(
+                                                debug!(
                                                     "healthcheck connect target {:?} to instance {}. probe: {:?}. URL = {}",
                                                     connect_target, instance_id, probe, url
                                                 );
@@ -507,7 +507,7 @@ impl Mapping {
                                                     .await;
 
                                                 match r {
-                                                    Ok(Ok(resp)) if resp.status().is_success() => info!(
+                                                    Ok(Ok(resp)) if resp.status().is_success() => debug!(
                                                         "healthcheck ok instance_id={}, upstream={}",
                                                         instance_id, upstream
                                                     ),

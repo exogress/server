@@ -4,7 +4,7 @@ use futures::{pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
-use exogress_config_core::Config;
+use exogress_config_core::ClientConfig;
 use exogress_entities::{AccountName, InstanceId, ProjectName};
 use warp::Filter;
 
@@ -57,7 +57,7 @@ pub async fn server(
                             match msg {
                                 Some(Ok(m)) if m.is_text() => {
                                     return Ok((
-                                        serde_json::from_str::<Config>(m.to_str().unwrap())?,
+                                        serde_json::from_str::<ClientConfig>(m.to_str().unwrap())?,
                                         websocket,
                                     ));
                                 }
@@ -202,9 +202,10 @@ pub async fn server(
                                             while let Some(msg_res) = rx.next().await {
                                                 match msg_res? {
                                                     msg if msg.is_text() => {
-                                                        let config = serde_json::from_str::<Config>(
-                                                            msg.to_str().unwrap(),
-                                                        )?;
+                                                        let config =
+                                                            serde_json::from_str::<ClientConfig>(
+                                                                msg.to_str().unwrap(),
+                                                            )?;
                                                         presence_client
                                                             .update_presence(
                                                                 &instance_id,

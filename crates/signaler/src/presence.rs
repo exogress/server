@@ -1,5 +1,5 @@
 //! Presence API
-use exogress_config_core::Config;
+use exogress_config_core::ClientConfig;
 use exogress_entities::{AccountName, InstanceId, ProjectName};
 use reqwest::{Method, StatusCode, Url};
 use serde::Serialize;
@@ -123,7 +123,7 @@ impl Client {
         authorization: &str,
         project: &ProjectName,
         account: &AccountName,
-        config: &Config,
+        config: &ClientConfig,
     ) -> Result<(), Error> {
         let args = format!("project={}&account={}", project, account);
 
@@ -160,7 +160,7 @@ impl Client {
         &self,
         instance_id: &InstanceId,
         authorization: &str,
-        config: &Config,
+        config: &ClientConfig,
     ) -> Result<(), Error> {
         self.execute_presence(Method::PUT, instance_id, authorization, None, config)
             .await

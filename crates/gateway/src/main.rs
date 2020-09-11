@@ -34,6 +34,7 @@ use crate::clients::{spawn_tunnel, ClientTunnels};
 
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
+use crate::stop_reasons::StopReason;
 use crate::url_mapping::notification_listener::AssistantConsumer;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
@@ -521,7 +522,12 @@ fn main() {
         .await
         .expect("notification listener error");
 
-        tokio::spawn(consumer.spawn());
+        tokio::spawn(async move {
+            consumer.spawn().await;
+
+            error!("assistant consumer unexpectedly closed");
+            app_stop_handle.stop(StopReason::NotificationChannelClosed);
+        });
 
         let google_oauth2_client = GoogleOauth2Client::new(
             Duration::from_secs(60),
