@@ -32,6 +32,7 @@ shadow-clone = "1.2.1"
 tracing = "0.1"
 tracing-subscriber = "0.2"
 tracing-futures = "0.2.4"
+urlencoding = "1.1.1"
 
 exogress-server-common = { path = "../common" }
 exogress-common-utils = { path = "../../deps/exogress/crates/common-utils" }

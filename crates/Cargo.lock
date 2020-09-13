@@ -749,6 +749,7 @@ dependencies = [
  "trust-dns-resolver",
  "tungstenite",
  "url",
+ "urlencoding",
  "warp",
  "webpki",
 ]
@@ -942,6 +943,7 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "trust-dns-resolver",
+ "urlencoding",
  "warp",
 ]
 

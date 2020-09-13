@@ -123,9 +123,15 @@ impl Client {
         authorization: &str,
         project: &ProjectName,
         account: &AccountName,
+        labels_json: &String,
         config: &ClientConfig,
     ) -> Result<(), Error> {
-        let args = format!("project={}&account={}", project, account);
+        let args = format!(
+            "project={}&account={}&labels_json={}",
+            project,
+            account,
+            urlencoding::encode(&labels_json)
+        );
 
         self.execute_presence(
             Method::POST,

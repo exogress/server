@@ -19,9 +19,10 @@ const CONFIG_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Deserialize)]
-struct Workspace {
+struct ChannelConnectParams {
     project: ProjectName,
     account: AccountName,
+    labels: smartstring::alias::String,
 }
 
 pub async fn server(
@@ -38,12 +39,12 @@ pub async fn server(
                 Ok(instance_id) => Ok(instance_id),
             }
         })
-        .and(warp::query::query::<Workspace>())
+        .and(warp::query::query::<ChannelConnectParams>())
         .and(warp::ws())
         .and(warp::header("authorization"))
         .map({
             move |instance_id: InstanceId,
-                  workspace: Workspace,
+                  channel_connect_params: ChannelConnectParams,
                   ws: warp::ws::Ws,
                   authorization: String| {
                 shadow_clone!(redis);
@@ -80,8 +81,9 @@ pub async fn server(
                                 .set_online(
                                     &instance_id,
                                     &authorization,
-                                    &workspace.project,
-                                    &workspace.account,
+                                    &channel_connect_params.project,
+                                    &channel_connect_params.account,
+                                    &channel_connect_params.labels,
                                     &config,
                                 )
                                 .await
@@ -150,7 +152,9 @@ pub async fn server(
                                         redis.get_tokio_connection_tokio().await?.into_pubsub();
                                     let redis_subscription = format!(
                                         "signaler.{}.{}.{}",
-                                        workspace.account, workspace.project, config.name
+                                        channel_connect_params.account,
+                                        channel_connect_params.project,
+                                        config.name
                                     );
                                     info!("subscribe to {}", redis_subscription);
                                     pubsub.subscribe(redis_subscription).await?;
