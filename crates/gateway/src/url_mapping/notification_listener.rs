@@ -7,9 +7,7 @@ use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
 use crate::webapp;
 use exogress_common_utils::ws_client::{connect_ws, Error};
-use exogress_server_common::assistant::{
-    Action, GatewayCommonTlsConfigMessage, Notification, WsMessage,
-};
+use exogress_server_common::assistant::{Action, GatewayConfigMessage, Notification, WsMessage};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -27,7 +25,7 @@ pub struct AssistantConsumer {
     stop_handle: AppStopHandle,
     webapp_client: webapp::Client,
     mappings: Configs,
-    tls_gw_common: Arc<RwLock<Option<GatewayCommonTlsConfigMessage>>>,
+    tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
 }
 
 impl AssistantConsumer {
@@ -36,7 +34,7 @@ impl AssistantConsumer {
         individual_hostname: &str,
         mappings: &Configs,
         client_tunnels: &ClientTunnels,
-        tls_gw_common: Arc<RwLock<Option<GatewayCommonTlsConfigMessage>>>,
+        tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
         webapp_client: &webapp::Client,
         resolver: TokioAsyncResolver,
         app_stop_handle: &AppStopHandle,
@@ -113,7 +111,7 @@ impl AssistantConsumer {
                                         }
                                     }
                                 }
-                                WsMessage::GwTls(gw_tls) => {
+                                WsMessage::GwConfig(gw_tls) => {
                                     info!("Received common gateway TLS config");
                                     *self.tls_gw_common.write() = Some(gw_tls);
                                 }

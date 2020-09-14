@@ -15,10 +15,10 @@ pub struct GetValue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayCommonTlsConfigMessage {
-    pub hostname: String,
-    pub certificate: String,
-    pub private_key: String,
+pub struct GatewayConfigMessage {
+    pub common_gw_hostname: String,
+    pub common_gw_host_certificate: String,
+    pub common_gw_host_private_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +41,6 @@ pub enum WsMessage {
     #[serde(rename = "webapp_notification")]
     WebAppNotification(Notification),
 
-    #[serde(rename = "gw_tls")]
-    GwTls(GatewayCommonTlsConfigMessage),
+    #[serde(rename = "gw_config")]
+    GwConfig(GatewayConfigMessage),
 }

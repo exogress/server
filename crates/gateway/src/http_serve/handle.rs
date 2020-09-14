@@ -42,7 +42,7 @@ use crate::webapp::Client;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
 use exogress_entities::RateLimiterName;
-use exogress_server_common::assistant::GatewayCommonTlsConfigMessage;
+use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::url_prefix::UrlPrefix;
 use http::uri::Authority;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
@@ -71,7 +71,7 @@ pub async fn server(
     external_https_port: u16,
     webapp_client: Client,
     app_stop_wait: AppStopWait,
-    tls_gw_common: Arc<RwLock<Option<GatewayCommonTlsConfigMessage>>>,
+    tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
     public_base_url: Url,
     individual_hostname: String,
     webroot: PathBuf,
@@ -783,16 +783,16 @@ pub async fn server(
                         let locked = tls_gw_common.read();
 
                         match &*locked {
-                            Some(cert_data) if cert_data.hostname == hostname => {
+                            Some(cert_data) if cert_data.common_gw_hostname == hostname => {
                                 info!("successfully set cert and key");
                                 builder = builder
-                                    .cert(cert_data.certificate.as_ref())
-                                    .key(cert_data.private_key.as_ref());
+                                    .cert(cert_data.common_gw_host_certificate.as_ref())
+                                    .key(cert_data.common_gw_host_private_key.as_ref());
                             }
                             Some(cert_data) => {
                                 info!(
                                     "common cert for wrong hostname found. expected {}, found {}",
-                                    hostname, cert_data.hostname
+                                    hostname, cert_data.common_gw_hostname
                                 );
                                 return None;
                             }
@@ -817,8 +817,8 @@ pub async fn server(
                                     Some(cert_data) if cfg!(debug_assertions) => {
                                         info!("successfully set cert and key");
                                         builder = builder
-                                            .cert(cert_data.certificate.as_ref())
-                                            .key(cert_data.private_key.as_ref());
+                                            .cert(cert_data.common_gw_host_certificate.as_ref())
+                                            .key(cert_data.common_gw_host_private_key.as_ref());
                                     }
                                     _ => {
                                         return None;

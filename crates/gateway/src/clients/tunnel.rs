@@ -236,7 +236,7 @@ pub async fn spawn(
                             }
                         } else {
                             if should_cleanup {
-                                unreachable!("should never happen. could not find client config")
+                                error!("should never happen. could not find client config")
                             }
                         }
                     }

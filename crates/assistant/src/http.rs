@@ -1,6 +1,6 @@
 use crate::termination::StopReason;
 use exogress_server_common::assistant::{
-    GatewayCommonTlsConfigMessage, GetValue, Notification, SetValue, WsMessage,
+    GatewayConfigMessage, GetValue, Notification, SetValue, WsMessage,
 };
 use futures::{FutureExt, SinkExt, StreamExt};
 use redis::AsyncCommands;
@@ -25,7 +25,7 @@ pub struct GatewayCommonTlsConfig {
 }
 
 impl GatewayCommonTlsConfig {
-    pub async fn ws_message(&self) -> io::Result<GatewayCommonTlsConfigMessage> {
+    pub async fn ws_message(&self) -> io::Result<GatewayConfigMessage> {
         let mut certificate = String::new();
         tokio::fs::File::open(self.tls_cert_path.as_path())
             .await?
@@ -38,10 +38,10 @@ impl GatewayCommonTlsConfig {
             .read_to_string(&mut private_key)
             .await?;
 
-        Ok(GatewayCommonTlsConfigMessage {
-            hostname: self.hostname.clone(),
-            certificate,
-            private_key,
+        Ok(GatewayConfigMessage {
+            common_gw_hostname: self.hostname.clone(),
+            common_gw_host_certificate: certificate,
+            common_gw_host_private_key: private_key,
         })
     }
 }
@@ -66,7 +66,7 @@ pub async fn server(
                 ws.on_upgrade(move |mut websocket| {
                     async move {
                         let r: Result<(), anyhow::Error> = async move {
-                            let outgoing_msg = serde_json::to_string(&WsMessage::GwTls(common_gw_tls_config.ws_message().await?))?;
+                            let outgoing_msg = serde_json::to_string(&WsMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
 
                             websocket.send(warp::filters::ws::Message::text(outgoing_msg)).await?;
 
