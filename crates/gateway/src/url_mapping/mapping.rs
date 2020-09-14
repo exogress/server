@@ -451,14 +451,14 @@ impl Mapping {
                     let futures = FuturesUnordered::new();
 
                     for config in &config_response.configs {
-                        if config.instance_ids.is_empty() || config.config.upstreams.is_empty() {
-                            return;
-                        }
-
                         let config_name = config.config_name.clone();
 
                         for instance_id in &config.instance_ids {
                             for (upstream, upstream_definition) in &config.config.upstreams {
+                                if upstream_definition.health.is_empty() {
+                                    break;
+                                }
+
                                 shadow_clone!(individual_hostname);
                                 shadow_clone!(handlers_processor);
                                 shadow_clone!(client_tunnels);
@@ -536,7 +536,11 @@ impl Mapping {
                         }
                     }
 
-                    futures.collect::<Vec<_>>().await;
+                    let probes_performed = futures.collect::<Vec<_>>().await;
+                    if probes_performed.len() == 0 {
+                        info!("no healthchecks defined");
+                        return;
+                    }
                 }
             }
         };

@@ -7,8 +7,8 @@ members = [
 ]
 
 [profile.release]
-#lto = true
-debug = true
+lto = true
+#debug = true
 
 [patch.crates-io]
 hyper = { path = '../deps/hyper' }
