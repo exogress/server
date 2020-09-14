@@ -172,6 +172,9 @@ pub async fn spawn(
                         }
 
                         crate::statistics::TUNNELS_GAUGE.inc();
+
+                        let mut should_cleanup = true;
+
                         tokio::select! {
                             res = bg => {
                                 match res {
@@ -184,6 +187,7 @@ pub async fn spawn(
                                 }
                             },
                             _ = stop_rx => {
+                                should_cleanup = false;
                                 info!("tunnel terminated by request");
                             },
                         }
@@ -214,7 +218,9 @@ pub async fn spawn(
                                 client.remove_entry();
                             }
                         } else {
-                            error!("should never happen. could not find client config")
+                            if should_cleanup {
+                                unreachable!("should never happen. could not find client config")
+                            }
                         }
                     }
                     Err(e) => {
