@@ -24,7 +24,7 @@ use url::Url;
 use warp::reject::Reject;
 use warp::{filters, Filter, Rejection, Reply};
 
-use exogress_tunnel::{Conn, ConnectTarget, Connector};
+use exogress_tunnel::{Compression, Conn, ConnectTarget, Connector};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::Body;
 
@@ -1018,7 +1018,7 @@ async fn proxy_ws(
 
     let transport: Box<dyn Conn> = Box::new(
         connector
-            .retrieve_connection(connect_target)
+            .retrieve_connection(connect_target, Compression::Zstd)
             .await
             .expect("FIXME"),
     );
