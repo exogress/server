@@ -18,6 +18,7 @@ use hashbrown::HashMap;
 use http::StatusCode;
 use itertools::Itertools;
 use lru_time_cache::LruCache;
+use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
 use smallvec::SmallVec;
 use std::num::NonZeroU32;
@@ -350,10 +351,13 @@ impl Client {
                                                 let handlers_processor =
                                                     HandlersProcessor::new(handlers);
 
+                                                let instances_health = Arc::new(Mutex::new(HashMap::new()));
+
                                                 let mapping = Mapping::new(
                                                     config_response.clone(),
                                                     handlers_processor,
-                                                    RateLimiters::new(vec![
+                                                    instances_health,
+                                                RateLimiters::new(vec![
                                                         // RateLimiter::new(
                                                         //     "free_plan".parse().unwrap(),
                                                         //     RateLimiterKind::FailResponse,

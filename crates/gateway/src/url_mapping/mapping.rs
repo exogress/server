@@ -4,7 +4,7 @@ use std::str::FromStr;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 
-use http::Uri;
+use http::{StatusCode, Uri};
 use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
@@ -22,6 +22,9 @@ use futures::channel::oneshot;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use hashbrown::HashMap;
+use lru_time_cache::LruCache;
+use parking_lot::Mutex;
+use std::sync::Arc;
 use tokio::time::delay_for;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -408,12 +411,37 @@ pub struct Mapping {
     jwt_ecdsa: JwtEcdsa,
     rate_limiters: RateLimiters,
     healthcheck_stop_tx: oneshot::Sender<()>,
+    health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+}
+
+#[derive(Debug)]
+pub enum UnhealthyReason {
+    Timeout,
+    Unreachable,
+    BadStatus(StatusCode),
+}
+
+#[derive(Debug)]
+pub enum HealthState {
+    Healthy,
+    Unhealthy {
+        probe: Probe,
+        reason: UnhealthyReason,
+    },
+    NotYetKnown,
+}
+
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct HealthEndpoint {
+    pub instance_id: InstanceId,
+    pub upstream: Upstream,
 }
 
 impl Mapping {
     pub fn new(
         config_response: ConfigsResponse,
         handlers_processor: HandlersProcessor,
+        health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
         rate_limiters: RateLimiters,
         client_tunnels: ClientTunnels,
         individual_hostname: String,
@@ -440,15 +468,41 @@ impl Mapping {
 
             shadow_clone!(account);
             shadow_clone!(project);
+            shadow_clone!(health);
 
             async move {
                 shadow_clone!(project);
+                shadow_clone!(health);
+
+                {
+                    let mut locked = health.lock();
+                    for config in &config_response.configs {
+                        for instance_id in &config.instance_ids {
+                            for (upstream, upstream_definition) in &config.config.upstreams {
+                                if upstream_definition.health.is_empty() {
+                                    break;
+                                }
+
+                                locked.insert(
+                                    HealthEndpoint {
+                                        instance_id: *instance_id,
+                                        upstream: upstream.clone(),
+                                    },
+                                    HealthState::NotYetKnown,
+                                );
+                            }
+                        }
+                    }
+                }
 
                 loop {
                     shadow_clone!(client_tunnels);
                     shadow_clone!(project);
+                    shadow_clone!(health);
 
                     let futures = FuturesUnordered::new();
+
+                    // info!("Current health status: {:#?}", instances_health.lock());
 
                     for config in &config_response.configs {
                         let config_name = config.config_name.clone();
@@ -460,6 +514,7 @@ impl Mapping {
                                 }
 
                                 shadow_clone!(individual_hostname);
+                                shadow_clone!(health);
                                 shadow_clone!(handlers_processor);
                                 shadow_clone!(client_tunnels);
 
@@ -484,10 +539,11 @@ impl Mapping {
 
                                         futures.push({
                                             shadow_clone!(connect_target);
+                                            shadow_clone!(health);
 
                                             async move {
                                                 shadow_clone!(connect_target);
-
+                                                shadow_clone!(health);
 
                                                 let url = connect_target
                                                     .with_path(probe.target.path.as_str())
@@ -507,24 +563,77 @@ impl Mapping {
                                                     .await;
 
                                                 match r {
-                                                    Ok(Ok(resp)) if resp.status().is_success() => debug!(
-                                                        "healthcheck ok instance_id={}, upstream={}",
-                                                        instance_id, upstream
-                                                    ),
-                                                    Ok(Ok(resp)) => info!(
-                                                        "healthcheck bad status {:?} instance_id={}, upstream={}",
-                                                        resp.status(),
-                                                        instance_id,
-                                                        upstream
-                                                    ),
-                                                    Ok(Err(e)) => info!(
-                                                        "healthcheck error {:?} instance_id={}, upstream={}",
-                                                        e, instance_id, upstream
-                                                    ),
-                                                    Err(e) => error!(
-                                                        "healthcheck timeout instance_id={}, upstream={}",
-                                                        instance_id, upstream
-                                                    ),
+                                                    Ok(Ok(resp)) if resp.status().is_success() => {
+                                                        health
+                                                            .lock()
+                                                            .insert(
+                                                                HealthEndpoint {
+                                                                    instance_id: *instance_id,
+                                                                    upstream: upstream.clone(),
+                                                                },
+                                                                HealthState::Healthy,
+                                                            );
+                                                        debug!(
+                                                            "healthcheck ok instance_id={}, upstream={}",
+                                                            instance_id, upstream
+                                                        )
+                                                    },
+                                                    Ok(Ok(resp)) => {
+                                                        info!(
+                                                            "healthcheck bad status {:?} instance_id={}, upstream={}",
+                                                            resp.status(),
+                                                            instance_id,
+                                                            upstream
+                                                        );
+                                                        health
+                                                            .lock()
+                                                            .insert(
+                                                                HealthEndpoint {
+                                                                    instance_id: *instance_id,
+                                                                    upstream: upstream.clone(),
+                                                                },
+                                                                HealthState::Unhealthy {
+                                                                    probe: probe.clone(),
+                                                                    reason: UnhealthyReason::BadStatus(resp.status())
+                                                                },
+                                                            );
+                                                    },
+                                                    Ok(Err(e)) => {
+                                                        info!(
+                                                            "healthcheck error {:?} instance_id={}, upstream={}",
+                                                            e, instance_id, upstream
+                                                        );
+                                                        health
+                                                            .lock()
+                                                            .insert(
+                                                                HealthEndpoint {
+                                                                    instance_id: *instance_id,
+                                                                    upstream: upstream.clone(),
+                                                                },
+                                                                HealthState::Unhealthy {
+                                                                    probe: probe.clone(),
+                                                                    reason: UnhealthyReason::Unreachable,
+                                                                },
+                                                            );
+                                                    },
+                                                    Err(e) => {
+                                                        error!(
+                                                            "healthcheck timeout instance_id={}, upstream={}",
+                                                            instance_id, upstream
+                                                        );
+                                                        health
+                                                            .lock()
+                                                            .insert(
+                                                                HealthEndpoint {
+                                                                    instance_id: *instance_id,
+                                                                    upstream: upstream.clone(),
+                                                                },
+                                                                HealthState::Unhealthy {
+                                                                    probe: probe.clone(),
+                                                                    reason: UnhealthyReason::Timeout,
+                                                                },
+                                                            );
+                                                    },
                                                 }
 
                                                 delay_for(probe.target.period).await;
@@ -561,6 +670,7 @@ impl Mapping {
             jwt_ecdsa,
             rate_limiters,
             healthcheck_stop_tx,
+            health: health.clone(),
         };
 
         mapping
@@ -592,6 +702,7 @@ pub struct MappingAction {
     pub handler: ClientHandler,
     pub jwt_ecdsa: JwtEcdsa,
     pub external_base_url: Url,
+    pub health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
 }
 
 impl MappingAction {
@@ -636,6 +747,7 @@ impl Mapping {
                     handler,
                     jwt_ecdsa: self.jwt_ecdsa.clone(),
                     external_base_url: base_url,
+                    health: self.health.clone(),
                 },
                 self.rate_limiters.clone(),
             ))

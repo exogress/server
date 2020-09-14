@@ -34,8 +34,8 @@ use crate::dbip::LocationAndIsp;
 use crate::http_serve::auth;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{
-    AuthProviderConfig, JwtEcdsa, MappingAction, Oauth2Provider, Oauth2SsoClient, Protocol,
-    UrlForRewriting,
+    AuthProviderConfig, HealthEndpoint, HealthState, JwtEcdsa, MappingAction, Oauth2Provider,
+    Oauth2SsoClient, Protocol, UrlForRewriting,
 };
 use crate::url_mapping::rate_limiter::{RateLimiterResponse, RateLimiters};
 use crate::webapp::Client;
@@ -556,6 +556,24 @@ pub async fn server(
 
                                 if let Some(connect_target) = handler.connect_target("") {
                                     for instance_id in ordered_instances.iter() {
+                                        if let ConnectTarget::Upstream(upstream) = &connect_target {
+                                            let endpoint = HealthEndpoint { instance_id: *instance_id, upstream: upstream.clone() };
+                                            let locked = mapping_action.health.lock();
+                                            let state = locked.get(&endpoint);
+
+                                            match state {
+                                                Some(&HealthState::NotYetKnown) => {
+                                                    info!("Skip {:?}. Unknown health state", endpoint);
+                                                    break;
+                                                },
+                                                Some(HealthState::Unhealthy { probe, reason }) => {
+                                                    info!("Skip {:?}. probe {:?} failed with reason {:?}", endpoint, probe, reason);
+                                                    break;
+                                                },
+                                                Some(&HealthState::Healthy) | None => {},
+                                            }
+                                        };
+
                                         info!("try proxy to {}", instance_id);
                                         let (connector, hyper, proxy_to) =
                                             if let Some(ConnectedTunnel {
