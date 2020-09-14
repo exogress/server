@@ -2,8 +2,17 @@
 use exogress_config_core::ClientConfig;
 use exogress_entities::{AccountName, InstanceId, ProjectName};
 use reqwest::{Method, StatusCode, Url};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use smartstring::alias::String;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Nothing {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstanceRegistered {
+    pub(crate) instance_id: InstanceId,
+}
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -54,13 +63,13 @@ impl Client {
         }
     }
 
-    async fn execute_url<T: Serialize + ?Sized>(
+    async fn execute_url<T: Serialize + ?Sized, R: Serialize + DeserializeOwned + Sized>(
         &self,
         url: Url,
         method: Method,
         authorization: Option<&str>,
         body: &T,
-    ) -> Result<(), Error> {
+    ) -> Result<R, Error> {
         let mut req = self.client.request(method, url).json(body);
 
         if let Some(auth) = authorization {
@@ -70,7 +79,7 @@ impl Client {
         let res = req.send().await?;
 
         match res.status() {
-            code if code.is_success() => Ok(()),
+            code if code.is_success() => Ok(res.json().await?),
             StatusCode::CONFLICT => Err(Error::Conflict),
             StatusCode::NOT_FOUND => Err(Error::NotFound),
             StatusCode::FORBIDDEN => Err(Error::Forbidden),
@@ -82,25 +91,28 @@ impl Client {
         }
     }
 
-    async fn execute_signaler(&self, method: Method) -> Result<(), Error> {
+    async fn execute_signaler(&self, method: Method) -> Result<Nothing, Error> {
         let url = self.base_url.clone();
 
         self.execute_url(url, method, None, &()).await
     }
 
-    async fn execute_presence<T: Serialize + ?Sized>(
+    async fn execute_presence<T: Serialize + ?Sized, R: Serialize + DeserializeOwned + Sized>(
         &self,
         method: Method,
-        instance_id: &InstanceId,
+        instance_id: Option<&InstanceId>,
         authorization: &str,
         params: Option<&str>,
         config: &T,
-    ) -> Result<(), Error> {
+    ) -> Result<R, Error> {
         let mut url: Url = self.base_url.clone();
+
         {
             let mut segments = url.path_segments_mut().unwrap();
             segments.push("instances");
-            segments.push(instance_id.to_string().as_str());
+            if let Some(instance_id) = instance_id {
+                segments.push(instance_id.to_string().as_str());
+            }
         }
 
         url.set_query(params);
@@ -109,33 +121,32 @@ impl Client {
             .await
     }
 
-    pub async fn register_signaler(&self) -> Result<(), Error> {
+    pub async fn register_signaler(&self) -> Result<Nothing, Error> {
         self.execute_signaler(Method::POST).await
     }
 
-    pub async fn unregister_signaler(&self) -> Result<(), Error> {
+    pub async fn unregister_signaler(&self) -> Result<Nothing, Error> {
         self.execute_signaler(Method::DELETE).await
     }
 
     pub async fn set_online(
         &self,
-        instance_id: &InstanceId,
         authorization: &str,
         project: &ProjectName,
         account: &AccountName,
         labels_json: &String,
         config: &ClientConfig,
-    ) -> Result<(), Error> {
+    ) -> Result<InstanceRegistered, Error> {
         let args = format!(
             "project={}&account={}&labels_json={}",
-            project,
-            account,
+            urlencoding::encode(project),
+            urlencoding::encode(account),
             urlencoding::encode(&labels_json)
         );
 
         self.execute_presence(
             Method::POST,
-            instance_id,
+            None,
             authorization,
             Some(args.as_str()),
             config,
@@ -143,7 +154,7 @@ impl Client {
         .await
     }
 
-    pub async fn signaler_alive(&self) -> Result<(), Error> {
+    pub async fn signaler_alive(&self) -> Result<Nothing, Error> {
         let mut url = self.base_url.clone();
         {
             let mut segments = url.path_segments_mut().unwrap();
@@ -157,8 +168,8 @@ impl Client {
         &self,
         instance_id: &InstanceId,
         authorization: &str,
-    ) -> Result<(), Error> {
-        self.execute_presence(Method::DELETE, instance_id, authorization, None, &())
+    ) -> Result<Nothing, Error> {
+        self.execute_presence(Method::DELETE, Some(instance_id), authorization, None, &())
             .await
     }
 
@@ -167,8 +178,8 @@ impl Client {
         instance_id: &InstanceId,
         authorization: &str,
         config: &ClientConfig,
-    ) -> Result<(), Error> {
-        self.execute_presence(Method::PUT, instance_id, authorization, None, config)
+    ) -> Result<Nothing, Error> {
+        self.execute_presence(Method::PUT, Some(instance_id), authorization, None, config)
             .await
     }
 }

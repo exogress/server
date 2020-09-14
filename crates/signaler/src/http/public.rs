@@ -6,6 +6,7 @@ use tokio::time::Duration;
 
 use exogress_config_core::ClientConfig;
 use exogress_entities::{AccountName, InstanceId, ProjectName};
+use exogress_signaling::SignalerHandshakeResponse;
 use warp::Filter;
 
 use crate::presence;
@@ -32,19 +33,12 @@ pub async fn server(
     stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<stop_handle::StopReason<StopReason>>,
 ) {
-    let presence = warp::path!("api" / "v1" / "instances" / String / "channel")
-        .and_then(|instance_id: String| async move {
-            match instance_id.parse::<InstanceId>() {
-                Err(_e) => Err(warp::reject::custom(BadInstanceId {})),
-                Ok(instance_id) => Ok(instance_id),
-            }
-        })
+    let presence = warp::path!("api" / "v1" / "channel")
         .and(warp::query::query::<ChannelConnectParams>())
         .and(warp::ws())
         .and(warp::header("authorization"))
         .map({
-            move |instance_id: InstanceId,
-                  channel_connect_params: ChannelConnectParams,
+            move |channel_connect_params: ChannelConnectParams,
                   ws: warp::ws::Ws,
                   authorization: String| {
                 shadow_clone!(redis);
@@ -77,9 +71,8 @@ pub async fn server(
 
                     match tokio::time::timeout(CONFIG_WAIT_TIMEOUT, wait_first).await {
                         Ok(Ok((config, mut websocket))) => {
-                            match presence_client
+                            let instance_id = match presence_client
                                 .set_online(
-                                    &instance_id,
                                     &authorization,
                                     &channel_connect_params.project,
                                     &channel_connect_params.account,
@@ -118,15 +111,13 @@ pub async fn server(
                                     return;
                                 }
                                 Err(Error::BadRequest(maybe_str)) => {
-                                    info!("Closing connection with conflict message");
+                                    let msg = format!(
+                                        "bad request: {}",
+                                        maybe_str.unwrap_or("no error specified".into())
+                                    );
+                                    info!("Closing connection with bad request message: {}", msg);
                                     let _ = websocket
-                                        .send(warp::filters::ws::Message::close_with(
-                                            4000u16,
-                                            format!(
-                                                "bad request: {}",
-                                                maybe_str.unwrap_or("no error specified".into())
-                                            ),
-                                        ))
+                                        .send(warp::filters::ws::Message::close_with(4000u16, msg))
                                         .await;
                                     return;
                                 }
@@ -140,8 +131,20 @@ pub async fn server(
                                         .await;
                                     return;
                                 }
-                                Ok(_) => {}
+                                Ok(response) => {
+                                    let _ = websocket
+                                        .send(warp::filters::ws::Message::text(
+                                            serde_json::to_string(&SignalerHandshakeResponse::Ok {
+                                                instance_id: response.instance_id,
+                                            })
+                                            .unwrap(),
+                                        ))
+                                        .await;
+                                    response.instance_id
+                                }
                             };
+
+                            info!("instance_id = {}", instance_id);
 
                             let r = {
                                 shadow_clone!(presence_client);
