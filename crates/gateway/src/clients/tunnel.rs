@@ -6,19 +6,21 @@ use std::time::Duration;
 
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 
-use exogress_tunnel::{server_connection, server_framed, TunnelHello};
+use exogress_tunnel::{server_connection, server_framed, TunnelHello, TunnelHelloResponse};
 use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
+use exogress_entities::TunnelId;
 use futures::channel::oneshot;
 use generational_arena::Arena;
+use std::convert::TryInto;
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))
@@ -81,14 +83,26 @@ pub async fn spawn(
             async move {
                 match acceptor.accept(tunnel_stream).await {
                     Ok(mut tls_conn) => {
-                        let read_tunnel_hello = async {
+                        let tunnel_id = TunnelId::new();
+
+                        let accept_tunnel = async {
                             let len = tls_conn.read_u16().await?;
                             let mut payload = vec![0u8; len.into()];
                             tls_conn.read_exact(&mut payload).await?;
-                            Ok::<_, anyhow::Error>(bincode::deserialize::<TunnelHello>(&payload)?)
+                            let tunnel_hello = bincode::deserialize::<TunnelHello>(&payload)?;
+
+                            let resp = TunnelHelloResponse::Ok { tunnel_id };
+
+                            let resp_bytes = bincode::serialize(&resp)?;
+                            tls_conn
+                                .write_u16(resp_bytes.len().try_into().unwrap())
+                                .await?;
+                            tls_conn.write_all(&resp_bytes).await?;
+
+                            Ok::<_, anyhow::Error>(tunnel_hello)
                         };
 
-                        let tunnel_hello = match timeout(Duration::from_secs(5), read_tunnel_hello)
+                        let tunnel_hello = match timeout(Duration::from_secs(5), accept_tunnel)
                             .await
                         {
                             Ok(Ok(tunnel_hello)) => {
