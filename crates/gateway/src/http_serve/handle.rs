@@ -603,6 +603,7 @@ pub async fn server(
                                                     headers.clone(),
                                                     proxy_to,
                                                     local_addr,
+                                                    mount_point_base_url.host().as_str(),
                                                     connector,
                                                     connect_target.clone(),
                                                 )
@@ -639,6 +640,7 @@ pub async fn server(
                                                     proxy_to,
                                                     method,
                                                     local_addr,
+                                                    mount_point_base_url.host().as_str(),
                                                     hyper,
                                                     connect_target.clone(),
                                                 )
@@ -991,6 +993,7 @@ async fn proxy_ws(
     headers: http::HeaderMap,
     mut proxy_to: Url,
     local_ip: IpAddr,
+    external_host: &str,
     connector: Connector,
     connect_target: ConnectTarget,
 ) -> Result<Response<Body>, Error> {
@@ -1017,7 +1020,7 @@ async fn proxy_ws(
 
     *proxy_req.uri_mut() = proxy_to.to_string().try_into().unwrap();
 
-    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers);
+    let proxy_headers = proxy_request_headers(local_ip, external_host, client_ip_addr, headers);
 
     for (header, value) in proxy_headers.into_iter() {
         match proxy_req
@@ -1180,10 +1183,14 @@ static UPGRADE_HEADER: HeaderName = UPGRADE;
 
 fn proxy_request_headers(
     local_ip: IpAddr,
+    external_host: &str,
     client_ip: IpAddr,
     mut headers: http::HeaderMap,
 ) -> Vec<(String, String)> {
     let mut res = vec![];
+
+    res.push(("x-forwarded-host".to_string(), external_host.to_string()));
+    res.push(("x-forwarded-proto".to_string(), "https".to_string()));
 
     //X-Forwarded-Host and X-Forwarded-Proto
     let mut x_forwarded_for = headers
@@ -1233,12 +1240,13 @@ async fn proxy_http_request<
     mut proxy_to: Url,
     method: http::Method,
     local_ip: IpAddr,
+    external_host: &str,
     hyper: hyper::client::Client<Connector>,
     connect_target: ConnectTarget,
 ) -> Result<Response<Body>, Error> {
     connect_target.update_url(&mut proxy_to);
 
-    let proxy_headers = proxy_request_headers(local_ip, client_ip_addr, headers);
+    let proxy_headers = proxy_request_headers(local_ip, external_host, client_ip_addr, headers);
 
     info!("Proxy request to {}", proxy_to);
 
