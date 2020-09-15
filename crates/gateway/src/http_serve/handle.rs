@@ -563,7 +563,7 @@ pub async fn server(
 
                                             match state {
                                                 Some(&HealthState::NotYetKnown) => {
-                                                    info!("Unknown health state. Try to proxy anyway", endpoint);
+                                                    info!("Unknown health state. Try to proxy anyway {:?}", endpoint);
                                                 },
                                                 Some(HealthState::Unhealthy { probe, reason }) => {
                                                     info!("Skip {:?}. probe {:?} failed with reason {:?}", endpoint, probe, reason);
