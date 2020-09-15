@@ -479,17 +479,15 @@ impl Mapping {
                     for config in &config_response.configs {
                         for instance_id in &config.instance_ids {
                             for (upstream, upstream_definition) in &config.config.upstreams {
-                                if upstream_definition.health.is_empty() {
-                                    break;
+                                if !upstream_definition.health.is_empty() {
+                                    locked.insert(
+                                        HealthEndpoint {
+                                            instance_id: *instance_id,
+                                            upstream: upstream.clone(),
+                                        },
+                                        HealthState::NotYetKnown,
+                                    );
                                 }
-
-                                locked.insert(
-                                    HealthEndpoint {
-                                        instance_id: *instance_id,
-                                        upstream: upstream.clone(),
-                                    },
-                                    HealthState::NotYetKnown,
-                                );
                             }
                         }
                     }
