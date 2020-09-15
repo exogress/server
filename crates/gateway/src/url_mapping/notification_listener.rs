@@ -94,7 +94,8 @@ impl AssistantConsumer {
                                         Action::InvalidateUrlPrefixes { url_prefixes } => {
                                             for url_prefix in url_prefixes.into_iter() {
                                                 let domain_only = url_prefix.domain_only();
-                                                self.mappings
+                                                let configs = self
+                                                    .mappings
                                                     .remove_by_notification_if_time_applicable(
                                                         &domain_only,
                                                         notification.generated_at,
@@ -105,8 +106,15 @@ impl AssistantConsumer {
                                                 info!("invalidate certificate for: {}", host);
                                                 self.webapp_client.forget_certificate(host);
 
-                                                // FIXME: should rely on invalidation message
-                                                self.client_tunnels.close_all();
+                                                for (account_name, project_name, config_name) in
+                                                    &configs
+                                                {
+                                                    self.client_tunnels.close_tunnel(
+                                                        account_name,
+                                                        project_name,
+                                                        config_name,
+                                                    );
+                                                }
                                             }
                                         }
                                     }

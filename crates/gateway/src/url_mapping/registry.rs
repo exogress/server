@@ -10,6 +10,7 @@ use smartstring::alias::*;
 use crate::clients::ClientTunnels;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::rate_limiter::RateLimiters;
+use exogress_entities::{AccountName, ConfigName, ProjectName};
 use exogress_server_common::url_prefix::UrlPrefix;
 
 struct Inner {
@@ -52,9 +53,10 @@ impl Inner {
         &mut self,
         url_prefix: &UrlPrefix,
         generated_at: DateTime<Utc>,
-    ) {
+    ) -> Vec<(AccountName, ProjectName, ConfigName)> {
         let s: String = url_prefix.to_string().into();
 
+        let mut invalidated_configs = Vec::new();
         info!("Cleanup all mappings with prefix: {}", s);
 
         let items_for_invalidation = self
@@ -62,6 +64,7 @@ impl Inner {
             .iter_prefix(s.as_ref())
             .map(|(k, _)| k)
             .collect::<Vec<_>>();
+
         for k in items_for_invalidation {
             let found_url_prefix: UrlPrefix = std::str::from_utf8(k.as_ref())
                 .expect("corrupted data in patricia tree")
@@ -85,6 +88,13 @@ impl Inner {
                     self.process_evicted(evicted);
                     continue;
                 }
+                for config_name in &mapping.config_names {
+                    invalidated_configs.push((
+                        mapping.account.clone(),
+                        mapping.project.clone(),
+                        config_name.clone(),
+                    ));
+                }
             }
 
             self.process_evicted(evicted);
@@ -93,6 +103,8 @@ impl Inner {
             self.from_prefix_lookup_tree
                 .remove(&found_url_prefix_string);
         }
+
+        invalidated_configs
     }
 
     fn find_mapping(
@@ -172,7 +184,7 @@ impl Configs {
         &self,
         url_prefix: &UrlPrefix,
         generated_at: DateTime<Utc>,
-    ) {
+    ) -> Vec<(AccountName, ProjectName, ConfigName)> {
         self.inner
             .lock()
             .remove_by_notification_if_time_applicable(url_prefix, generated_at)

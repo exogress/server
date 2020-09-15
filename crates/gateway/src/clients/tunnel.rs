@@ -17,7 +17,7 @@ use exogress_tunnel::{server_connection, server_framed, TunnelHello, TunnelHello
 use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
-use exogress_entities::TunnelId;
+use exogress_entities::{AccountName, ProjectName, TunnelId};
 use futures::channel::oneshot;
 use generational_arena::Arena;
 use std::convert::TryInto;
@@ -131,6 +131,8 @@ pub async fn spawn(
 
                         let instance_id = tunnel_hello.instance_id;
                         let config_name = tunnel_hello.config_name;
+                        let account_name = tunnel_hello.account_name;
+                        let project_name = tunnel_hello.project_name;
 
                         let arena_index;
 
@@ -147,7 +149,11 @@ pub async fn spawn(
 
                             let locked = &mut *tunnels.inner.lock();
 
-                            match locked.0.entry(config_name.clone()) {
+                            match locked.by_config.entry((
+                                account_name.clone(),
+                                project_name.clone(),
+                                config_name.clone(),
+                            )) {
                                 Entry::Occupied(mut rec) => {
                                     match rec.get_mut() {
                                         TunnelConnectionState::Requested(reset_event) => {
@@ -210,9 +216,11 @@ pub async fn spawn(
                         }
                         crate::statistics::TUNNELS_GAUGE.dec();
 
-                        if let Entry::Occupied(mut client) =
-                            tunnels.inner.lock().0.entry(config_name)
-                        {
+                        if let Entry::Occupied(mut client) = tunnels.inner.lock().by_config.entry((
+                            account_name.clone(),
+                            project_name.clone(),
+                            config_name.clone(),
+                        )) {
                             let should_delete_client = match client.get_mut() {
                                 TunnelConnectionState::Connected(conns) => {
                                     if let Entry::Occupied(mut arena_entry) =

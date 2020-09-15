@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio::time::Duration;
 
 use exogress_config_core::ClientConfig;
-use exogress_entities::{AccountName, InstanceId, ProjectName};
+use exogress_entities::{AccountName, ProjectName};
 use exogress_signaling::SignalerHandshakeResponse;
 use warp::Filter;
 

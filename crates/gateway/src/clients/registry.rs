@@ -32,9 +32,14 @@ pub enum TunnelConnectionState {
     // Blocked,
 }
 
+pub struct ClientTunnelsInner {
+    rng: SmallRng,
+    pub(crate) by_config: HashMap<(AccountName, ProjectName, ConfigName), TunnelConnectionState>,
+}
+
 #[derive(Clone)]
 pub struct ClientTunnels {
-    pub inner: Arc<Mutex<(HashMap<ConfigName, TunnelConnectionState>, SmallRng)>>,
+    pub inner: Arc<Mutex<ClientTunnelsInner>>,
     pub int_base_url: Url,
 }
 
@@ -43,13 +48,29 @@ const WAIT_TIME: Duration = Duration::from_secs(10);
 impl ClientTunnels {
     pub fn new(int_base_url: Url) -> Self {
         ClientTunnels {
-            inner: Arc::new(Mutex::new((Default::default(), SmallRng::from_entropy()))),
+            inner: Arc::new(Mutex::new(ClientTunnelsInner {
+                rng: SmallRng::from_entropy(),
+                by_config: Default::default(),
+            })),
             int_base_url,
         }
     }
 
-    pub fn close_all(&self) {
-        self.inner.lock().0.clear();
+    pub fn close_tunnel(
+        &self,
+        account_name: &AccountName,
+        project_name: &ProjectName,
+        config_name: &ConfigName,
+    ) {
+        info!(
+            "Close tunnels for {}/{}{}",
+            account_name, project_name, config_name
+        );
+        self.inner.lock().by_config.remove(&(
+            account_name.clone(),
+            project_name.clone(),
+            config_name.clone(),
+        ));
     }
 
     /// Return active client tunnel if exists.
@@ -68,14 +89,22 @@ impl ClientTunnels {
         // 2. figure out how to request all connections
 
         let (maybe_reset_event, should_request) = {
-            let (locked, _) = &mut *self.inner.lock();
-            let maybe_clients = locked.get(&config_name);
+            let mut locked = self.inner.lock();
+            let maybe_clients = locked.by_config.get(&(
+                account_name.clone(),
+                project_name.clone(),
+                config_name.clone(),
+            ));
 
             match maybe_clients {
                 None => {
                     let reset_event = Arc::new(ManualResetEvent::new(false));
-                    locked.insert(
-                        config_name.clone(),
+                    locked.by_config.insert(
+                        (
+                            account_name.clone(),
+                            project_name.clone(),
+                            config_name.clone(),
+                        ),
                         TunnelConnectionState::Requested(reset_event.clone()),
                     );
 
@@ -103,7 +132,11 @@ impl ClientTunnels {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error requesting connection: {}", e);
-                    self.inner.lock().0.remove(&config_name);
+                    self.inner.lock().by_config.remove(&(
+                        account_name.clone(),
+                        project_name.clone(),
+                        config_name.clone(),
+                    ));
                     return None;
                 }
             }
@@ -112,16 +145,27 @@ impl ClientTunnels {
         if let Some(reset_event) = maybe_reset_event {
             if let Err(_e) = timeout(WAIT_TIME, reset_event.wait()).await {
                 error!("Timeout waiting for tunnel");
-                self.inner.lock().0.remove(&config_name);
+                self.inner.lock().by_config.remove(&(
+                    account_name.clone(),
+                    project_name.clone(),
+                    config_name.clone(),
+                ));
                 return None;
             }
         }
 
         // at this point we probably have connection accepted
         {
-            let (storage, rng) = &mut *self.inner.lock();
+            let locked = &mut *self.inner.lock();
 
-            match storage.get(&config_name) {
+            let by_config_name = &locked.by_config;
+            let rng = &mut locked.rng;
+
+            match by_config_name.get(&(
+                account_name.clone(),
+                project_name.clone(),
+                config_name.clone(),
+            )) {
                 None => {}
                 Some(state) => {
                     if let TunnelConnectionState::Connected(connections) = state {

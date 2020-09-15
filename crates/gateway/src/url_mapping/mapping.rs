@@ -404,10 +404,11 @@ pub struct JwtEcdsa {
 #[derive(Debug)]
 pub struct Mapping {
     match_pattern: MatchPattern,
-    pub(crate) generated_at: DateTime<Utc>,
+    pub generated_at: DateTime<Utc>,
+    pub config_names: SmallVec<[ConfigName; 8]>,
     handlers_processor: HandlersProcessor,
-    account: AccountName,
-    project: ProjectName,
+    pub account: AccountName,
+    pub project: ProjectName,
     jwt_ecdsa: JwtEcdsa,
     rate_limiters: RateLimiters,
     healthcheck_stop_tx: oneshot::Sender<()>,
@@ -446,6 +447,11 @@ impl Mapping {
         client_tunnels: ClientTunnels,
         individual_hostname: String,
     ) -> Mapping {
+        let config_names = config_response
+            .configs
+            .iter()
+            .map(|config| config.config_name.clone())
+            .collect();
         let match_pattern = config_response.url_prefix.as_str().parse().expect("FIXME");
 
         let account = config_response.account.clone();
@@ -662,6 +668,7 @@ impl Mapping {
         let mapping = Mapping {
             match_pattern,
             generated_at,
+            config_names,
             handlers_processor,
             account,
             project,
