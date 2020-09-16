@@ -10,8 +10,8 @@ use futures_util::stream::{Stream, StreamExt};
 use futures_util::TryStreamExt;
 use hashbrown::HashMap;
 use http::header::{
-    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE,
-    UPGRADE,
+    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
+    COOKIE, HOST, LOCATION, SET_COOKIE, UPGRADE,
 };
 use http::status::StatusCode;
 use http::{Response, Uri};
@@ -32,6 +32,7 @@ use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::auth;
+use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncoding};
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{
     AuthProviderConfig, HealthEndpoint, HealthState, JwtEcdsa, MappingAction, Oauth2Provider,
@@ -55,6 +56,7 @@ use std::io;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use typed_headers::{ContentCoding, ContentEncoding, ContentLength, HeaderMapExt};
 
 pub const AUTH_COOKIE_NAME: &str = "exg_auth";
 
@@ -342,7 +344,7 @@ pub async fn server(
         // take query part
         .and(
             filters::query::raw()
-                .or_else(|_| futures::future::ready(Ok::<(String,), Rejection>(("".into(),)))),
+                .or_else(|_| futures::future::ready(Ok::<(String, ), Rejection>(("".into(), )))),
         )
         .map(move |path: warp::filters::path::FullPath, query: String| {
             // info!("check injections in path {:?}", path.as_str());
@@ -399,7 +401,7 @@ pub async fn server(
                         path.as_str(),
                         query.as_str(),
                     )
-                    .unwrap();
+                        .unwrap();
 
                     let proto = match &ws_or_body {
                         warp::Either::A(_) => Protocol::WebSockets,
@@ -440,14 +442,14 @@ pub async fn server(
         // check rate limits
         .and_then({
             move |(
-                ws_or_body,
-                headers,
-                path,
-                rate_limiters,
-                action,
-                requested_url,
-                mount_point_base_url,
-            ): (
+                      ws_or_body,
+                      headers,
+                      path,
+                      rate_limiters,
+                      action,
+                      requested_url,
+                      mount_point_base_url,
+                  ): (
                 _,
                 http::HeaderMap,
                 warp::filters::path::FullPath,
@@ -502,14 +504,14 @@ pub async fn server(
             shadow_clone!(tunnels);
 
             move |(
-                ws_or_body,
-                headers,
-                delayed_for,
-                _path,
-                mapping_action,
-                requested_url,
-                mount_point_base_url,
-            ): (
+                      ws_or_body,
+                      headers,
+                      delayed_for,
+                      _path,
+                      mapping_action,
+                      requested_url,
+                      mount_point_base_url,
+                  ): (
                 _,
                 http::HeaderMap,
                 Option<Duration>,
@@ -564,12 +566,12 @@ pub async fn server(
                                             match state {
                                                 Some(&HealthState::NotYetKnown) => {
                                                     info!("Unknown health state. Try to proxy anyway {:?}", endpoint);
-                                                },
+                                                }
                                                 Some(HealthState::Unhealthy { probe, reason }) => {
                                                     info!("Skip {:?}. probe {:?} failed with reason {:?}", endpoint, probe, reason);
                                                     break;
-                                                },
-                                                Some(&HealthState::Healthy) | None => {},
+                                                }
+                                                Some(&HealthState::Healthy) | None => {}
                                             }
                                         };
 
@@ -596,7 +598,7 @@ pub async fn server(
                                         info!("HTTP: proxy to {}", proxy_to);
 
                                         match ws_or_body {
-                                            warp::Either::A((ws,)) => {
+                                            warp::Either::A((ws, )) => {
                                                 let res = proxy_ws(
                                                     ws,
                                                     remote_addr,
@@ -632,7 +634,7 @@ pub async fn server(
                                                     }
                                                 }
                                             }
-                                            warp::Either::B((body,)) => {
+                                            warp::Either::B((body, )) => {
                                                 let res = proxy_http_request(
                                                     body,
                                                     remote_addr,
@@ -1246,6 +1248,11 @@ async fn proxy_http_request<
 ) -> Result<Response<Body>, Error> {
     connect_target.update_url(&mut proxy_to);
 
+    let accept_encoding = headers
+        .typed_get::<typed_headers::AcceptEncoding>()
+        .ok()
+        .and_then(|r| r);
+
     let proxy_headers = proxy_request_headers(local_ip, external_host, client_ip_addr, headers);
 
     info!("Proxy request to {}", proxy_to);
@@ -1307,38 +1314,96 @@ async fn proxy_http_request<
                 code => code,
             });
 
-            debug!("copy headers to response");
-            for (header, value) in hyper_response.headers().into_iter() {
-                if header.as_str().to_lowercase().starts_with("x-exg") {
-                    info!("Trying to proxy already proxied request (prevent loops)");
-                    return Err(Error::LoopDetected);
+            let content_type = hyper_response
+                .headers()
+                .typed_get::<typed_headers::ContentType>()
+                .ok()
+                .and_then(|r| r);
+            let upstream_resp_headers = hyper_response
+                .headers()
+                .into_iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>();
+            let upstream_response_body = hyper_response.into_body();
+            let (body_processing, compression) =
+                maybe_compress_body(upstream_response_body, accept_encoding, content_type);
+
+            let resp_stream = hyper::Body::wrap_stream(
+                tokio::stream::StreamExt::timeout(body_processing, HTTP_BYTES_TIMEOUT).map(|r| {
+                    debug!("streaming data {:?}", r);
+                    match r {
+                        Err(e) => Err(anyhow::Error::new(e)),
+                        Ok(Err(e)) => Err(anyhow::Error::new(e)),
+                        Ok(Ok(r)) => Ok(r),
+                    }
+                }), //Timeout on data
+            );
+
+            {
+                let resp_headers = resp.headers_mut().unwrap();
+
+                debug!("copy headers to response");
+                for (header, value) in &upstream_resp_headers {
+                    if header == CONNECTION || header == CONTENT_ENCODING {
+                        continue;
+                    }
+
+                    if compression.is_some() && header == CONTENT_LENGTH {
+                        continue;
+                    }
+
+                    if header.as_str().to_lowercase().starts_with("x-exg") {
+                        info!("Trying to proxy already proxied request (prevent loops)");
+                        return Err(Error::LoopDetected);
+                    }
+
+                    match resp_headers.entry(header) {
+                        Entry::Occupied(mut e) => {
+                            e.append(value.try_into().unwrap());
+                        }
+                        Entry::Vacant(e) => {
+                            e.insert(value.try_into().unwrap());
+                        }
+                    }
                 }
 
-                match resp.headers_mut().unwrap().entry(header) {
-                    Entry::Occupied(mut e) => {
-                        e.append(value.try_into().unwrap());
+                info!("copied resp_headers = {:?}", resp_headers);
+
+                resp_headers.insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
+                resp_headers.insert("vary", HeaderValue::from_str("Accept-Encoding").unwrap());
+
+                info!("compression = {:?}", compression);
+
+                match compression {
+                    // Some(SupportedContentEncoding::Brotli) => {
+                    //     resp_headers.typed_insert(&ContentEncoding::from(ContentCoding::BROTLI));
+                    // }
+                    Some(SupportedContentEncoding::Gzip) => {
+                        resp_headers.typed_insert(&ContentEncoding::from(ContentCoding::GZIP));
                     }
-                    Entry::Vacant(e) => {
-                        e.insert(value.try_into().unwrap());
+                    // Some(SupportedContentEncoding::Deflate) => {
+                    //     resp_headers.typed_insert(&ContentEncoding::from(ContentCoding::DEFLATE));
+                    // }
+                    None => {
+                        let _ = resp_headers.typed_remove::<ContentEncoding>();
                     }
                 }
+
+                info!("updated resp_headers = {:?}", resp_headers);
             }
 
-            resp.headers_mut()
-                .unwrap()
-                .insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
-
-            debug!("set exg-proxy. sending body");
-
-            Ok(resp.body(hyper_response.into_body()).expect("FIXME"))
+            Ok(resp.body(resp_stream).expect("FIXME"))
         }
     }
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum StreamingError {
-    #[error("warp error: `{0}`")]
-    Warp(#[from] warp::Error),
+    #[error("streaming with upstream error: `{0}`")]
+    UpstreamStreaming(#[from] warp::Error),
+
+    #[error("streaming to user error: `{0}`")]
+    OutgoingStreaming(#[from] io::Error),
     //
     // #[error("XSS detected")]
     // XssDetected,

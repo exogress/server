@@ -41,7 +41,6 @@ futures-intrusive = "0.3.1"
 maxminddb = { version = "0.14.0", features = ["mmap"] }
 memmap = "0.7.0"
 progress_bar = "0.1.3"
-async-compression = { version = "0.2", features = ["gzip", "futures-write"]}
 tempfile = "3.1.0"
 percent-encoding = "2.1.0"
 tokio-rustls = "0.14.0"
@@ -63,6 +62,9 @@ governor = "0.3.1"
 generational-arena = "0.2.8"
 oauth2 = { version = "3.0.0", default-features = false, features = ["reqwest-010", "futures-03"] }
 jsonwebtoken = "7.2.0"
+typed-headers = "0.2.0"
+mime = "0.3.16"
+async-compression = { version = "0.3.5", features = ["gzip", "futures-write", "stream", "brotli"]}
 
 exogress-server-common = { path = "../common", version = "0.1" }
 exogress-assistant = { path = "../assistant", version = "0.1" }
