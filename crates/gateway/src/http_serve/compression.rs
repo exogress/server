@@ -17,42 +17,42 @@ use typed_headers::{
 use warp::Filter;
 
 lazy_static! {
-    pub static ref COMPRESSABLE_MIME_TYPES: HashSet<mime::Mime> = vec![
-        mime::TEXT_CSS,
-        mime::TEXT_CSV,
-        mime::TEXT_HTML,
-        mime::TEXT_JAVASCRIPT,
-        mime::TEXT_PLAIN,
-        mime::TEXT_STAR,
-        mime::TEXT_TAB_SEPARATED_VALUES,
-        mime::TEXT_VCARD,
-        mime::TEXT_XML,
-        mime::IMAGE_BMP,
-        mime::IMAGE_SVG,
-        mime::APPLICATION_JAVASCRIPT,
-        mime::APPLICATION_JSON,
-        "application/atom+xml".parse().unwrap(),
-        "application/geo+json".parse().unwrap(),
-        "application/x-javascript".parse().unwrap(),
-        "application/ld+json".parse().unwrap(),
-        "application/manifest+json".parse().unwrap(),
-        "application/rdf+xml".parse().unwrap(),
-        "application/rss+xml".parse().unwrap(),
-        "application/vnd.ms-fontobject".parse().unwrap(),
-        "application/wasm".parse().unwrap(),
-        "application/x-web-app-manifest+json".parse().unwrap(),
-        "application/xhtml+xml".parse().unwrap(),
-        "application/xml".parse().unwrap(),
-        "font/eot".parse().unwrap(),
-        "font/otf".parse().unwrap(),
-        "font/ttf".parse().unwrap(),
-        "text/cache-manifest".parse().unwrap(),
-        "text/calendar".parse().unwrap(),
-        "text/markdown".parse().unwrap(),
-        "text/vnd.rim.location.xloc".parse().unwrap(),
-        "text/vtt".parse().unwrap(),
-        "text/x-component".parse().unwrap(),
-        "text/x-cross-domain-policy".parse().unwrap(),
+    pub static ref COMPRESSABLE_MIME_TYPES: HashSet<&'static str> = vec![
+        mime::TEXT_CSS.essence_str(),
+        mime::TEXT_CSV.essence_str(),
+        mime::TEXT_HTML.essence_str(),
+        mime::TEXT_JAVASCRIPT.essence_str(),
+        mime::TEXT_PLAIN.essence_str(),
+        mime::TEXT_STAR.essence_str(),
+        mime::TEXT_TAB_SEPARATED_VALUES.essence_str(),
+        mime::TEXT_VCARD.essence_str(),
+        mime::TEXT_XML.essence_str(),
+        mime::IMAGE_BMP.essence_str(),
+        mime::IMAGE_SVG.essence_str(),
+        mime::APPLICATION_JAVASCRIPT.essence_str(),
+        mime::APPLICATION_JSON.essence_str(),
+        "application/atom+xml",
+        "application/geo+json",
+        "application/x-javascript",
+        "application/ld+json",
+        "application/manifest+json",
+        "application/rdf+xml",
+        "application/rss+xml",
+        "application/vnd.ms-fontobject",
+        "application/wasm",
+        "application/x-web-app-manifest+json",
+        "application/xhtml+xml",
+        "application/xml",
+        "font/eot",
+        "font/otf",
+        "font/ttf",
+        "text/cache-manifest",
+        "text/calendar",
+        "text/markdown",
+        "text/vnd.rim.location.xloc",
+        "text/vtt",
+        "text/x-component",
+        "text/x-cross-domain-policy",
     ]
     .into_iter()
     .collect();
@@ -90,7 +90,7 @@ pub fn maybe_compress_body(
 ) {
     let compression = if content_type.is_none() {
         None
-    } else if !COMPRESSABLE_MIME_TYPES.contains(&content_type.unwrap()) {
+    } else if !COMPRESSABLE_MIME_TYPES.contains(content_type.unwrap().essence_str()) {
         None
     } else if let Some(accept_encoding) = maybe_accept_encoding {
         accept_encoding
