@@ -10,7 +10,7 @@ use smartstring::alias::String;
 use url::Url;
 
 use exogress_config_core::{AuthProvider, ClientConfig, Probe};
-use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName, Upstream};
+use exogress_entities::{AccountName, ConfigId, ConfigName, InstanceId, ProjectName, Upstream};
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
@@ -509,7 +509,11 @@ impl Mapping {
                     // info!("Current health status: {:#?}", instances_health.lock());
 
                     for config in &config_response.configs {
-                        let config_name = config.config_name.clone();
+                        let config_id = ConfigId {
+                            account_name: account.clone(),
+                            project_name: project.clone(),
+                            config_name: config.config_name.clone(),
+                        };
 
                         for instance_id in &config.instance_ids {
                             for (upstream, upstream_definition) in &config.config.upstreams {
@@ -527,9 +531,7 @@ impl Mapping {
 
                                 let maybe_client_tunnel = client_tunnels
                                     .retrieve_client_tunnel(
-                                        account.clone(),
-                                        project.clone(),
-                                        config.config.name.clone(),
+                                        config_id.clone(),
                                         instance_id.clone(),
                                         individual_hostname.clone().into(),
                                     )

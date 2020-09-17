@@ -42,7 +42,7 @@ use crate::url_mapping::rate_limiter::{RateLimiterResponse, RateLimiters};
 use crate::webapp::Client;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
-use exogress_entities::RateLimiterName;
+use exogress_entities::{ConfigId, RateLimiterName};
 use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::url_prefix::UrlPrefix;
 use http::uri::Authority;
@@ -550,6 +550,11 @@ pub async fn server(
 
                         match &handler.client_config_data {
                             Some((config_name, instances_ids)) => {
+                                let config_id = ConfigId {
+                                    account_name: account_name.clone(),
+                                    project_name: project_name.clone(),
+                                    config_name: config_name.clone(),
+                                };
                                 let mut ordered_instances = instances_ids.clone();
                                 {
                                     let mut rng = thread_rng();
@@ -581,9 +586,7 @@ pub async fn server(
                                                             connector, hyper, ..
                                                         }) = tunnels
                                                 .retrieve_client_tunnel(
-                                                    account_name.clone(),
-                                                    project_name.clone(),
-                                                    config_name.clone(),
+                                                    config_id.clone(),
                                                     instance_id.clone(),
                                                     individual_hostname.clone().into(),
                                                 )

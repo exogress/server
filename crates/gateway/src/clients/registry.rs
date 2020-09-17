@@ -10,9 +10,9 @@ use tokio::time::timeout;
 use exogress_tunnel::Connector;
 
 use crate::clients::signaling::request_connection;
-use exogress_entities::{AccountName, ConfigName, InstanceId, ProjectName};
+use exogress_entities::{AccountName, ConfigId, ConfigName, InstanceId, ProjectName, TunnelId};
 use futures::channel::oneshot;
-use generational_arena::Arena;
+use oauth2::ClientId;
 use rand::prelude::*;
 use url::Url;
 
@@ -20,21 +20,43 @@ use url::Url;
 pub struct ConnectedTunnel {
     pub connector: Connector,
     pub hyper: hyper::client::Client<Connector>,
-    pub config_name: ConfigName,
+    pub config_id: ConfigId,
     pub instance_id: InstanceId,
-    pub stop_tx: Arc<oneshot::Sender<()>>,
 }
 
 #[derive(Debug)]
 pub enum TunnelConnectionState {
     Requested(Arc<ManualResetEvent>),
-    Connected(HashMap<InstanceId, Arena<ConnectedTunnel>>),
+    Connected(
+        HashMap<InstanceId, HashMap<TunnelId, (ConnectedTunnel, Option<oneshot::Sender<()>>)>>,
+    ),
     // Blocked,
+}
+
+impl TunnelConnectionState {
+    pub fn count_tunnels(&self) -> usize {
+        match self {
+            TunnelConnectionState::Requested(_) => 0,
+            TunnelConnectionState::Connected(s) => s.values().map(|inner| inner.len()).sum(),
+        }
+    }
+
+    pub fn close(&mut self) {
+        if let TunnelConnectionState::Connected(s) = self {
+            for inner in s.values_mut() {
+                for (_, stop_tx) in inner.values_mut() {
+                    if let Some(stop) = stop_tx.take() {
+                        let _ = stop.send(());
+                    }
+                }
+            }
+        };
+    }
 }
 
 pub struct ClientTunnelsInner {
     rng: SmallRng,
-    pub(crate) by_config: HashMap<(AccountName, ProjectName, ConfigName), TunnelConnectionState>,
+    pub(crate) by_config: HashMap<ConfigId, TunnelConnectionState>,
 }
 
 #[derive(Clone)]
@@ -56,21 +78,12 @@ impl ClientTunnels {
         }
     }
 
-    pub fn close_tunnel(
-        &self,
-        account_name: &AccountName,
-        project_name: &ProjectName,
-        config_name: &ConfigName,
-    ) {
-        info!(
-            "Close tunnels for {}/{}{}",
-            account_name, project_name, config_name
-        );
-        self.inner.lock().by_config.remove(&(
-            account_name.clone(),
-            project_name.clone(),
-            config_name.clone(),
-        ));
+    pub fn close_tunnel(&self, config_id: &ConfigId) {
+        let mut locked = self.inner.lock();
+        let tunnel = locked.by_config.get_mut(config_id);
+        if let Some(tunnel) = tunnel {
+            tunnel.close();
+        }
     }
 
     /// Return active client tunnel if exists.
@@ -78,33 +91,19 @@ impl ClientTunnels {
     /// wait for the actual connection
     pub async fn retrieve_client_tunnel(
         &self,
-        account_name: AccountName,
-        project_name: ProjectName,
-        config_name: ConfigName,
+        config_id: ConfigId,
         instance_id: InstanceId,
         individual_hostname: String,
     ) -> Option<ConnectedTunnel> {
-        // TODO:
-        // 1. Figure out when to request connection
-        // 2. figure out how to request all connections
-
         let (maybe_reset_event, should_request) = {
             let mut locked = self.inner.lock();
-            let maybe_clients = locked.by_config.get(&(
-                account_name.clone(),
-                project_name.clone(),
-                config_name.clone(),
-            ));
+            let maybe_clients = locked.by_config.get(&config_id);
 
             match maybe_clients {
                 None => {
                     let reset_event = Arc::new(ManualResetEvent::new(false));
                     locked.by_config.insert(
-                        (
-                            account_name.clone(),
-                            project_name.clone(),
-                            config_name.clone(),
-                        ),
+                        config_id.clone(),
                         TunnelConnectionState::Requested(reset_event.clone()),
                     );
 
@@ -123,20 +122,14 @@ impl ClientTunnels {
             match request_connection(
                 self.int_base_url.clone(),
                 individual_hostname,
-                account_name.clone(),
-                project_name.clone(),
-                config_name.clone(),
+                config_id.clone(),
             )
             .await
             {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error requesting connection: {}", e);
-                    self.inner.lock().by_config.remove(&(
-                        account_name.clone(),
-                        project_name.clone(),
-                        config_name.clone(),
-                    ));
+                    self.inner.lock().by_config.remove(&config_id);
                     return None;
                 }
             }
@@ -145,11 +138,7 @@ impl ClientTunnels {
         if let Some(reset_event) = maybe_reset_event {
             if let Err(_e) = timeout(WAIT_TIME, reset_event.wait()).await {
                 error!("Timeout waiting for tunnel");
-                self.inner.lock().by_config.remove(&(
-                    account_name.clone(),
-                    project_name.clone(),
-                    config_name.clone(),
-                ));
+                self.inner.lock().by_config.remove(&config_id);
                 return None;
             }
         }
@@ -161,19 +150,15 @@ impl ClientTunnels {
             let by_config_name = &locked.by_config;
             let rng = &mut locked.rng;
 
-            match by_config_name.get(&(
-                account_name.clone(),
-                project_name.clone(),
-                config_name.clone(),
-            )) {
+            match by_config_name.get(&config_id) {
                 None => {}
                 Some(state) => {
                     if let TunnelConnectionState::Connected(connections) = state {
-                        return connections.get(&instance_id).and_then(|arena| {
-                            arena
+                        return connections.get(&instance_id).and_then(|tunnels| {
+                            tunnels
                                 .iter()
                                 .choose(rng)
-                                .map(|(_idx, tunnel)| tunnel.clone())
+                                .map(|(tunnel_id, (tunnel, _))| tunnel.clone())
                         });
                     }
                 }

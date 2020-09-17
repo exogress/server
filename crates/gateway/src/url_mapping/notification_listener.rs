@@ -7,6 +7,7 @@ use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::url_mapping::registry::Configs;
 use crate::webapp;
 use exogress_common_utils::ws_client::{connect_ws, Error};
+use exogress_entities::ConfigId;
 use exogress_server_common::assistant::{Action, GatewayConfigMessage, Notification, WsMessage};
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -91,11 +92,13 @@ impl AssistantConsumer {
                             match ws_message {
                                 WsMessage::WebAppNotification(notification) => {
                                     match notification.action {
-                                        Action::InvalidateUrlPrefixes { url_prefixes } => {
+                                        Action::Invalidate {
+                                            url_prefixes,
+                                            config_ids,
+                                        } => {
                                             for url_prefix in url_prefixes.into_iter() {
                                                 let domain_only = url_prefix.domain_only();
-                                                let configs = self
-                                                    .mappings
+                                                self.mappings
                                                     .remove_by_notification_if_time_applicable(
                                                         &domain_only,
                                                         notification.generated_at,
@@ -105,16 +108,10 @@ impl AssistantConsumer {
 
                                                 info!("invalidate certificate for: {}", host);
                                                 self.webapp_client.forget_certificate(host);
+                                            }
 
-                                                for (account_name, project_name, config_name) in
-                                                    &configs
-                                                {
-                                                    self.client_tunnels.close_tunnel(
-                                                        account_name,
-                                                        project_name,
-                                                        config_name,
-                                                    );
-                                                }
+                                            for config_id in &config_ids {
+                                                self.client_tunnels.close_tunnel(config_id);
                                             }
                                         }
                                     }
@@ -165,7 +162,7 @@ mod test {
         );
         assert!(matches!(
             n.action,
-            Action::InvalidateUrlPrefixes { url_prefixes }
+            Action::Invalidate { url_prefixes }
                 if url_prefixes.as_slice() == [UrlPrefix::from_str("test.exg.link/prefix").unwrap()]
         ));
     }

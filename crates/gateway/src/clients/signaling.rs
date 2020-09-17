@@ -1,5 +1,5 @@
 use crate::clients::tunnel::MAX_ALLOWED_TUNNELS;
-use exogress_entities::{AccountName, ConfigName, ProjectName};
+use exogress_entities::{AccountName, ConfigId, ConfigName, ProjectName};
 use exogress_signaling::TunnelRequest;
 use smartstring::alias::*;
 use std::time::Duration;
@@ -20,9 +20,7 @@ pub enum Error {
 pub async fn request_connection(
     mut int_base_url: Url,
     hostname: String,
-    account: AccountName,
-    project: ProjectName,
-    config_name: ConfigName,
+    config_id: ConfigId,
 ) -> Result<(), Error> {
     let client = reqwest::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
@@ -37,18 +35,18 @@ pub async fn request_connection(
         max_tunnels_count: MAX_ALLOWED_TUNNELS as u16,
     };
 
-    info!("requesting connection for config_name {}", config_name);
+    info!("requesting connection for {}", config_id);
 
     {
         let mut segments = int_base_url.path_segments_mut().unwrap();
         segments.push("api");
         segments.push("v1");
         segments.push("accounts");
-        segments.push(account.as_str());
+        segments.push(config_id.account_name.as_str());
         segments.push("projects");
-        segments.push(project.as_str());
+        segments.push(config_id.project_name.as_str());
         segments.push("configs");
-        segments.push(config_name.as_ref());
+        segments.push(config_id.config_name.as_ref());
         segments.push("tunnels");
     }
 

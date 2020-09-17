@@ -17,9 +17,8 @@ use exogress_tunnel::{server_connection, server_framed, TunnelHello, TunnelHello
 use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
-use exogress_entities::{AccountName, ProjectName, TunnelId};
+use exogress_entities::{AccountName, ConfigId, ProjectName, TunnelId};
 use futures::channel::oneshot;
-use generational_arena::Arena;
 use std::convert::TryInto;
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
@@ -130,11 +129,12 @@ pub async fn spawn(
                         let (bg, connector) = server_connection(server_framed(tls_conn));
 
                         let instance_id = tunnel_hello.instance_id;
-                        let config_name = tunnel_hello.config_name;
-                        let account_name = tunnel_hello.account_name;
-                        let project_name = tunnel_hello.project_name;
 
-                        let arena_index;
+                        let config_id = ConfigId {
+                            config_name: tunnel_hello.config_name,
+                            account_name: tunnel_hello.account_name,
+                            project_name: tunnel_hello.project_name,
+                        };
 
                         // info!("new instance connected");
 
@@ -142,25 +142,23 @@ pub async fn spawn(
                             let new_connected_tunnel = ConnectedTunnel {
                                 hyper: hyper::Client::builder().build::<_, Body>(connector.clone()),
                                 connector,
-                                config_name: config_name.clone(),
+                                config_id: config_id.clone(),
                                 instance_id,
-                                stop_tx: Arc::new(stop_tx),
                             };
 
                             let locked = &mut *tunnels.inner.lock();
 
-                            match locked.by_config.entry((
-                                account_name.clone(),
-                                project_name.clone(),
-                                config_name.clone(),
-                            )) {
+                            match locked.by_config.entry(config_id.clone()) {
                                 Entry::Occupied(mut rec) => {
                                     match rec.get_mut() {
                                         TunnelConnectionState::Requested(reset_event) => {
                                             let mut c = HashMap::new();
-                                            let mut arena = Arena::new();
-                                            arena_index = arena.insert(new_connected_tunnel);
-                                            c.insert(instance_id, arena);
+                                            let mut tunnels = HashMap::new();
+                                            tunnels.insert(
+                                                tunnel_id,
+                                                (new_connected_tunnel, Some(stop_tx)),
+                                            );
+                                            c.insert(instance_id, tunnels);
                                             reset_event.set();
                                             rec.insert(TunnelConnectionState::Connected(c));
                                         }
@@ -169,16 +167,25 @@ pub async fn spawn(
                                                 Entry::Occupied(mut e) => {
                                                     if e.get().len() >= MAX_ALLOWED_TUNNELS {
                                                         warn!("Client tried to connect more than {} tunnels. Reject connection", MAX_ALLOWED_TUNNELS);
+                                                        warn!(
+                                                            "instance {} has tunnels: {:?}",
+                                                            instance_id,
+                                                            e.get()
+                                                        );
                                                         return;
                                                     }
-                                                    arena_index =
-                                                        e.get_mut().insert(new_connected_tunnel);
+                                                    e.get_mut().insert(
+                                                        tunnel_id,
+                                                        (new_connected_tunnel, Some(stop_tx)),
+                                                    );
                                                 }
                                                 Entry::Vacant(e) => {
-                                                    let mut arena = Arena::new();
-                                                    arena_index =
-                                                        arena.insert(new_connected_tunnel);
-                                                    e.insert(arena);
+                                                    let mut tunnels = HashMap::new();
+                                                    tunnels.insert(
+                                                        tunnel_id,
+                                                        (new_connected_tunnel, Some(stop_tx)),
+                                                    );
+                                                    e.insert(tunnels);
                                                 }
                                             }
                                         }
@@ -186,17 +193,16 @@ pub async fn spawn(
                                 }
                                 Entry::Vacant(rec) => {
                                     let mut c = HashMap::new();
-                                    let mut arena = Arena::new();
-                                    arena_index = arena.insert(new_connected_tunnel);
-                                    c.insert(instance_id, arena);
+                                    let mut tunnels = HashMap::new();
+                                    tunnels
+                                        .insert(tunnel_id, (new_connected_tunnel, Some(stop_tx)));
+                                    c.insert(instance_id, tunnels);
                                     rec.insert(TunnelConnectionState::Connected(c));
                                 }
                             }
                         }
 
                         crate::statistics::TUNNELS_GAUGE.inc();
-
-                        let mut should_cleanup = true;
 
                         tokio::select! {
                             res = bg => {
@@ -210,25 +216,22 @@ pub async fn spawn(
                                 }
                             },
                             _ = stop_rx => {
-                                should_cleanup = false;
                                 info!("tunnel terminated by request");
                             },
                         }
                         crate::statistics::TUNNELS_GAUGE.dec();
 
-                        if let Entry::Occupied(mut client) = tunnels.inner.lock().by_config.entry((
-                            account_name.clone(),
-                            project_name.clone(),
-                            config_name.clone(),
-                        )) {
+                        if let Entry::Occupied(mut client) =
+                            tunnels.inner.lock().by_config.entry(config_id.clone())
+                        {
                             let should_delete_client = match client.get_mut() {
                                 TunnelConnectionState::Connected(conns) => {
-                                    if let Entry::Occupied(mut arena_entry) =
+                                    if let Entry::Occupied(mut tunnels_entry) =
                                         conns.entry(instance_id)
                                     {
-                                        arena_entry.get_mut().remove(arena_index);
-                                        if arena_entry.get().is_empty() {
-                                            arena_entry.remove_entry();
+                                        tunnels_entry.get_mut().remove(&tunnel_id);
+                                        if tunnels_entry.get().is_empty() {
+                                            tunnels_entry.remove_entry();
                                         }
                                     } else {
                                         unreachable!("should never happen")
@@ -236,16 +239,17 @@ pub async fn spawn(
 
                                     conns.is_empty()
                                 }
-                                _ => false,
+                                _ => {
+                                    warn!("Not delete tunnel since it's not in connected state");
+                                    false
+                                }
                             };
 
                             if should_delete_client {
                                 client.remove_entry();
                             }
                         } else {
-                            if should_cleanup {
-                                error!("should never happen. could not find client config")
-                            }
+                            error!("should never happen. could not find client config")
                         }
                     }
                     Err(e) => {

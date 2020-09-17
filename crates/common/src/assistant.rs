@@ -1,5 +1,6 @@
 use crate::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
+use exogress_entities::ConfigId;
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 
@@ -24,8 +25,11 @@ pub struct GatewayConfigMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Action {
-    #[serde(rename = "invalidate_url_prefixes")]
-    InvalidateUrlPrefixes { url_prefixes: Vec<UrlPrefix> },
+    #[serde(rename = "invalidate")]
+    Invalidate {
+        url_prefixes: Vec<UrlPrefix>,
+        config_ids: Vec<ConfigId>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
