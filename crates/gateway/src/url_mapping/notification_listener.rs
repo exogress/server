@@ -137,33 +137,3 @@ impl AssistantConsumer {
         }
     }
 }
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use exogress_server_common::url_prefix::UrlPrefix;
-    use std::str::FromStr;
-
-    #[test]
-    fn test_deserialize() {
-        static JSON: &'static str = r#"{
-    "generated_at": 1594736221163,
-    "action": {
-        "type": "invalidate_url_prefixes",
-        "url_prefixes": ["test.exg.link/prefix"]
-    }
-}
-"#;
-
-        let n: Notification = serde_json::from_str(JSON).unwrap();
-        assert_eq!(
-            "2020-07-14T14:17:01.163Z".parse::<DateTime<Utc>>().unwrap(),
-            n.generated_at
-        );
-        assert!(matches!(
-            n.action,
-            Action::Invalidate { url_prefixes }
-                if url_prefixes.as_slice() == [UrlPrefix::from_str("test.exg.link/prefix").unwrap()]
-        ));
-    }
-}
