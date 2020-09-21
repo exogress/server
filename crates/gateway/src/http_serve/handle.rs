@@ -1,8 +1,3 @@
-use std::convert::{Infallible, TryInto};
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use std::time::Duration;
-
 use bytes::{Buf, Bytes};
 use futures_util::future::Either;
 use futures_util::sink::SinkExt;
@@ -15,8 +10,13 @@ use http::header::{
 };
 use http::status::StatusCode;
 use http::{Response, Uri};
+use hyper::body::HttpBody;
 use memmap::Mmap;
 use reqwest::header::Entry;
+use std::convert::{Infallible, TryInto};
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
 use stop_handle::stop_handle;
 use tokio_tungstenite::tungstenite;
 use trust_dns_resolver::TokioAsyncResolver;
@@ -26,13 +26,13 @@ use warp::{filters, Filter, Rejection, Reply};
 
 use exogress_tunnel::{Compression, Conn, ConnectTarget, Connector};
 use hyper::header::{HeaderName, HeaderValue};
-use hyper::Body;
 
 use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::auth;
 use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncoding};
+use crate::http_serve::request::RequestBody;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{
     AuthProviderConfig, HealthEndpoint, HealthState, JwtEcdsa, MappingAction, Oauth2Provider,
@@ -52,8 +52,8 @@ use parking_lot::{Mutex, RwLock};
 use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
-use std::io;
 use std::path::PathBuf;
+use std::{io, mem};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use typed_headers::{ContentCoding, ContentEncoding, ContentLength, HeaderMapExt};
@@ -521,7 +521,7 @@ pub async fn server(
                 UrlPrefix,
             ),
                   _params,
-                  method,
+                  method: http::Method,
                   remote_addr: Option<SocketAddr>,
                   local_addr: Option<SocketAddr>| {
                 shadow_clone!(client);
@@ -539,13 +539,36 @@ pub async fn server(
                     info!("GEO IP: {:?}", resolved);
                 }
 
+
                 async move {
                     let account_name = mapping_action.handler.account_name;
                     let project_name = mapping_action.handler.project_name;
                     let url = mapping_action.handler.url;
                     let handlers_processor = mapping_action.handler.handlers_processor;
 
-                    for handler in &handlers_processor.handlers {
+                    let mut req = match ws_or_body {
+                        warp::Either::A((ws, )) => {
+                            RequestBody::new_ws(ws)
+                        }
+                        warp::Either::B((body, )) => {
+                            RequestBody::new_http(hyper::Body::wrap_stream(
+                                tokio::stream::StreamExt::timeout(
+                                    to_bytes_stream_and_check_injections(body),
+                                    HTTP_BYTES_TIMEOUT,
+                                )
+                                    .map(|r| {
+                                        debug!("streaming data {:?}", r);
+                                        match r {
+                                            Err(e) => Err(anyhow::Error::new(e)),
+                                            Ok(Err(e)) => Err(anyhow::Error::new(e)),
+                                            Ok(Ok(r)) => Ok(r),
+                                        }
+                                    }), //Timeout on data
+                            )).await
+                        }
+                    };
+
+                    'handlers: for handler in &handlers_processor.handlers {
                         info!("HANDLER: {:?}", handler);
 
                         match &handler.client_config_data {
@@ -562,7 +585,7 @@ pub async fn server(
                                 }
 
                                 if let Some(connect_target) = handler.connect_target("") {
-                                    for instance_id in ordered_instances.iter() {
+                                    'instances: for instance_id in &ordered_instances {
                                         if let ConnectTarget::Upstream(upstream) = &connect_target {
                                             let endpoint = HealthEndpoint { instance_id: *instance_id, upstream: upstream.clone() };
                                             let locked = mapping_action.health.lock();
@@ -574,7 +597,7 @@ pub async fn server(
                                                 }
                                                 Some(HealthState::Unhealthy { probe, reason }) => {
                                                     info!("Skip {:?}. probe {:?} failed with reason {:?}", endpoint, probe, reason);
-                                                    break;
+                                                    continue 'instances;
                                                 }
                                                 Some(&HealthState::Healthy) | None => {}
                                             }
@@ -598,82 +621,108 @@ pub async fn server(
                                                 continue;
                                             };
 
-                                        info!("HTTP: proxy to {}", proxy_to);
+                                        info!("HTTP: proxy to {}. req = {:?}", proxy_to, req);
 
-                                        match ws_or_body {
-                                            warp::Either::A((ws, )) => {
-                                                let res = proxy_ws(
-                                                    ws,
-                                                    remote_addr,
-                                                    headers.clone(),
-                                                    proxy_to,
-                                                    local_addr,
-                                                    mount_point_base_url.host().as_str(),
-                                                    connector,
-                                                    connect_target.clone(),
-                                                )
-                                                    .await;
+                                        if req.is_ws_body() {
+                                            let res = proxy_ws(
+                                                &mut req,
+                                                remote_addr,
+                                                headers.clone(),
+                                                proxy_to,
+                                                local_addr,
+                                                mount_point_base_url.host().as_str(),
+                                                connector,
+                                                connect_target.clone(),
+                                            )
+                                                .await;
 
-                                                match res {
-                                                    Ok(mut r) => {
-                                                        if let Some(delay) = delayed_for {
-                                                            r.headers_mut().insert(
-                                                                "x-exg-delayed-for-ms",
-                                                                delay
-                                                                    .as_millis()
-                                                                    .to_string()
-                                                                    .try_into()
-                                                                    .unwrap(),
-                                                            );
-                                                        }
-
-                                                        return Ok(r);
+                                            match res {
+                                                Ok(mut r) => {
+                                                    if r.status() == StatusCode::NOT_FOUND  {
+                                                        info!("WS not found. try other handlers");
+                                                        break 'instances; //continue through handlers
+                                                    } else if r.status() == StatusCode::BAD_GATEWAY {
+                                                        info!("WS bad gateway. try another instance");
+                                                        continue 'instances;
+                                                    };
+                                                    if let Some(delay) = delayed_for {
+                                                        r.headers_mut().insert(
+                                                            "x-exg-delayed-for-ms",
+                                                            delay
+                                                                .as_millis()
+                                                                .to_string()
+                                                                .try_into()
+                                                                .unwrap(),
+                                                        );
                                                     }
-                                                    Err(e) => {
-                                                        error!("Give Up retrying WS. Error: {:?}", e); //FIXME
-                                                        return Err::<_, _>(warp::reject::custom(
-                                                            BadGateway { delayed_for },
-                                                        ));
-                                                    }
+
+                                                    return Ok(r);
+                                                }
+                                                Err(Error::AlreadyUsed) => {
+                                                    error!("Give Up retrying WS");
+                                                    return Err::<_, _>(warp::reject::custom(
+                                                        BadGateway { delayed_for },
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    error!("WS error: {:?}", e);
                                                 }
                                             }
-                                            warp::Either::B((body, )) => {
-                                                let res = proxy_http_request(
-                                                    body,
-                                                    remote_addr,
-                                                    headers.clone(),
-                                                    proxy_to,
-                                                    method,
-                                                    local_addr,
-                                                    mount_point_base_url.host().as_str(),
-                                                    hyper,
-                                                    connect_target.clone(),
-                                                )
-                                                    .await;
+                                        } else if req.is_http() {
+                                            let res = proxy_http_request(
+                                                &mut req,
+                                                remote_addr,
+                                                headers.clone(),
+                                                proxy_to,
+                                                method.clone(),
+                                                local_addr,
+                                                mount_point_base_url.host().as_str(),
+                                                hyper,
+                                                connect_target.clone(),
+                                            )
+                                                .await;
 
-                                                match res {
-                                                    Ok(mut r) => {
-                                                        if let Some(delay) = delayed_for {
-                                                            r.headers_mut().insert(
-                                                                "x-exg-delayed-for-ms",
-                                                                delay
-                                                                    .as_millis()
-                                                                    .to_string()
-                                                                    .try_into()
-                                                                    .unwrap(),
-                                                            );
-                                                        }
-                                                        return Ok(r);
+                                            match res {
+                                                Ok(mut r) => {
+                                                    if r.status() == StatusCode::NOT_FOUND {
+                                                        let body = hyper::body::to_bytes(r.body_mut()).await.unwrap();
+                                                        info!("HTTP not found. try other handlers. body = {:?}", body);
+                                                        break 'instances; //continue through handlers
+                                                    } else if r.status() == StatusCode::BAD_GATEWAY {
+                                                        let body = r.into_body();
+                                                        info!("HTTP bad gateway. try another instance: {:?}", body);
+                                                        continue 'instances;
                                                     }
-                                                    Err(e) => {
-                                                        error!("Give Up retrying HTTP. error: {:?}", e); //FIXME
-                                                        return Err::<_, _>(warp::reject::custom(
-                                                            BadGateway { delayed_for },
-                                                        ));
+
+                                                    if let Some(delay) = delayed_for {
+                                                        r.headers_mut().insert(
+                                                            "x-exg-delayed-for-ms",
+                                                            delay
+                                                                .as_millis()
+                                                                .to_string()
+                                                                .try_into()
+                                                                .unwrap(),
+                                                        );
                                                     }
+
+                                                    return Ok(r);
+                                                }
+                                                Err(Error::AlreadyUsed) => {
+                                                    error!("Give Up retrying HTTP");
+                                                    return Err::<_, _>(warp::reject::custom(
+                                                        BadGateway { delayed_for },
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    error!("HTTP error: {:?}", e);
                                                 }
                                             }
-                                        };
+                                        } else {
+                                            info!("no longer retry: req = {:?}", req);
+                                            return Err::<_, _>(warp::reject::custom(
+                                                BadGateway { delayed_for },
+                                            ));
+                                        }
                                     }
                                 }
                             }
@@ -681,9 +730,10 @@ pub async fn server(
                                 if let Some(auth) = handler.auth() {
                                     let cookies = headers.get_all(COOKIE);
 
-                                    let proto = match &ws_or_body {
-                                        warp::Either::A(_) => Protocol::WebSockets,
-                                        warp::Either::B(_) => Protocol::Http,
+                                    let proto = if req.is_ws_body() {
+                                        Protocol::WebSockets
+                                    } else {
+                                        Protocol::Http
                                     };
 
                                     let jwt_token = cookies
@@ -895,6 +945,9 @@ pub enum Error {
 
     #[error("websocket connect error")]
     WebSocketError(#[from] tungstenite::Error),
+
+    #[error("request is already used")]
+    AlreadyUsed,
 }
 
 async fn handle_rejection(
@@ -993,7 +1046,7 @@ async fn handle_rejection(
 }
 
 async fn proxy_ws(
-    ws: warp::ws::Ws,
+    req: &mut RequestBody,
     client_ip_addr: IpAddr,
     headers: http::HeaderMap,
     mut proxy_to: Url,
@@ -1001,7 +1054,7 @@ async fn proxy_ws(
     external_host: &str,
     connector: Connector,
     connect_target: ConnectTarget,
-) -> Result<Response<Body>, Error> {
+) -> Result<Response<hyper::Body>, Error> {
     connect_target.update_url(&mut proxy_to);
 
     let should_use_tls = if proxy_to.scheme() == "http" {
@@ -1060,6 +1113,14 @@ async fn proxy_ws(
 
         (Either::Right(s), resp)
     };
+
+    // Take WS stream at this point. If error occurred before actual upgrade, the request may be retried with
+
+    let ws = req
+        .take()
+        .ok_or(Error::AlreadyUsed)?
+        .take_ws()
+        .expect("bad request type");
 
     let mut resp = ws
         .on_upgrade({
@@ -1236,10 +1297,8 @@ fn proxy_request_headers(
 const HTTP_REQ_TIMEOUT: Duration = Duration::from_secs(60 * 5);
 const HTTP_BYTES_TIMEOUT: Duration = Duration::from_secs(60);
 
-async fn proxy_http_request<
-    T: Stream<Item = Result<impl Buf + 'static, warp::Error>> + Send + Sync + 'static,
->(
-    body_stream: T,
+async fn proxy_http_request(
+    req: &mut RequestBody,
     client_ip_addr: IpAddr,
     headers: http::HeaderMap,
     mut proxy_to: Url,
@@ -1248,7 +1307,7 @@ async fn proxy_http_request<
     external_host: &str,
     hyper: hyper::client::Client<Connector>,
     connect_target: ConnectTarget,
-) -> Result<Response<Body>, Error> {
+) -> Result<Response<hyper::Body>, Error> {
     connect_target.update_url(&mut proxy_to);
 
     let accept_encoding = headers
@@ -1274,26 +1333,15 @@ async fn proxy_http_request<
         );
     }
 
+    let body_stream = req
+        .take()
+        .ok_or(Error::AlreadyUsed)?
+        .take_http()
+        .expect("bad request type");
+
     let r = tokio::time::timeout(
         HTTP_REQ_TIMEOUT,
-        hyper.request(
-            proxy_req
-                .body(hyper::Body::wrap_stream(
-                    tokio::stream::StreamExt::timeout(
-                        to_bytes_stream_and_check_injections(body_stream),
-                        HTTP_BYTES_TIMEOUT,
-                    )
-                    .map(|r| {
-                        debug!("streaming data {:?}", r);
-                        match r {
-                            Err(e) => Err(anyhow::Error::new(e)),
-                            Ok(Err(e)) => Err(anyhow::Error::new(e)),
-                            Ok(Ok(r)) => Ok(r),
-                        }
-                    }), //Timeout on data
-                ))
-                .expect("FIXME"),
-        ),
+        hyper.request(proxy_req.body(body_stream).expect("FIXME")),
     )
     .await;
 
