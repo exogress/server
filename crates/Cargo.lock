@@ -433,7 +433,7 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c60ef6d0bbf56ad2674249b6bb74f2c6aeb98b98dd57b5d3e37cace33011d69"
 dependencies = [
- "time 0.2.20",
+ "time 0.2.21",
 ]
 
 [[package]]
@@ -718,6 +718,7 @@ dependencies = [
  "exogress-tunnel",
  "futures",
  "hashbrown 0.9.0",
+ "headers",
  "hostname",
  "http 0.2.1",
  "jsonwebtoken",
@@ -725,6 +726,7 @@ dependencies = [
  "notify",
  "parking_lot 0.11.0",
  "pem",
+ "percent-encoding 2.1.0",
  "pin-project",
  "rand 0.7.3",
  "rustls-native-certs",
@@ -876,7 +878,7 @@ dependencies = [
  "stop-handle",
  "tempfile",
  "thiserror",
- "time 0.2.20",
+ "time 0.2.21",
  "tokio",
  "tokio-either",
  "tokio-rustls",
@@ -1348,9 +1350,9 @@ dependencies = [
 
 [[package]]
 name = "hermit-abi"
-version = "0.1.15"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3deed196b6e7f9e44a2ae8d94225d80302d81208b1bb673fd21fe634645c85a9"
+checksum = "4c30f6d0bc6b00693347368a67d41b58f2fb851215ff1da49e90fe2c5c667151"
 dependencies = [
  "libc",
 ]
@@ -1438,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "0.13.7"
+version = "0.13.8"
 dependencies = [
  "bytes 0.5.6",
  "futures-channel",
@@ -1448,10 +1450,10 @@ dependencies = [
  "http 0.2.1",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project",
  "socket2",
- "time 0.1.44",
  "tokio",
  "tower-service",
  "tracing",
@@ -1559,9 +1561,12 @@ dependencies = [
 
 [[package]]
 name = "instant"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b141fdc7836c525d4d594027d318c84161ca17aaf8113ab1f81ab93ae897485"
+checksum = "63312a18f7ea8760cdd0a7c5aac1a619752a246b833545e3e36d1f81f7cd9e66"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "iovec"
@@ -1722,9 +1727,9 @@ dependencies = [
 
 [[package]]
 name = "lru_time_cache"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b540fdaf0182f58a5ecac3e5e7d0fcf9ff4f460ff9d7c121cede6d031c03bb30"
+checksum = "53883292fdb9976d4666a9ede31ed599c255be9715947a8bd2adc72522e66749"
 
 [[package]]
 name = "match_cfg"
@@ -3386,9 +3391,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.2.20"
+version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d4953c513c9bf1b97e9cdd83f11d60c4b0a83462880a360d80d96953a953fee"
+checksum = "2c2e31fb28e2a9f01f5ed6901b066c1ba2333c04b64dc61254142bafcb3feb2c"
 dependencies = [
  "const_fn",
  "libc",
