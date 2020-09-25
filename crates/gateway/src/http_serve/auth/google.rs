@@ -5,6 +5,7 @@ use crate::http_serve::auth::{
     Oauth2FlowError,
 };
 use crate::url_mapping::mapping::{JwtEcdsa, Oauth2Provider};
+use exogress_entities::HandlerName;
 use exogress_server_common::url_prefix::UrlPrefix;
 use hashbrown::HashMap;
 use oauth2::basic::BasicClient;
@@ -92,9 +93,10 @@ impl GoogleOauth2Client {
 
     pub async fn save_state_and_retrieve_authorization_url(
         &self,
-        base_url: &UrlPrefix,
+        base_url: &Url,
         jwt_ecdsa: &JwtEcdsa,
         requested_url: &Url,
+        handler_name: &HandlerName,
     ) -> Result<String, AssistantError> {
         let client = self.creds.client();
 
@@ -119,6 +121,7 @@ impl GoogleOauth2Client {
                     jwt_ecdsa: jwt_ecdsa.clone(),
                     base_url: base_url.clone(),
                     provider: Oauth2Provider::Google,
+                    handler_name: handler_name.clone(),
                 },
             },
             self.ttl,
@@ -185,6 +188,7 @@ impl GoogleOauth2Client {
             info!("user_info = {:?}", user_info);
 
             Ok(CallbackResult {
+                identities: vec![user_info.email],
                 token_response: token,
                 oauth2_flow_data: oauth2_flow_data.data,
             })

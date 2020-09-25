@@ -241,7 +241,7 @@ pub async fn server(
                         }
                         Err(e) => {
                             error!("redis error: {}", e);
-                            Err(warp::reject())
+                            Err(warp::reject::not_found())
                         }
                     }
                 }

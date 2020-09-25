@@ -558,6 +558,7 @@ fn main() {
             webroot,
             google_oauth2_client,
             github_oauth2_client,
+            assistant_base_url,
             dbip,
             resolver,
         )

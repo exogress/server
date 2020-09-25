@@ -46,18 +46,22 @@ pub enum UrlPrefixError {
 }
 
 impl UrlPrefix {
+    pub fn to_url(&self) -> Url {
+        Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME")
+    }
+
     pub fn domain_only(&self) -> UrlPrefix {
-        let url = Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME");
+        let url = self.to_url();
         UrlPrefix::from_str(format!("{}/", url.host_str().expect("FIXME")).as_str()).expect("FIXME")
     }
 
     pub fn host(&self) -> String {
-        let url = Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME");
+        let url = self.to_url();
         url.host_str().expect("FIXME").to_string().into()
     }
 
     pub fn path(&self) -> std::string::String {
-        let url = Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME");
+        let url = self.to_url();
         url.path().to_string()
     }
 

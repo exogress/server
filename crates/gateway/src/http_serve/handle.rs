@@ -1,8 +1,13 @@
+use crate::http_serve::auth::{
+    retrieve_assistant_key, save_assistant_key, AuthFinalizer, FlowData,
+};
 use bytes::{Buf, Bytes};
+use exogress_tunnel::{Compression, Conn, ConnectTarget, Connector};
 use futures_util::future::Either;
 use futures_util::sink::SinkExt;
 use futures_util::stream::{Stream, StreamExt};
 use futures_util::TryStreamExt;
+use globset::Glob;
 use hashbrown::HashMap;
 use http::header::{
     ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
@@ -11,6 +16,8 @@ use http::header::{
 use http::status::StatusCode;
 use http::{Response, Uri};
 use hyper::body::HttpBody;
+use hyper::header::{HeaderName, HeaderValue};
+use hyper::Body;
 use memmap::Mmap;
 use reqwest::header::Entry;
 use std::convert::{Infallible, TryInto};
@@ -24,15 +31,13 @@ use url::Url;
 use warp::reject::Reject;
 use warp::{filters, Filter, Rejection, Reply};
 
-use exogress_tunnel::{Compression, Conn, ConnectTarget, Connector};
-use hyper::header::{HeaderName, HeaderValue};
-
 use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::auth;
 use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncoding};
 use crate::http_serve::request::RequestBody;
+use crate::http_serve::templates::respond_with_login;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{
     AuthProviderConfig, HealthEndpoint, HealthState, JwtEcdsa, MappingAction, Oauth2Provider,
@@ -42,13 +47,15 @@ use crate::url_mapping::rate_limiter::{RateLimiterResponse, RateLimiters};
 use crate::webapp::Client;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
-use exogress_entities::{ConfigId, RateLimiterName};
+use exogress_config_core::{AclEntry, Auth, AuthDefinition, AuthProvider, ClientHandlerVariant};
+use exogress_entities::{ConfigId, HandlerName, RateLimiterName};
 use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::url_prefix::UrlPrefix;
 use http::uri::Authority;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use lru_time_cache::LruCache;
 use parking_lot::{Mutex, RwLock};
+use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
@@ -57,8 +64,6 @@ use std::{io, mem};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use typed_headers::{ContentCoding, ContentEncoding, ContentLength, HeaderMapExt};
-
-pub const AUTH_COOKIE_NAME: &str = "exg_auth";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -79,6 +84,7 @@ pub async fn server(
     webroot: PathBuf,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
+    assistant_base_url: Url,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
     resolver: TokioAsyncResolver,
 ) {
@@ -202,10 +208,6 @@ pub async fn server(
 
     tokio::spawn(http_server);
 
-    let auth_finalizers = Arc::new(Mutex::new(LruCache::with_expiry_duration(
-        Duration::from_secs(10),
-    )));
-
     let client = reqwest::ClientBuilder::new()
         .gzip(true)
         .brotli(true)
@@ -222,13 +224,12 @@ pub async fn server(
         .and_then({
             shadow_clone!(google_oauth2_client);
             shadow_clone!(github_oauth2_client);
-            shadow_clone!(auth_finalizers);
+            shadow_clone!(assistant_base_url);
 
             move |provider: String, params| {
                 shadow_clone!(google_oauth2_client);
                 shadow_clone!(github_oauth2_client);
-
-                shadow_clone!(auth_finalizers);
+                shadow_clone!(assistant_base_url);
 
                 async move {
                     let oauth2_result = match provider.as_str() {
@@ -240,24 +241,46 @@ pub async fn server(
                     let mut resp = Response::new("");
 
                     match oauth2_result {
-                        Ok(res) => {
-                            info!("oauth2 result: {:?}", res);
+                        Ok(callback_result) => {
+                            info!("oauth2 callback result: {:?}", callback_result);
                             let secret: String =
                                 thread_rng().sample_iter(&Alphanumeric).take(30).collect();
 
-                            let mut redirect_to = res.oauth2_flow_data.requested_url.clone();
+                            save_assistant_key(
+                                &assistant_base_url,
+                                &secret,
+                                &AuthFinalizer {
+                                    identities: callback_result.identities,
+                                    oauth2_flow_data: callback_result.oauth2_flow_data.clone(),
+                                },
+                                Duration::from_secs(15),
+                            )
+                            .await
+                            .expect("FIXME");
 
-                            {
-                                let mut segments = redirect_to.path_segments_mut().unwrap();
-                                segments.clear();
-                                segments.push("_exg").push("authorized").push(&secret);
-                            }
+                            let handler_name =
+                                callback_result.oauth2_flow_data.handler_name.clone();
+
+                            let mut redirect_to = callback_result.oauth2_flow_data.base_url.clone();
+
+                            // FIXME: Broken logic here!
+                            redirect_to
+                                .set_port(callback_result.oauth2_flow_data.requested_url.port())
+                                .unwrap();
+
+                            redirect_to
+                                .path_segments_mut()
+                                .unwrap()
+                                .push("_exg")
+                                .push("check_auth");
 
                             redirect_to.set_query(None);
+                            redirect_to
+                                .query_pairs_mut()
+                                .append_pair("secret", secret.as_str());
+
                             redirect_to.set_fragment(None);
                             redirect_to.set_scheme("https").unwrap();
-
-                            auth_finalizers.lock().insert(secret, res.oauth2_flow_data);
 
                             resp.headers_mut()
                                 .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
@@ -279,65 +302,6 @@ pub async fn server(
                 }
             }
         });
-
-    let authorized_callback = warp::path!("_exg" / "authorized" / String).and_then({
-        shadow_clone!(auth_finalizers);
-
-        move |secret| {
-            shadow_clone!(auth_finalizers);
-
-            let mut resp = Response::new("");
-
-            async move {
-                match auth_finalizers.lock().remove(&secret) {
-                    Some(res) => {
-                        resp.headers_mut()
-                            .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-
-                        resp.headers_mut()
-                            .insert(LOCATION, res.requested_url.to_string().try_into().unwrap());
-
-                        *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-
-                        let claims = Claims {
-                            idp: serde_json::to_value(res.provider).unwrap().to_string(),
-                            exp: (Utc::now() + chrono::Duration::hours(24))
-                                .timestamp()
-                                .try_into()
-                                .unwrap(),
-                        };
-
-                        let token = jsonwebtoken::encode(
-                            &Header {
-                                alg: jsonwebtoken::Algorithm::ES256,
-                                ..Default::default()
-                            },
-                            &claims,
-                            &EncodingKey::from_ec_pem(res.jwt_ecdsa.private_key.as_ref())
-                                .expect("FIXME"),
-                        )
-                        .expect("FIXME");
-
-                        let set_cookie = Cookie::build(AUTH_COOKIE_NAME, token)
-                            .path(res.base_url.path())
-                            .max_age(time::Duration::hours(24))
-                            .http_only(true)
-                            .secure(true)
-                            .finish();
-
-                        resp.headers_mut()
-                            .insert(SET_COOKIE, set_cookie.to_string().try_into().unwrap());
-                    }
-                    None => {
-                        *resp.status_mut() = StatusCode::FORBIDDEN;
-                        *resp.body_mut() = "Forbidden";
-                    }
-                }
-
-                Ok::<_, Rejection>(resp)
-            }
-        }
-    });
 
     let server = warp::any()
         .and(filters::path::full())
@@ -373,6 +337,7 @@ pub async fn server(
         .and(warp::ws().or(filters::body::stream()))
         .and(filters::header::headers_cloned())
         .and(filters::host::optional())
+        .and(filters::query::query::<HashMap<String, String>>())
         // find mapping
         .and_then({
             shadow_clone!(webapp_client);
@@ -382,7 +347,8 @@ pub async fn server(
             move |(path, query): (warp::filters::path::FullPath, String),
                   ws_or_body,
                   headers: http::HeaderMap,
-                  authority: Option<Authority>| {
+                  authority: Option<Authority>,
+                  params: HashMap<String, String>| {
                 shadow_clone!(webapp_client);
                 shadow_clone!(individual_hostname);
                 shadow_clone!(tunnels);
@@ -392,9 +358,15 @@ pub async fn server(
 
                     let host_without_port = authority.host();
 
-                    let requested_url = format!("https://{}{}?{}", authority, path.as_str(), query)
+                    let mut requested_url: Url = format!("https://{}{}", authority, path.as_str())
                         .parse()
                         .expect("FIXME: bad URL");
+
+                    if !query.is_empty() {
+                        requested_url.set_query(Some(query.as_str()));
+                    }
+
+                    info!("path = {:?}", path);
 
                     let url_for_rewriting = UrlForRewriting::from_components(
                         host_without_port,
@@ -420,15 +392,73 @@ pub async fn server(
 
                     match handle_result {
                         Ok(Some((mapping_action, maybe_rate_limiter, mount_point_base_url))) => {
-                            Ok((
-                                ws_or_body,
-                                headers,
-                                path,
-                                maybe_rate_limiter,
-                                mapping_action,
-                                requested_url,
-                                mount_point_base_url,
-                            ))
+                            if path.as_str().ends_with("/_exg/auth") {
+                                let res = (|| {
+                                    let redirect_to = params.get("url")?;
+                                    let handler_name = params.get("handler")?;
+                                    let (found_handler_name, auth_handler) = mapping_action
+                                        .handler
+                                        .handlers_processor
+                                        .handlers
+                                        .iter()
+                                        .filter_map(|handler| {
+                                            if let ClientHandlerVariant::Auth(auth) = &handler.variant {
+                                                Some((handler.name.clone(), auth.clone()))
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .find(|(found_handler_name, _)| found_handler_name.as_str() == handler_name.as_str())?;
+
+                                    let maybe_provider: Option<AuthProvider> = params
+                                        .get("provider")
+                                        .cloned()
+                                        .or_else(|| {
+                                            if auth_handler.providers.len() == 1 {
+                                                Some(auth_handler.providers.iter().next().unwrap().provider.to_string())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .map(|p| p.parse().unwrap());
+
+                                    Some((redirect_to, found_handler_name, auth_handler, maybe_provider))
+                                })();
+
+                                match res {
+                                    Some((redirect_to, found_handler_name, auth_handler, maybe_provider)) => {
+                                        Err(warp::reject::custom(ShowAuth {
+                                            redirect_to: redirect_to.parse().unwrap(),
+                                            base_url: mapping_action.external_base_url,
+                                            handler_name: found_handler_name,
+                                            auth: auth_handler,
+                                            maybe_provider,
+                                            jwt_ecdsa: mapping_action.jwt_ecdsa,
+                                        }))
+                                    }
+                                    None => {
+                                        Err(warp::reject::not_found())
+                                    }
+                                }
+                            } else if path.as_str().ends_with("/_exg/check_auth") {
+                                let secret = params.get("secret").expect("FIXME").clone();
+
+                                Err(warp::reject::custom(Authenticate {
+                                    secret,
+                                    mapping_action,
+                                }))
+                            } else {
+                                Ok((
+                                    ws_or_body,
+                                    headers,
+                                    path,
+                                    maybe_rate_limiter,
+                                    mapping_action,
+                                    requested_url,
+                                    mount_point_base_url,
+                                    params,
+                                ))
+                            }
                         }
                         Ok(None) => Err(warp::reject::not_found()),
                         Err(e) => {
@@ -449,12 +479,14 @@ pub async fn server(
                       action,
                       requested_url,
                       mount_point_base_url,
+                      params
                   ): (
                 _,
                 http::HeaderMap,
                 warp::filters::path::FullPath,
                 RateLimiters,
                 MappingAction,
+                _,
                 _,
                 _,
             )| {
@@ -488,11 +520,11 @@ pub async fn server(
                         action,
                         requested_url,
                         mount_point_base_url,
+                        params
                     ))
                 }
             }
         })
-        .and(filters::query::query::<HashMap<String, String>>())
         .and(warp::method())
         .and(filters::addr::remote())
         .and(filters::addr::local())
@@ -507,10 +539,11 @@ pub async fn server(
                       ws_or_body,
                       headers,
                       delayed_for,
-                      _path,
+                      path,
                       mapping_action,
                       requested_url,
                       mount_point_base_url,
+                      params
                   ): (
                 _,
                 http::HeaderMap,
@@ -519,8 +552,8 @@ pub async fn server(
                 MappingAction,
                 Url,
                 UrlPrefix,
+                _,
             ),
-                  _params,
                   method: http::Method,
                   remote_addr: Option<SocketAddr>,
                   local_addr: Option<SocketAddr>| {
@@ -538,7 +571,6 @@ pub async fn server(
                     let resolved = dbip.lookup::<LocationAndIsp>(remote_addr);
                     info!("GEO IP: {:?}", resolved);
                 }
-
 
                 async move {
                     let account_name = mapping_action.handler.account_name;
@@ -571,237 +603,237 @@ pub async fn server(
                     'handlers: for handler in &handlers_processor.handlers {
                         info!("HANDLER: {:?}", handler);
 
-                        match &handler.client_config_data {
-                            Some((config_name, instances_ids)) => {
-                                let config_id = ConfigId {
-                                    account_name: account_name.clone(),
-                                    project_name: project_name.clone(),
-                                    config_name: config_name.clone(),
-                                };
-                                let mut ordered_instances = instances_ids.clone();
-                                {
-                                    let mut rng = thread_rng();
-                                    ordered_instances.shuffle(&mut rng);
-                                }
 
-                                if let Some(connect_target) = handler.connect_target("") {
-                                    'instances: for instance_id in &ordered_instances {
-                                        if let ConnectTarget::Upstream(upstream) = &connect_target {
-                                            let endpoint = HealthEndpoint { instance_id: *instance_id, upstream: upstream.clone() };
-                                            let locked = mapping_action.health.lock();
-                                            let state = locked.get(&endpoint);
+                        if let Some(auth) = handler.auth() {
+                            let cookies = headers.get_all(COOKIE);
 
-                                            match state {
-                                                Some(&HealthState::NotYetKnown) => {
-                                                    info!("Unknown health state. Try to proxy anyway {:?}", endpoint);
-                                                }
-                                                Some(HealthState::Unhealthy { probe, reason }) => {
-                                                    info!("Skip {:?}. probe {:?} failed with reason {:?}", endpoint, probe, reason);
-                                                    continue 'instances;
-                                                }
-                                                Some(&HealthState::Healthy) | None => {}
-                                            }
-                                        };
+                            let proto = if req.is_ws_body() {
+                                Protocol::WebSockets
+                            } else {
+                                Protocol::Http
+                            };
 
-                                        info!("try proxy to {}", instance_id);
-                                        let (connector, hyper, proxy_to) =
-                                            if let Some(ConnectedTunnel {
-                                                            connector, hyper, ..
-                                                        }) = tunnels
-                                                .retrieve_client_tunnel(
-                                                    config_id.clone(),
-                                                    instance_id.clone(),
-                                                    individual_hostname.clone().into(),
-                                                )
-                                                .await
-                                            {
-                                                (connector, hyper, url.clone())
-                                            } else {
-                                                info!("No connected tunnels. Try again..");
-                                                continue;
-                                            };
 
-                                        info!("HTTP: proxy to {}. req = {:?}", proxy_to, req);
+                            let auth_cookie_name =
+                                format!("exg-auth-{}", handler.name);
 
-                                        if req.is_ws_body() {
-                                            let res = proxy_ws(
-                                                &mut req,
-                                                remote_addr,
-                                                headers.clone(),
-                                                proxy_to,
-                                                local_addr,
-                                                mount_point_base_url.host().as_str(),
-                                                connector,
-                                                connect_target.clone(),
-                                            )
-                                                .await;
+                            let jwt_token = cookies
+                                .iter()
+                                .map(|header| {
+                                    header
+                                        .to_str()
+                                        .unwrap()
+                                        .split(';')
+                                        .map(|s| s.trim_start().trim_end().to_string())
+                                })
+                                .flatten()
+                                .filter_map(move |s| Cookie::parse(s).ok())
+                                .find(|cookie| cookie.name() == auth_cookie_name);
 
-                                            match res {
-                                                Ok(mut r) => {
-                                                    if r.status() == StatusCode::NOT_FOUND  {
-                                                        info!("WS not found. try other handlers");
-                                                        break 'instances; //continue through handlers
-                                                    } else if r.status() == StatusCode::BAD_GATEWAY {
-                                                        info!("WS bad gateway. try another instance");
-                                                        continue 'instances;
-                                                    };
-                                                    if let Some(delay) = delayed_for {
-                                                        r.headers_mut().insert(
-                                                            "x-exg-delayed-for-ms",
-                                                            delay
-                                                                .as_millis()
-                                                                .to_string()
-                                                                .try_into()
-                                                                .unwrap(),
-                                                        );
-                                                    }
+                            info!(
+                                "requested_url = {:?} mount_point_base_url = {:?}",
+                                requested_url, mount_point_base_url
+                            );
 
-                                                    return Ok(r);
-                                                }
-                                                Err(Error::AlreadyUsed) => {
-                                                    error!("Give Up retrying WS");
-                                                    return Err::<_, _>(warp::reject::custom(
-                                                        BadGateway { delayed_for },
-                                                    ));
-                                                }
-                                                Err(e) => {
-                                                    error!("WS error: {:?}", e);
-                                                }
-                                            }
-                                        } else if req.is_http() {
-                                            let res = proxy_http_request(
-                                                &mut req,
-                                                remote_addr,
-                                                headers.clone(),
-                                                proxy_to,
-                                                method.clone(),
-                                                local_addr,
-                                                mount_point_base_url.host().as_str(),
-                                                hyper,
-                                                connect_target.clone(),
-                                            )
-                                                .await;
-
-                                            match res {
-                                                Ok(mut r) => {
-                                                    if r.status() == StatusCode::NOT_FOUND {
-                                                        let body = hyper::body::to_bytes(r.body_mut()).await.unwrap();
-                                                        info!("HTTP not found. try other handlers. body = {:?}", body);
-                                                        break 'instances; //continue through handlers
-                                                    } else if r.status() == StatusCode::BAD_GATEWAY {
-                                                        let body = r.into_body();
-                                                        info!("HTTP bad gateway. try another instance: {:?}", body);
-                                                        continue 'instances;
-                                                    }
-
-                                                    if let Some(delay) = delayed_for {
-                                                        r.headers_mut().insert(
-                                                            "x-exg-delayed-for-ms",
-                                                            delay
-                                                                .as_millis()
-                                                                .to_string()
-                                                                .try_into()
-                                                                .unwrap(),
-                                                        );
-                                                    }
-
-                                                    return Ok(r);
-                                                }
-                                                Err(Error::AlreadyUsed) => {
-                                                    error!("Give Up retrying HTTP");
-                                                    return Err::<_, _>(warp::reject::custom(
-                                                        BadGateway { delayed_for },
-                                                    ));
-                                                }
-                                                Err(e) => {
-                                                    error!("HTTP error: {:?}", e);
-                                                }
-                                            }
-                                        } else {
-                                            info!("no longer retry: req = {:?}", req);
-                                            return Err::<_, _>(warp::reject::custom(
-                                                BadGateway { delayed_for },
-                                            ));
-                                        }
+                            if let Some(token) = jwt_token {
+                                match jsonwebtoken::decode::<Claims>(
+                                    &token.value(),
+                                    &DecodingKey::from_ec_pem(&mapping_action.jwt_ecdsa.public_key)
+                                        .expect("FIXME"),
+                                    &Validation {
+                                        algorithms: vec![jsonwebtoken::Algorithm::ES256],
+                                        ..Default::default()
+                                    },
+                                ) {
+                                    Ok(token) => {
+                                        info!("jwt-token parse and verified. go ahead. provider = {}", token.claims.idp);
                                     }
-                                }
-                            }
-                            None => {
-                                if let Some(auth) = handler.auth() {
-                                    let cookies = headers.get_all(COOKIE);
-
-                                    let proto = if req.is_ws_body() {
-                                        Protocol::WebSockets
-                                    } else {
-                                        Protocol::Http
-                                    };
-
-                                    let jwt_token = cookies
-                                        .iter()
-                                        .map(|header| {
-                                            header
-                                                .to_str()
-                                                .unwrap()
-                                                .split(';')
-                                                .map(|s| s.trim_start().trim_end().to_string())
-                                        })
-                                        .flatten()
-                                        .filter_map(move |s| Cookie::parse(s).ok())
-                                        .find(|cookie| cookie.name() == AUTH_COOKIE_NAME);
-
-                                    let auth_type = Some(auth.provider.into());
-
-                                    info!(
-                                        "requested_url = {:?} mount_point_base_url = {:?}",
-                                        requested_url, mount_point_base_url
-                                    );
-
-                                    if let Some(token) = jwt_token {
-                                        match jsonwebtoken::decode::<Claims>(
-                                            &token.value(),
-                                            &DecodingKey::from_ec_pem(&mapping_action.jwt_ecdsa.public_key)
-                                                .expect("FIXME"),
-                                            &Validation {
-                                                algorithms: vec![jsonwebtoken::Algorithm::ES256],
-                                                ..Default::default()
-                                            },
-                                        ) {
-                                            Ok(_token) => {
-                                                info!("jwt-token parse and verified. go ahead");
-                                            }
-                                            Err(e) => {
-                                                if let jsonwebtoken::errors::ErrorKind::InvalidSignature =
-                                                e.kind()
-                                                {
-                                                    info!("jwt-token parsed but not verified");
-                                                } else {
-                                                    info!(
-                                                        "JWT token error: {:?}. Token: {}",
-                                                        e,
-                                                        token.value()
-                                                    );
-                                                };
-                                                return Err::<_, _>(warp::reject::custom(NotAuthorized {
-                                                    auth_type,
-                                                    requested_url: requested_url.clone(),
-                                                    base_url: mount_point_base_url.clone(),
-                                                    proto,
-                                                    is_jwt_token_included: true,
-                                                    jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
-                                                }));
-                                            }
-                                        }
-                                    } else {
-                                        info!("jwt-token not found");
-
+                                    Err(e) => {
+                                        if let jsonwebtoken::errors::ErrorKind::InvalidSignature =
+                                        e.kind()
+                                        {
+                                            info!("jwt-token parsed but not verified");
+                                        } else {
+                                            info!(
+                                                "JWT token error: {:?}. Token: {}",
+                                                e,
+                                                token.value()
+                                            );
+                                        };
                                         return Err::<_, _>(warp::reject::custom(NotAuthorized {
-                                            auth_type,
+                                            handler_name: handler.name.clone(),
+                                            auth,
                                             requested_url: requested_url.clone(),
                                             base_url: mount_point_base_url.clone(),
                                             proto,
-                                            is_jwt_token_included: false,
-                                            jwt_ecdsa: mapping_action.jwt_ecdsa,
+                                            is_jwt_token_included: true,
+                                            jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
                                         }));
+                                    }
+                                }
+                            } else {
+                                info!("jwt-token not found");
+
+                                return Err::<_, _>(warp::reject::custom(NotAuthorized {
+                                    handler_name: handler.name.clone(),
+                                    auth,
+                                    requested_url: requested_url.clone(),
+                                    base_url: mount_point_base_url.clone(),
+                                    proto,
+                                    is_jwt_token_included: false,
+                                    jwt_ecdsa: mapping_action.jwt_ecdsa,
+                                }));
+                            }
+                        } else if let Some((config_name, instances_ids)) = &handler.client_config_data {
+                            let config_id = ConfigId {
+                                account_name: account_name.clone(),
+                                project_name: project_name.clone(),
+                                config_name: config_name.clone(),
+                            };
+                            let mut ordered_instances = instances_ids.clone();
+                            {
+                                let mut rng = thread_rng();
+                                ordered_instances.shuffle(&mut rng);
+                            }
+
+                            if let Some(connect_target) = handler.connect_target("") {
+                                'instances: for instance_id in &ordered_instances {
+                                    if let ConnectTarget::Upstream(upstream) = &connect_target {
+                                        let endpoint = HealthEndpoint { instance_id: *instance_id, upstream: upstream.clone() };
+                                        let locked = mapping_action.health.lock();
+                                        let state = locked.get(&endpoint);
+
+                                        match state {
+                                            Some(&HealthState::NotYetKnown) => {
+                                                info!("Unknown health state. Try to proxy anyway {:?}", endpoint);
+                                            }
+                                            Some(HealthState::Unhealthy { probe, reason }) => {
+                                                info!("Skip {:?}. probe {:?} failed with reason {:?}", endpoint, probe, reason);
+                                                continue 'instances;
+                                            }
+                                            Some(&HealthState::Healthy) | None => {}
+                                        }
+                                    };
+
+                                    info!("try proxy to {}", instance_id);
+                                    let (connector, hyper, proxy_to) =
+                                        if let Some(ConnectedTunnel {
+                                                        connector, hyper, ..
+                                                    }) = tunnels
+                                            .retrieve_client_tunnel(
+                                                config_id.clone(),
+                                                instance_id.clone(),
+                                                individual_hostname.clone().into(),
+                                            )
+                                            .await
+                                        {
+                                            (connector, hyper, url.clone())
+                                        } else {
+                                            info!("No connected tunnels. Try again..");
+                                            continue;
+                                        };
+
+                                    info!("HTTP: proxy to {}. req = {:?}", proxy_to, req);
+
+                                    if req.is_ws_body() {
+                                        let res = proxy_ws(
+                                            &mut req,
+                                            remote_addr,
+                                            headers.clone(),
+                                            proxy_to,
+                                            local_addr,
+                                            mount_point_base_url.host().as_str(),
+                                            connector,
+                                            connect_target.clone(),
+                                        )
+                                            .await;
+
+                                        match res {
+                                            Ok(mut r) => {
+                                                if r.status() == StatusCode::NOT_FOUND {
+                                                    info!("WS not found. try other handlers");
+                                                    break 'instances; //continue through handlers
+                                                } else if r.status() == StatusCode::BAD_GATEWAY {
+                                                    info!("WS bad gateway. try another instance");
+                                                    continue 'instances;
+                                                };
+                                                if let Some(delay) = delayed_for {
+                                                    r.headers_mut().insert(
+                                                        "x-exg-delayed-for-ms",
+                                                        delay
+                                                            .as_millis()
+                                                            .to_string()
+                                                            .try_into()
+                                                            .unwrap(),
+                                                    );
+                                                }
+
+                                                return Ok(r);
+                                            }
+                                            Err(Error::AlreadyUsed) => {
+                                                error!("Give Up retrying WS");
+                                                return Err::<_, _>(warp::reject::custom(
+                                                    BadGateway { delayed_for },
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                error!("WS error: {:?}", e);
+                                            }
+                                        }
+                                    } else if req.is_http() {
+                                        let res = proxy_http_request(
+                                            &mut req,
+                                            remote_addr,
+                                            headers.clone(),
+                                            proxy_to,
+                                            method.clone(),
+                                            local_addr,
+                                            mount_point_base_url.host().as_str(),
+                                            hyper,
+                                            connect_target.clone(),
+                                        )
+                                            .await;
+
+                                        match res {
+                                            Ok(mut r) => {
+                                                if r.status() == StatusCode::NOT_FOUND {
+                                                    let body = hyper::body::to_bytes(r.body_mut()).await.unwrap();
+                                                    info!("HTTP not found. try other handlers. body = {:?}", body);
+                                                    break 'instances; //continue through handlers
+                                                } else if r.status() == StatusCode::BAD_GATEWAY {
+                                                    let body = r.into_body();
+                                                    info!("HTTP bad gateway. try another instance: {:?}", body);
+                                                    continue 'instances;
+                                                }
+
+                                                if let Some(delay) = delayed_for {
+                                                    r.headers_mut().insert(
+                                                        "x-exg-delayed-for-ms",
+                                                        delay
+                                                            .as_millis()
+                                                            .to_string()
+                                                            .try_into()
+                                                            .unwrap(),
+                                                    );
+                                                }
+
+                                                return Ok(r);
+                                            }
+                                            Err(Error::AlreadyUsed) => {
+                                                error!("Give Up retrying HTTP");
+                                                return Err::<_, _>(warp::reject::custom(
+                                                    BadGateway { delayed_for },
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                error!("HTTP error: {:?}", e);
+                                            }
+                                        }
+                                    } else {
+                                        info!("no longer retry: req = {:?}", req);
+                                        return Err::<_, _>(warp::reject::custom(
+                                            BadGateway { delayed_for },
+                                        ));
                                     }
                                 }
                             }
@@ -815,21 +847,22 @@ pub async fn server(
         .recover({
             shadow_clone!(google_oauth2_client);
             shadow_clone!(github_oauth2_client);
+            shadow_clone!(assistant_base_url);
 
             move |r| {
                 shadow_clone!(google_oauth2_client);
                 shadow_clone!(github_oauth2_client);
+                shadow_clone!(assistant_base_url);
 
                 warn!("Error: {:?}", r);
 
-                handle_rejection(r, google_oauth2_client, github_oauth2_client)
+                handle_rejection(r, google_oauth2_client, github_oauth2_client, assistant_base_url)
             }
         });
 
     let (_, https_server) = warp::serve(
         health
             .or(oauth2_callback)
-            .or(authorized_callback)
             .or(server)
             .with(warp::trace::request()),
     )
@@ -857,7 +890,10 @@ pub async fn server(
                         let locked = tls_gw_common.read();
 
                         match &*locked {
-                            Some(cert_data) if cert_data.common_gw_hostname == hostname => {
+                            Some(cert_data)
+                                if cert_data.common_gw_hostname == hostname
+                                    || cfg!(debug_assertions) =>
+                            {
                                 info!("successfully set cert and key");
                                 builder = builder
                                     .cert(cert_data.common_gw_host_certificate.as_ref())
@@ -954,14 +990,15 @@ async fn handle_rejection(
     err: Rejection,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
+    assistant_base_url: Url,
 ) -> Result<impl Reply, Infallible> {
-    let mut resp = Response::new("");
+    let mut resp = Response::new(Body::empty());
 
     resp.headers_mut()
         .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
     if err.is_not_found() {
         *resp.status_mut() = StatusCode::NOT_FOUND;
-        *resp.body_mut() = "404 Not Found";
+        *resp.body_mut() = Body::from("404 Not Found");
     } else if let Some(BadGateway { delayed_for }) = err.find() {
         if let Some(delay) = delayed_for {
             resp.headers_mut().insert(
@@ -971,7 +1008,7 @@ async fn handle_rejection(
         }
 
         *resp.status_mut() = StatusCode::BAD_GATEWAY;
-        *resp.body_mut() = "Bad Gateway"
+        *resp.body_mut() = Body::from("Bad Gateway")
     } else if let Some(RateLimited {
         not_until,
         rate_limiter_name,
@@ -987,9 +1024,10 @@ async fn handle_rejection(
             .insert("x-exg-retry-at", not_until.to_rfc3339().try_into().unwrap());
 
         *resp.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-        *resp.body_mut() = "Rate Limited"
+        *resp.body_mut() = Body::from("Rate Limited");
     } else if let Some(NotAuthorized {
-        auth_type: Some(AuthProviderConfig::Oauth2(Oauth2SsoClient { provider })),
+        auth,
+        handler_name,
         requested_url,
         jwt_ecdsa,
         base_url,
@@ -997,29 +1035,26 @@ async fn handle_rejection(
         is_jwt_token_included,
     }) = err.find::<NotAuthorized>()
     {
-        let redirect_to = match provider {
-            Oauth2Provider::Google => google_oauth2_client
-                .save_state_and_retrieve_authorization_url(base_url, jwt_ecdsa, requested_url)
-                .await
-                .expect("FIXME"),
-            Oauth2Provider::Github => github_oauth2_client
-                .save_state_and_retrieve_authorization_url(base_url, jwt_ecdsa, requested_url)
-                .await
-                .expect("FIXME"),
-        };
-
-        let delete_cookie = Cookie::build(AUTH_COOKIE_NAME, "deleted")
-            .http_only(true)
-            .secure(true)
-            .path(base_url.path())
-            .expires(time::OffsetDateTime::unix_epoch())
-            .finish();
-
-        resp.headers_mut()
-            .insert(SET_COOKIE, delete_cookie.to_string().try_into().unwrap());
-
         match proto {
             Protocol::Http => {
+                let mut url = base_url.to_url();
+                url.path_segments_mut().unwrap().push("_exg").push("auth");
+                url.set_query(Some(
+                    format!(
+                        "url={}&handler={}",
+                        percent_encode(requested_url.as_str().as_ref(), NON_ALPHANUMERIC),
+                        percent_encode(handler_name.as_ref(), NON_ALPHANUMERIC),
+                    )
+                    .as_str(),
+                ));
+                url.set_host(Some("strip")).unwrap();
+                url.set_scheme("http").unwrap();
+                let redirect_to = url
+                    .to_string()
+                    .strip_prefix("http://strip")
+                    .unwrap()
+                    .to_string();
+
                 resp.headers_mut()
                     .insert(LOCATION, redirect_to.try_into().unwrap());
                 *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
@@ -1031,14 +1066,176 @@ async fn handle_rejection(
                 *resp.status_mut() = StatusCode::FORBIDDEN;
             }
         }
+    } else if let Some(ShowAuth {
+        base_url,
+        redirect_to,
+        handler_name,
+        auth,
+        maybe_provider,
+        jwt_ecdsa,
+    }) = err.find()
+    {
+        respond_with_login(
+            base_url,
+            maybe_provider,
+            redirect_to,
+            handler_name,
+            auth,
+            jwt_ecdsa,
+            &mut resp,
+            google_oauth2_client.clone(),
+            github_oauth2_client.clone(),
+        )
+        .await;
+    } else if let Some(Authenticate {
+        secret,
+        mapping_action,
+    }) = err.find::<Authenticate>()
+    {
+        match retrieve_assistant_key::<AuthFinalizer>(&assistant_base_url, &secret).await {
+            Ok(res) => {
+                let handler_name = res.oauth2_flow_data.handler_name.clone();
+                let used_provider = res.oauth2_flow_data.provider.clone();
+
+                let (_, auth) = mapping_action
+                    .handler
+                    .handlers_processor
+                    .handlers
+                    .iter()
+                    .filter_map(|handler| {
+                        if let ClientHandlerVariant::Auth(auth) = &handler.variant {
+                            Some((handler.name.clone(), auth.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .find(|(found_handler_name, _)| {
+                        found_handler_name.as_str() == handler_name.as_str()
+                    })
+                    .expect("FIXME");
+
+                info!("auth = {:?}", auth);
+
+                let maybe_auth_definition = auth.providers.iter().find(|provider| {
+                    match (&provider.provider, &used_provider) {
+                        (&AuthProvider::Google, &Oauth2Provider::Google) => true,
+                        (&AuthProvider::Github, &Oauth2Provider::Github) => true,
+                        _ => false,
+                    }
+                });
+                info!("maybe_auth_definition = {:?}", maybe_auth_definition);
+
+                match maybe_auth_definition {
+                    Some(auth_definition) => {
+                        let mut acl_pass = false;
+
+                        'acl: for acl_entry in &auth_definition.acl {
+                            for identity in &res.identities {
+                                match acl_entry {
+                                    AclEntry::Pass { pass } => {
+                                        let is_match = match Glob::new(pass) {
+                                            Ok(glob) => glob.compile_matcher().is_match(identity),
+                                            Err(_) => pass == identity,
+                                        };
+                                        if is_match {
+                                            info!("Pass {} ", identity);
+                                            acl_pass = true;
+                                            break 'acl;
+                                        }
+                                    }
+                                    AclEntry::Deny { deny } => {
+                                        let is_match = match Glob::new(deny) {
+                                            Ok(glob) => glob.compile_matcher().is_match(identity),
+                                            Err(_) => deny == identity,
+                                        };
+                                        if is_match {
+                                            info!("Deny {} ", identity);
+                                            acl_pass = false;
+                                            break 'acl;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        info!("acl_pass = {}", acl_pass);
+
+                        if acl_pass {
+                            resp.headers_mut()
+                                .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+
+                            resp.headers_mut().insert(
+                                LOCATION,
+                                res.oauth2_flow_data
+                                    .requested_url
+                                    .to_string()
+                                    .try_into()
+                                    .unwrap(),
+                            );
+
+                            *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+
+                            let claims = Claims {
+                                idp: serde_json::to_value(res.oauth2_flow_data.provider)
+                                    .unwrap()
+                                    .to_string(),
+                                exp: (Utc::now() + chrono::Duration::hours(24))
+                                    .timestamp()
+                                    .try_into()
+                                    .unwrap(),
+                            };
+
+                            let token = jsonwebtoken::encode(
+                                &Header {
+                                    alg: jsonwebtoken::Algorithm::ES256,
+                                    ..Default::default()
+                                },
+                                &claims,
+                                &EncodingKey::from_ec_pem(
+                                    res.oauth2_flow_data.jwt_ecdsa.private_key.as_ref(),
+                                )
+                                .expect("FIXME"),
+                            )
+                            .expect("FIXME");
+
+                            let auth_cookie_name =
+                                format!("exg-auth-{}", res.oauth2_flow_data.handler_name);
+
+                            let set_cookie = Cookie::build(auth_cookie_name, token)
+                                .path(res.oauth2_flow_data.base_url.path())
+                                .max_age(time::Duration::hours(24))
+                                .http_only(true)
+                                .secure(true)
+                                .finish();
+
+                            resp.headers_mut()
+                                .insert(SET_COOKIE, set_cookie.to_string().try_into().unwrap());
+                        } else {
+                            *resp.status_mut() = StatusCode::FORBIDDEN;
+                            *resp.body_mut() = Body::from("Access Denied");
+                        }
+                    }
+                    None => {
+                        info!("could not find provider");
+                        *resp.status_mut() = StatusCode::BAD_REQUEST;
+                        *resp.body_mut() = Body::from("bad request");
+                    }
+                }
+            }
+            Err(e) => {
+                info!("could not retrieve assistant oauth2 key: {}", e);
+                *resp.status_mut() = StatusCode::UNAUTHORIZED;
+                *resp.body_mut() = Body::from("error");
+            }
+        }
     } else if err.find::<NotSupported>().is_some() {
         *resp.status_mut() = StatusCode::NOT_IMPLEMENTED;
     } else if err.find::<InjectionFound>().is_some() {
         *resp.status_mut() = StatusCode::BAD_REQUEST;
-        *resp.body_mut() = "Injection detected";
+        *resp.body_mut() = Body::from("Injection detected");
     } else if err.find::<AuthError>().is_some() {
         *resp.status_mut() = StatusCode::FORBIDDEN;
-        *resp.body_mut() = "Forbidden";
+        *resp.body_mut() = Body::from("Forbidden");
     } else {
         *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     }
@@ -1492,6 +1689,26 @@ fn to_bytes_stream_and_check_injections(
 }
 
 #[derive(Debug)]
+struct Authenticate {
+    secret: String,
+    mapping_action: MappingAction,
+}
+
+impl Reject for Authenticate {}
+
+#[derive(Debug)]
+struct ShowAuth {
+    redirect_to: Url,
+    base_url: Url,
+    auth: Auth,
+    handler_name: HandlerName,
+    maybe_provider: Option<AuthProvider>,
+    jwt_ecdsa: JwtEcdsa,
+}
+
+impl Reject for ShowAuth {}
+
+#[derive(Debug)]
 struct AuthError {}
 
 impl Reject for AuthError {}
@@ -1506,7 +1723,8 @@ impl Reject for RateLimited {}
 
 #[derive(Debug)]
 struct NotAuthorized {
-    auth_type: Option<AuthProviderConfig>,
+    handler_name: HandlerName,
+    auth: Auth,
     base_url: UrlPrefix,
     requested_url: Url,
     jwt_ecdsa: JwtEcdsa,

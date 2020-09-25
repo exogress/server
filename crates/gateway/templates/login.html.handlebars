@@ -1,0 +1,15 @@
+<html>
+<body>
+Login required:
+<ul>
+    {{#each providers}}
+        <li>
+            <a href="{{ this.link }}">
+                {{ this.name }}
+                <img height="64" width="64" src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg" />
+            </a>
+        </li>
+    {{/each}}
+</ul>
+</body>
+</html>

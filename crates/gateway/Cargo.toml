@@ -64,6 +64,8 @@ jsonwebtoken = "7.2.0"
 typed-headers = "0.2.0"
 mime = "0.3.16"
 async-compression = { version = "0.3.5", features = ["gzip", "futures-write", "stream", "brotli"]}
+handlebars = "3.5.0"
+globset = { version = "0.4.5", features = ["serde1"] }
 
 exogress-server-common = { path = "../common", version = "0.1" }
 exogress-assistant = { path = "../assistant", version = "0.1" }

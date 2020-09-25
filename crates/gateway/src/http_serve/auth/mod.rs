@@ -1,4 +1,5 @@
 use crate::url_mapping::mapping::{JwtEcdsa, Oauth2Provider};
+use exogress_entities::HandlerName;
 use exogress_server_common::assistant::{GetValue, SetValue};
 use exogress_server_common::url_prefix::UrlPrefix;
 use http::StatusCode;
@@ -14,13 +15,21 @@ pub mod google;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowData {
     pub requested_url: Url,
-    pub base_url: UrlPrefix,
+    pub base_url: Url,
     pub jwt_ecdsa: JwtEcdsa,
     pub provider: Oauth2Provider,
+    pub handler_name: HandlerName,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuthFinalizer {
+    pub identities: Vec<String>,
+    pub oauth2_flow_data: FlowData,
 }
 
 #[derive(Clone, Debug)]
 pub struct CallbackResult {
+    pub identities: Vec<String>,
     pub token_response: BasicTokenResponse,
     pub oauth2_flow_data: FlowData,
 }
@@ -70,7 +79,7 @@ pub enum AssistantError {
     BadStatus(StatusCode),
 }
 
-async fn retrieve_assistant_key<T: DeserializeOwned>(
+pub async fn retrieve_assistant_key<T: DeserializeOwned>(
     assistant_url: &Url,
     key: &str,
 ) -> Result<T, AssistantError> {
@@ -98,7 +107,7 @@ async fn retrieve_assistant_key<T: DeserializeOwned>(
     }
 }
 
-async fn save_assistant_key<T: Serialize>(
+pub async fn save_assistant_key<T: Serialize>(
     assistant_url: &Url,
     key: &str,
     value: &T,

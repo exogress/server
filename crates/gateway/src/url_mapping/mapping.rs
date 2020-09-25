@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use smartstring::alias::String;
 use url::Url;
 
-use exogress_config_core::{AuthProvider, ClientConfig, Probe};
+use exogress_config_core::{AuthProvider, ClientConfig, Config, Probe};
 use exogress_entities::{AccountName, ConfigId, ConfigName, InstanceId, ProjectName, Upstream};
 
 use crate::clients::ClientTunnels;
@@ -377,6 +377,16 @@ pub enum Oauth2Provider {
     Github,
 }
 
+impl ToString for Oauth2Provider {
+    fn to_string(&self) -> std::string::String {
+        match self {
+            Oauth2Provider::Google => "google",
+            Oauth2Provider::Github => "github",
+        }
+        .to_string()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum AuthProviderConfig {
     Oauth2(Oauth2SsoClient),
@@ -704,7 +714,7 @@ pub struct ClientHandler {
     pub url: Url,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MappingAction {
     pub handler: ClientHandler,
     pub jwt_ecdsa: JwtEcdsa,
