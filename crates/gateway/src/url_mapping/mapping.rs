@@ -19,6 +19,7 @@ use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::webapp::ConfigsResponse;
+use dashmap::DashMap;
 use exogress_server_common::url_prefix::UrlPrefix;
 use exogress_tunnel::ConnectTarget;
 use futures::channel::oneshot;
@@ -425,7 +426,7 @@ pub struct Mapping {
     jwt_ecdsa: JwtEcdsa,
     rate_limiters: RateLimiters,
     healthcheck_stop_tx: oneshot::Sender<()>,
-    health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+    health: Arc<DashMap<HealthEndpoint, HealthState>>,
     static_responses: BTreeMap<StaticResponseName, StaticResponse>,
 }
 
@@ -456,7 +457,7 @@ impl Mapping {
     pub fn new(
         config_response: ConfigsResponse,
         handlers_processor: HandlersProcessor,
-        health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+        health: Arc<DashMap<HealthEndpoint, HealthState>>,
         static_responses: BTreeMap<StaticResponseName, StaticResponse>,
         rate_limiters: RateLimiters,
         client_tunnels: ClientTunnels,
@@ -496,12 +497,11 @@ impl Mapping {
                 shadow_clone!(health);
 
                 {
-                    let mut locked = health.lock();
                     for config in &config_response.configs {
                         for instance_id in &config.instance_ids {
                             for (upstream, upstream_definition) in &config.config.upstreams {
                                 if !upstream_definition.health.is_empty() {
-                                    locked.insert(
+                                    health.insert(
                                         HealthEndpoint {
                                             instance_id: *instance_id,
                                             upstream: upstream.clone(),
@@ -586,7 +586,6 @@ impl Mapping {
                                                 match r {
                                                     Ok(Ok(resp)) if resp.status().is_success() => {
                                                         health
-                                                            .lock()
                                                             .insert(
                                                                 HealthEndpoint {
                                                                     instance_id: *instance_id,
@@ -607,7 +606,6 @@ impl Mapping {
                                                             upstream
                                                         );
                                                         health
-                                                            .lock()
                                                             .insert(
                                                                 HealthEndpoint {
                                                                     instance_id: *instance_id,
@@ -625,7 +623,6 @@ impl Mapping {
                                                             e, instance_id, upstream
                                                         );
                                                         health
-                                                            .lock()
                                                             .insert(
                                                                 HealthEndpoint {
                                                                     instance_id: *instance_id,
@@ -643,7 +640,6 @@ impl Mapping {
                                                             instance_id, upstream
                                                         );
                                                         health
-                                                            .lock()
                                                             .insert(
                                                                 HealthEndpoint {
                                                                     instance_id: *instance_id,
@@ -725,7 +721,7 @@ pub struct MappingAction {
     pub handler: ClientHandler,
     pub jwt_ecdsa: JwtEcdsa,
     pub external_base_url: Url,
-    pub health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+    pub health: Arc<DashMap<HealthEndpoint, HealthState>>,
     pub static_responses: BTreeMap<StaticResponseName, StaticResponse>,
 }
 

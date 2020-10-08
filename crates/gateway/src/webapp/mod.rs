@@ -7,6 +7,7 @@ use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::registry::Configs;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use exogress_config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
 use exogress_entities::{AccountName, ConfigName, InstanceId, MountPointName, ProjectName};
 use exogress_server_common::url_prefix::UrlPrefix;
@@ -25,7 +26,7 @@ use url::Url;
 #[derive(Clone)]
 pub struct Client {
     reqwest: reqwest::Client,
-    retrieve_configs: Arc<parking_lot::Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
+    retrieve_configs: Arc<DashMap<String, Arc<ManualResetEvent>>>,
     certificates: Arc<parking_lot::Mutex<LruCache<String, Option<CertificateResponse>>>>,
     configs: Configs,
     base_url: Url,
@@ -143,7 +144,7 @@ impl Client {
                 .trust_dns(true)
                 .build()
                 .unwrap(),
-            retrieve_configs: Arc::new(parking_lot::Mutex::new(Default::default())),
+            retrieve_configs: Arc::new(Default::default()),
             base_url,
             certificates: Arc::new(parking_lot::Mutex::new(
                 LruCache::with_expiry_duration_and_capacity(ttl, 1024),
@@ -221,7 +222,6 @@ impl Client {
         // take lock and deal with in_flight queries
         let in_flight_request = self
             .retrieve_configs
-            .lock()
             .entry(host.clone().into())
             .or_insert_with({
                 shadow_clone!(url_for_rewriting);
@@ -419,7 +419,7 @@ impl Client {
                                                     HandlersProcessor::new(handlers);
                                                 info!("handlers = {:#?}", handlers_processor);
 
-                                                let instances_health = Arc::new(Mutex::new(HashMap::new()));
+                                                let instances_health = Arc::new(Default::default());
 
                                                 let mapping = Mapping::new(
                                                     config_response.clone(),
@@ -487,9 +487,9 @@ impl Client {
         in_flight_request.wait().await;
 
         {
-            let locked = &mut *self.retrieve_configs.lock();
-
-            if let Entry::Occupied(entry) = locked.entry(host.into()) {
+            if let dashmap::mapref::entry::Entry::Occupied(entry) =
+                self.retrieve_configs.entry(host.into())
+            {
                 if Arc::ptr_eq(entry.get(), &in_flight_request) {
                     // we are now sure that it's the same request
                     entry.remove_entry();

@@ -801,10 +801,9 @@ pub async fn server(
                                     'instances: for instance_id in &ordered_instances {
                                         if let ConnectTarget::Upstream(upstream) = &connect_target {
                                             let endpoint = HealthEndpoint { instance_id: *instance_id, upstream: upstream.clone() };
-                                            let locked = mapping_action.health.lock();
-                                            let state = locked.get(&endpoint);
+                                            let state = mapping_action.health.get(&endpoint);
 
-                                            match state {
+                                            match state.as_deref() {
                                                 Some(&HealthState::NotYetKnown) => {
                                                     info!("Unknown health state. Try to proxy anyway {:?}", endpoint);
                                                 }
