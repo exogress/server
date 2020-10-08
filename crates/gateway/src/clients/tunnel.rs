@@ -90,7 +90,8 @@ pub async fn spawn(
                             tls_conn.read_exact(&mut payload).await?;
                             let tunnel_hello = bincode::deserialize::<TunnelHello>(&payload)?;
 
-                            // TODO: check instance_id!
+                            // TODO: check instance_id, access_key and access secret
+
                             info!("Accepted tunnel from instance {}", tunnel_hello.instance_id);
 
                             let resp = TunnelHelloResponse::Ok { tunnel_id };
