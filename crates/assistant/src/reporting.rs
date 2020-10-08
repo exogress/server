@@ -1,7 +1,6 @@
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use exogress_entities::Endpoint;
-use smartstring::alias::*;
 use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,5 +1,3 @@
-use smartstring::alias::String;
-
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LocationAndIsp {
     pub autonomous_system_number: Option<u32>,

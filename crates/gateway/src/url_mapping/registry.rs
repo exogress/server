@@ -5,12 +5,10 @@ use chrono::{DateTime, Utc};
 use lru_time_cache::LruCache;
 use parking_lot::Mutex;
 use patricia_tree::PatriciaMap;
-use smartstring::alias::*;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
 use crate::url_mapping::rate_limiter::RateLimiters;
-use exogress_entities::{AccountName, ConfigName, ProjectName};
 use exogress_server_common::url_prefix::UrlPrefix;
 
 struct Inner {

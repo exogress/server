@@ -4,13 +4,16 @@ use std::str::FromStr;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 
+use exogress_config_core::{
+    AuthProvider, ClientConfig, CommonResponse, Probe, RawResponse, ResponseBody, StaticResponse,
+    StatusCodeRange, TemplateEngine,
+};
+use exogress_entities::{
+    AccountName, ConfigId, ConfigName, InstanceId, ProjectName, StaticResponseName, Upstream,
+};
 use http::{StatusCode, Uri};
 use smallvec::SmallVec;
-use smartstring::alias::String;
 use url::Url;
-
-use exogress_config_core::{AuthProvider, ClientConfig, Config, Probe};
-use exogress_entities::{AccountName, ConfigId, ConfigName, InstanceId, ProjectName, Upstream};
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
@@ -22,10 +25,11 @@ use futures::channel::oneshot;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use hashbrown::HashMap;
-use lru_time_cache::LruCache;
 use parking_lot::Mutex;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::time::delay_for;
+use typed_headers::Accept;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TlsConfig {
@@ -210,7 +214,6 @@ impl Matched {
                 handlers_processor,
                 account_name,
                 project_name,
-                ..
             } => Ok(ClientHandler {
                 account_name: account_name.clone(),
                 handlers_processor: handlers_processor.clone(),
@@ -423,6 +426,7 @@ pub struct Mapping {
     rate_limiters: RateLimiters,
     healthcheck_stop_tx: oneshot::Sender<()>,
     health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+    static_responses: BTreeMap<StaticResponseName, StaticResponse>,
 }
 
 #[derive(Debug)]
@@ -453,6 +457,7 @@ impl Mapping {
         config_response: ConfigsResponse,
         handlers_processor: HandlersProcessor,
         health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+        static_responses: BTreeMap<StaticResponseName, StaticResponse>,
         rate_limiters: RateLimiters,
         client_tunnels: ClientTunnels,
         individual_hostname: String,
@@ -593,7 +598,7 @@ impl Mapping {
                                                             "healthcheck ok instance_id={}, upstream={}",
                                                             instance_id, upstream
                                                         )
-                                                    },
+                                                    }
                                                     Ok(Ok(resp)) => {
                                                         info!(
                                                             "healthcheck bad status {:?} instance_id={}, upstream={}",
@@ -610,10 +615,10 @@ impl Mapping {
                                                                 },
                                                                 HealthState::Unhealthy {
                                                                     probe: probe.clone(),
-                                                                    reason: UnhealthyReason::BadStatus(resp.status())
+                                                                    reason: UnhealthyReason::BadStatus(resp.status()),
                                                                 },
                                                             );
-                                                    },
+                                                    }
                                                     Ok(Err(e)) => {
                                                         info!(
                                                             "healthcheck error {:?} instance_id={}, upstream={}",
@@ -631,7 +636,7 @@ impl Mapping {
                                                                     reason: UnhealthyReason::Unreachable,
                                                                 },
                                                             );
-                                                    },
+                                                    }
                                                     Err(e) => {
                                                         error!(
                                                             "healthcheck timeout instance_id={}, upstream={}",
@@ -649,7 +654,7 @@ impl Mapping {
                                                                     reason: UnhealthyReason::Timeout,
                                                                 },
                                                             );
-                                                    },
+                                                    }
                                                 }
 
                                                 delay_for(probe.target.period).await;
@@ -688,6 +693,7 @@ impl Mapping {
             rate_limiters,
             healthcheck_stop_tx,
             health: health.clone(),
+            static_responses,
         };
 
         mapping
@@ -720,6 +726,13 @@ pub struct MappingAction {
     pub jwt_ecdsa: JwtEcdsa,
     pub external_base_url: Url,
     pub health: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+    pub static_responses: BTreeMap<StaticResponseName, StaticResponse>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderedResponse {
+    pub body: String,
+    pub content_type: mime::Mime,
 }
 
 impl MappingAction {
@@ -765,6 +778,7 @@ impl Mapping {
                     jwt_ecdsa: self.jwt_ecdsa.clone(),
                     external_base_url: base_url,
                     health: self.health.clone(),
+                    static_responses: self.static_responses.clone(),
                 },
                 self.rate_limiters.clone(),
             ))
@@ -774,6 +788,157 @@ impl Mapping {
                 url,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::config::static_response::StaticResponseExt;
+    use http::header::CONTENT_TYPE;
+    use http::Response;
+    use hyper::Body;
+    use typed_headers::{Quality, QualityItem};
+
+    #[tokio::test]
+    pub async fn test_client() {
+        let plain = StaticResponse::Raw(RawResponse {
+            status_code: http::StatusCode::OK,
+            body: vec![
+                ResponseBody {
+                    content_type: "text/html".to_string(),
+                    content: "<html><body><h1>plain resp</h1></body>/html>".to_string(),
+                    engine: None,
+                },
+                ResponseBody {
+                    content_type: "application/json".to_string(),
+                    content: "{\"status\": \"not-found\"}".to_string(),
+                    engine: None,
+                },
+            ],
+            common: CommonResponse {
+                ..Default::default()
+            },
+        });
+
+        let mut resp = Response::new(Body::empty());
+
+        plain
+            .try_respond(
+                &Accept(vec![QualityItem::new(
+                    "text/html".parse().unwrap(),
+                    Quality::from_u16(200),
+                )]),
+                &mut resp,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+            mime::TEXT_HTML.to_string().as_str()
+        );
+        assert!(
+            std::str::from_utf8(resp.into_body().next().await.unwrap().unwrap().as_ref())
+                .unwrap()
+                .contains("html")
+        );
+
+        let mut resp = Response::new(Body::empty());
+        plain
+            .try_respond(
+                &Accept(vec![
+                    QualityItem::new("text/html".parse().unwrap(), Quality::from_u16(200)),
+                    QualityItem::new("application/json".parse().unwrap(), Quality::from_u16(1000)),
+                ]),
+                &mut resp,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+            mime::APPLICATION_JSON.to_string().as_str()
+        );
+        assert!(
+            std::str::from_utf8(resp.into_body().next().await.unwrap().unwrap().as_ref())
+                .unwrap()
+                .contains("not-found")
+        );
+
+        let handlebars = StaticResponse::Raw(RawResponse {
+            status_code: http::StatusCode::OK,
+            body: vec![ResponseBody {
+                content_type: "text/html".to_string(),
+                content: "<html><body><h1>Generated at {{ this.time }}</h1></body>/html>"
+                    .to_string(),
+                engine: Some(TemplateEngine::Handlebars),
+            }],
+            common: CommonResponse {
+                ..Default::default()
+            },
+        });
+
+        let mut resp = Response::new(Body::empty());
+        plain
+            .try_respond(
+                &Accept(vec![QualityItem::new(
+                    "text/html".parse().unwrap(),
+                    Quality::from_u16(200),
+                )]),
+                &mut resp,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+            mime::TEXT_HTML.to_string().as_str()
+        );
+        assert!(
+            std::str::from_utf8(resp.into_body().next().await.unwrap().unwrap().as_ref())
+                .unwrap()
+                .contains("html")
+        );
+
+        let mut resp = Response::new(Body::empty());
+        plain
+            .try_respond(
+                &Accept(vec![QualityItem::new(
+                    "text/*".parse().unwrap(),
+                    Quality::from_u16(200),
+                )]),
+                &mut resp,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+            mime::TEXT_HTML.to_string().as_str()
+        );
+        assert!(
+            std::str::from_utf8(resp.into_body().next().await.unwrap().unwrap().as_ref())
+                .unwrap()
+                .contains("html")
+        );
+
+        let mut resp = Response::new(Body::empty());
+        plain
+            .try_respond(
+                &Accept(vec![QualityItem::new(
+                    "*/*".parse().unwrap(),
+                    Quality::from_u16(200),
+                )]),
+                &mut resp,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+            mime::TEXT_HTML.to_string().as_str()
+        );
+        assert!(
+            std::str::from_utf8(resp.into_body().next().await.unwrap().unwrap().as_ref())
+                .unwrap()
+                .contains("html")
+        );
     }
 }
 

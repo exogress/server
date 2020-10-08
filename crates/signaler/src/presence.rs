@@ -4,7 +4,6 @@ use exogress_entities::{AccountName, InstanceId, ProjectName};
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use smartstring::alias::String;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Nothing {}

@@ -1,20 +1,13 @@
 use crate::http_serve::handle::StreamingError;
+use crate::mime_helpers::ordered_by_quality;
 use bytes::{Buf, Bytes};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use hashbrown::HashSet;
-use http::header::ACCEPT_ENCODING;
-use itertools::Itertools;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::io;
-use std::pin::Pin;
 use tokio::stream::Stream;
-use tokio_either::Either;
-use typed_headers::{
-    AcceptEncoding, ContentCoding, ContentEncoding, ContentLength, ContentType, HeaderMapExt,
-    Quality,
-};
-use warp::Filter;
+use typed_headers::{AcceptEncoding, ContentCoding, ContentType};
 
 lazy_static! {
     pub static ref COMPRESSABLE_MIME_TYPES: HashSet<&'static str> = vec![
@@ -93,11 +86,8 @@ pub fn maybe_compress_body(
     } else if !COMPRESSABLE_MIME_TYPES.contains(content_type.unwrap().essence_str()) {
         None
     } else if let Some(accept_encoding) = maybe_accept_encoding {
-        accept_encoding
-            .iter()
-            .filter(|a| &a.quality > &Quality::from_u16(0))
-            .sorted_by(|&a, &b| a.quality.cmp(&b.quality).reverse())
-            .filter_map(|a| SupportedContentEncoding::try_from(&a.item).ok())
+        ordered_by_quality(&accept_encoding)
+            .filter_map(|a| SupportedContentEncoding::try_from(a).ok())
             .next()
     } else {
         None

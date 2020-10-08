@@ -4,15 +4,13 @@ use std::time::Duration;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
-use smartstring::alias::*;
 use tokio::time::timeout;
 
 use exogress_tunnel::Connector;
 
 use crate::clients::signaling::request_connection;
-use exogress_entities::{AccountName, ConfigId, ConfigName, InstanceId, ProjectName, TunnelId};
+use exogress_entities::{ConfigId, InstanceId, TunnelId};
 use futures::channel::oneshot;
-use oauth2::ClientId;
 use rand::prelude::*;
 use url::Url;
 

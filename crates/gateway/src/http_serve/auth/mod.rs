@@ -1,7 +1,6 @@
 use crate::url_mapping::mapping::{JwtEcdsa, Oauth2Provider};
 use exogress_entities::HandlerName;
 use exogress_server_common::assistant::{GetValue, SetValue};
-use exogress_server_common::url_prefix::UrlPrefix;
 use http::StatusCode;
 use oauth2::basic::BasicTokenResponse;
 use serde::de::DeserializeOwned;

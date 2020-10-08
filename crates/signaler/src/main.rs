@@ -14,7 +14,6 @@ use clap::{crate_version, App, Arg};
 use futures::FutureExt;
 use lazy_static::lazy_static;
 use redis::Client;
-use smartstring::alias::String;
 use stop_handle::stop_handle;
 
 use crate::termination::StopReason;

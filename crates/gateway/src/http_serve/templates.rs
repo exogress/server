@@ -4,7 +4,6 @@ use crate::url_mapping::mapping::JwtEcdsa;
 use cookie::Cookie;
 use exogress_config_core::{Auth, AuthProvider};
 use exogress_entities::HandlerName;
-use exogress_server_common::url_prefix::UrlPrefix;
 use handlebars::Handlebars;
 use http::header::{LOCATION, SET_COOKIE};
 use hyper::Body;
@@ -25,7 +24,7 @@ struct ProviderInfo {
 }
 
 fn render(url: &Url, requested_url: &Url, handler_name: &HandlerName, auth: &Auth) -> String {
-    let mut reg = Handlebars::new();
+    let mut handlebars = Handlebars::new();
 
     let mut url = url.clone();
 
@@ -46,7 +45,7 @@ fn render(url: &Url, requested_url: &Url, handler_name: &HandlerName, auth: &Aut
         .map(|provider| {
             let mut url = url.clone();
             url.query_pairs_mut()
-                .append_pair("provider", provider.provider.to_string().as_str())
+                .append_pair("provider", provider.name.to_string().as_str())
                 .append_pair("handler", handler_name.to_string().as_str());
 
             let link = url
@@ -56,13 +55,14 @@ fn render(url: &Url, requested_url: &Url, handler_name: &HandlerName, auth: &Aut
                 .to_string();
 
             ProviderInfo {
-                name: provider.provider.to_string(),
+                name: provider.name.to_string(),
                 link,
             }
         })
         .collect();
 
-    reg.render_template(LOGIN_TEMPLATE, &json!({ "providers": providers }))
+    handlebars
+        .render_template(LOGIN_TEMPLATE, &json!({ "providers": providers }))
         .unwrap()
 }
 

@@ -1,23 +1,25 @@
-use exogress_config_core::{Auth, ClientHandler as ClientHandlerConfig, ClientHandlerVariant};
-use exogress_entities::{ConfigName, HandlerName, InstanceId, Upstream};
+use exogress_config_core::{
+    Auth, ClientHandler as ClientHandlerConfig, ClientHandler, ClientHandlerVariant,
+    UrlPathSegmentOrQueryPart,
+};
+use exogress_entities::{ConfigName, HandlerName, InstanceId};
 use exogress_tunnel::ConnectTarget;
-use hashbrown::HashMap;
 use itertools::Itertools;
 use smallvec::SmallVec;
-use smartstring::alias::String;
 use std::path::Path;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Handler {
-    pub base_path_matcher: String,
+    pub base_path: Vec<UrlPathSegmentOrQueryPart>,
+    pub rewrite_base_path: Vec<UrlPathSegmentOrQueryPart>,
     pub name: HandlerName,
-    pub variant: ClientHandlerVariant,
+    pub config_handler: ClientHandler,
     pub client_config_data: Option<(ConfigName, SmallVec<[InstanceId; 4]>)>,
 }
 
 impl Handler {
     pub fn connect_target(&self, _path: impl AsRef<Path>) -> Option<ConnectTarget> {
-        match &self.variant {
+        match &self.config_handler.variant {
             ClientHandlerVariant::Proxy(proxy) => {
                 Some(ConnectTarget::Upstream(proxy.upstream.clone()))
             }
@@ -27,7 +29,7 @@ impl Handler {
     }
 
     pub fn auth(&self) -> Option<Auth> {
-        match &self.variant {
+        match &self.config_handler.variant {
             ClientHandlerVariant::Auth(auth) => Some(auth.clone()),
             _ => None,
         }
@@ -51,19 +53,12 @@ impl HandlersProcessor {
     ) -> HandlersProcessor {
         let inner = handlers
             .map(|(handler_name, handler_config, client_config_data)| {
-                let base_path = handler_config
-                    .base_path
-                    .clone()
-                    .into_iter()
-                    .map(|bp| bp.as_str().into())
-                    .collect::<Vec<String>>()
-                    .join("/")
-                    .into();
                 (
                     Handler {
-                        base_path_matcher: base_path,
+                        base_path: handler_config.base_path.clone(),
+                        rewrite_base_path: handler_config.replace_base_path.clone(),
                         name: handler_name.clone(),
-                        variant: handler_config.variant.clone().into(),
+                        config_handler: handler_config.clone(),
                         client_config_data,
                     },
                     handler_config.priority,

@@ -1,6 +1,5 @@
-use bytes::Buf;
 use core::mem;
-use futures::{pin_mut, Stream, StreamExt};
+use futures::StreamExt;
 use hyper::body::HttpBody;
 use hyper::Body;
 use std::pin::Pin;

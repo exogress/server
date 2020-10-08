@@ -2,15 +2,13 @@ use std::time::Duration;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
-use crate::url_mapping::mapping::{JwtEcdsa, Mapping, MappingAction, Protocol, UrlForRewriting};
-use crate::url_mapping::rate_limiter::{RateLimiter, RateLimiterKind, RateLimiters};
+use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::registry::Configs;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use exogress_config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
-use exogress_entities::{
-    AccountName, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
-};
+use exogress_entities::{AccountName, ConfigName, InstanceId, MountPointName, ProjectName};
 use exogress_server_common::url_prefix::UrlPrefix;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::hash_map::Entry;
@@ -21,7 +19,6 @@ use lru_time_cache::LruCache;
 use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
 use smallvec::SmallVec;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use url::Url;
 
@@ -279,11 +276,82 @@ impl Client {
                                                     config_response
                                                 );
 
+
                                                 let grouped = config_response
                                                     .configs
                                                     .iter()
                                                     .group_by(|elt| elt.config_name.clone());
 
+                                                let static_responses = grouped
+                                                    .into_iter()
+                                                    .map(|(config_name, config_entries)| {
+                                                        let config_entry = config_entries
+                                                            .into_iter()
+                                                            .sorted_by(|left, right| {
+                                                                left.revision
+                                                                    .cmp(&right.revision)
+                                                                    .reverse()
+                                                            })
+                                                            .next() // Take last revision only
+                                                            .expect("FIXME");
+
+                                                        let instances_ids =
+                                                            config_entry.instance_ids.clone();
+
+                                                        let prj_static_responses = config_response
+                                                            .project_config
+                                                            .mount_points
+                                                            .values()
+                                                            .next()
+                                                            .map(|mp| {
+                                                                mp
+                                                                    .static_responses
+                                                                    .iter()
+                                                                    .map({
+                                                                        move |(static_response_name, static_response_data)| {
+                                                                            (
+                                                                                static_response_name.clone(),
+                                                                                static_response_data.clone().into(),
+                                                                                // None,
+                                                                            )
+                                                                        }
+                                                                    })
+                                                            })
+                                                            .into_iter()
+                                                            .flatten();
+
+                                                        config_entry
+                                                            .config
+                                                            .mount_points
+                                                            .values()
+                                                            .next()
+                                                            .map(|mp| {
+                                                                mp.static_responses
+                                                                    .iter()
+                                                                    .map(move |(static_response_name, static_response_data)| {
+                                                                        (
+                                                                            static_response_name.clone(),
+                                                                            static_response_data.clone(),
+                                                                            // Some((
+                                                                            //     config_name.clone(),
+                                                                            //     instances_ids.clone(),
+                                                                            // )),
+                                                                        )
+                                                                    })
+                                                            })
+                                                            .into_iter()
+                                                            .flatten()
+                                                            .chain(prj_static_responses)
+                                                    })
+                                                    .flatten()
+                                                    .collect();
+
+                                                info!("static resps = {:#?}", static_responses);
+
+                                                let grouped = config_response
+                                                    .configs
+                                                    .iter()
+                                                    .group_by(|elt| elt.config_name.clone());
                                                 let handlers = grouped
                                                     .into_iter()
                                                     .map(|(config_name, config_entries)| {
@@ -347,9 +415,9 @@ impl Client {
                                                     })
                                                     .flatten();
 
-                                                // info!("handlers = {:#?}", handlers);
                                                 let handlers_processor =
                                                     HandlersProcessor::new(handlers);
+                                                info!("handlers = {:#?}", handlers_processor);
 
                                                 let instances_health = Arc::new(Mutex::new(HashMap::new()));
 
@@ -357,6 +425,7 @@ impl Client {
                                                     config_response.clone(),
                                                     handlers_processor,
                                                     instances_health,
+                                                    static_responses,
                                                 RateLimiters::new(vec![
                                                         // RateLimiter::new(
                                                         //     "free_plan".parse().unwrap(),

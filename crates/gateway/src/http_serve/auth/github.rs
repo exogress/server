@@ -6,7 +6,6 @@ use crate::http_serve::auth::{
 };
 use crate::url_mapping::mapping::{JwtEcdsa, Oauth2Provider};
 use exogress_entities::HandlerName;
-use exogress_server_common::url_prefix::UrlPrefix;
 use hashbrown::HashMap;
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;

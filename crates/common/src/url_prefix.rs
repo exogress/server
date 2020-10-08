@@ -3,7 +3,6 @@ use url::Url;
 
 use serde::de::Visitor;
 use serde::{de, Deserialize, Deserializer};
-use smartstring::alias::*;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, PartialOrd, Ord)]

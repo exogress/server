@@ -10,8 +10,6 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 use url::Url;
 
-use smartstring::alias::*;
-
 use crate::clients::ClientTunnels;
 use crate::url_mapping;
 use crate::url_mapping::mapping::{

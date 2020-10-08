@@ -17,7 +17,7 @@ use exogress_tunnel::{server_connection, server_framed, TunnelHello, TunnelHello
 use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
-use exogress_entities::{AccountName, ConfigId, ProjectName, TunnelId};
+use exogress_entities::{ConfigId, TunnelId};
 use futures::channel::oneshot;
 use std::convert::TryInto;
 

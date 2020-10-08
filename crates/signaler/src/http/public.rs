@@ -23,7 +23,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(15);
 struct ChannelConnectParams {
     project: ProjectName,
     account: AccountName,
-    labels: smartstring::alias::String,
+    labels: String,
 }
 
 pub async fn server(

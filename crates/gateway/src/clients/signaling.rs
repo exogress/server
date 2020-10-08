@@ -1,7 +1,6 @@
 use crate::clients::tunnel::MAX_ALLOWED_TUNNELS;
-use exogress_entities::{AccountName, ConfigId, ConfigName, ProjectName};
+use exogress_entities::ConfigId;
 use exogress_signaling::TunnelRequest;
-use smartstring::alias::*;
 use std::time::Duration;
 use url::Url;
 

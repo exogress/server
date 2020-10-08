@@ -5,11 +5,15 @@ extern crate shadow_clone;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
+extern crate serde_json;
+#[macro_use]
 extern crate tracing;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
 extern crate prometheus;
+#[macro_use]
+extern crate maplit;
 
 use std::fs;
 use std::net::SocketAddr;
@@ -46,8 +50,10 @@ use trust_dns_resolver::TokioAsyncResolver;
 mod clients;
 mod dbip;
 // mod environments;
+mod config;
 mod http_serve;
 mod int_server;
+mod mime_helpers;
 mod statistics;
 mod stop_reasons;
 mod url_mapping;
