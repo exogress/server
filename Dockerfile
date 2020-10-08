@@ -1,4 +1,4 @@
-FROM rust:1.46 as builder
+FROM rust:1.47 as builder
 
 RUN rustup component add clippy rustfmt
 RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
