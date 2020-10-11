@@ -155,7 +155,7 @@ mod test {
         let mut buf = vec![0u8; 32768];
         let mut io = Cursor::new(&mut buf);
 
-        let counters = Counters::new();
+        let counters = Counters::new("account".parse().unwrap());
 
         let mut counted_stream = TrafficCountedStream::new(io, counters.clone());
         let mut result = Vec::new();

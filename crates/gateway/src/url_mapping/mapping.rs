@@ -785,10 +785,11 @@ impl Mapping {
 mod test {
     use super::*;
     use crate::config::static_response::StaticResponseExt;
+    use exogress_config_core::{CommonResponse, RawResponse, ResponseBody, TemplateEngine};
     use http::header::CONTENT_TYPE;
     use http::Response;
     use hyper::Body;
-    use typed_headers::{Quality, QualityItem};
+    use typed_headers::{Accept, Quality, QualityItem};
 
     #[tokio::test]
     pub async fn test_client() {
