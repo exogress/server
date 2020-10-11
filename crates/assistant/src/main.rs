@@ -7,6 +7,7 @@ extern crate tracing;
 #[macro_use]
 extern crate serde;
 
+use crate::clickhouse::Clickhouse;
 use crate::http::GatewayCommonTlsConfig;
 use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
@@ -20,6 +21,7 @@ use tokio::runtime::Builder;
 
 mod http;
 // pub mod reporting;
+mod clickhouse;
 mod termination;
 
 fn main() {
@@ -55,6 +57,15 @@ fn main() {
                 .default_value("0.0.0.0:3214")
                 .required(true)
                 .help("Set websocket listen address")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("clickhouse_url")
+                .long("clickhouse-url")
+                .value_name("URL")
+                .default_value("tcp://127.0.0.1:9000/exogress_counters")
+                .required(true)
+                .help("Set clickhouse URL")
                 .takes_value(true),
         )
         .arg(
@@ -97,6 +108,11 @@ fn main() {
     exogress_common_utils::clap::log::handle(&matches, "assistant");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
 
+    let clickhouse_url = matches
+        .value_of("clickhouse_url")
+        .expect("no --clickhouse-url provided")
+        .to_string();
+
     let gw_tls_key_path: String = matches
         .value_of("gw_tls_key_path")
         .expect("no --gw-tls-key-path provided")
@@ -136,6 +152,9 @@ fn main() {
             tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
             let redis_client = Client::open(redis_addr.as_str()).unwrap();
+            let clickhouse_client = Clickhouse::new(&clickhouse_url)
+                .await
+                .expect("clickhouse init error");
 
             info!("Listening  HTTP on {}", listen_http_addr);
 
@@ -147,6 +166,7 @@ fn main() {
                     tls_key_path: gw_tls_key_path.parse().unwrap(),
                 },
                 redis_client,
+                clickhouse_client,
                 app_stop_wait,
             )
             .await;

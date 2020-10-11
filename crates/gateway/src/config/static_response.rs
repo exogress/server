@@ -64,7 +64,7 @@ impl StaticResponseExt for StaticResponse {
                                         resp_candidate,
                                     ))
                                 })
-                                .find(|(content_type, resp_candidate)| {
+                                .find(|(content_type, _resp_candidate)| {
                                     is_mime_match(mime_pattern, &content_type)
                                 })
                         })

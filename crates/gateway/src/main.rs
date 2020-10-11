@@ -32,18 +32,20 @@ use stop_handle::stop_handle;
 use tempfile::NamedTempFile;
 use url::Url;
 
-use crate::clients::{spawn_tunnel, ClientTunnels};
-// use crate::http_serve::auth::github::GithubOauth2Client;
-// use crate::http_serve::auth::google::GoogleOauth2Client;
+use crate::clients::{tunnels_acceptor, ClientTunnels};
 
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::stop_reasons::StopReason;
-use crate::url_mapping::notification_listener::AssistantConsumer;
+use crate::url_mapping::notification_listener::AssistantClient;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
+use exogress_server_common::assistant::{StatisticsReport, TrafficRecord};
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use tokio::runtime::{Builder, Handle};
+use tokio::time::delay_for;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -167,6 +169,14 @@ fn main() {
                 .long("individual-hostname")
                 .value_name("HOSTNAME")
                 .help("Own hostname to use for client tunnel connections")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("location")
+                .long("location")
+                .value_name("STRING")
+                .help("Gateway location")
                 .required(true)
                 .takes_value(true),
         )
@@ -491,17 +501,62 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(int_api_base_url);
 
-        tokio::spawn(spawn_tunnel(
+        let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
+
+        tokio::spawn(tunnels_acceptor(
             listen_tunnel_addr,
             individual_tls_cert_path.into(),
             individual_tls_key_path.into(),
             client_tunnels.clone(),
+            tunnel_counters_tx,
         ));
+
+        let (mut statistics_tx, statistics_rx) = mpsc::channel(16);
 
         let individual_hostname = matches
             .value_of("individual_hostname")
             .expect("Please provide --individual-hostname")
             .to_string();
+
+        let gw_location = matches
+            .value_of("location")
+            .expect("Please provide --location")
+            .to_string();
+
+        let dump_statistics = {
+            shadow_clone!(individual_hostname);
+
+            const CHUNK: usize = 2048;
+            let mut ready_chunks = tunnel_counters_rx.ready_chunks(CHUNK);
+            async move {
+                while let Some(ready_chunks) = ready_chunks.next().await {
+                    let should_wait = ready_chunks.len() != CHUNK;
+
+                    let batch = StatisticsReport::Traffic {
+                        records: ready_chunks
+                            .into_iter()
+                            .map(|statistics| TrafficRecord {
+                                account_name: statistics.account_name,
+                                tunnel_bytes_gw_tx: statistics.bytes_written,
+                                tunnel_bytes_gw_rx: statistics.bytes_read,
+                                from: statistics.from,
+                                to: statistics.to,
+                            })
+                            .collect(),
+                    };
+
+                    statistics_tx.send(batch).await?;
+
+                    if should_wait {
+                        delay_for(Duration::from_secs(20)).await;
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(())
+            }
+        };
+
+        tokio::spawn(dump_statistics);
 
         let api_client = Client::new(cache_ttl, webapp_base_url);
 
@@ -515,12 +570,14 @@ fn main() {
 
         let tls_gw_common = Arc::new(RwLock::new(None));
 
-        let consumer = AssistantConsumer::new(
+        let consumer = AssistantClient::new(
             assistant_base_url.clone(),
             &individual_hostname,
+            &gw_location,
             &api_client.mappings(),
             &client_tunnels,
             tls_gw_common.clone(),
+            statistics_rx,
             &api_client,
             resolver.clone(),
             &app_stop_handle,

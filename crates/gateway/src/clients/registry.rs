@@ -156,7 +156,7 @@ impl ClientTunnels {
                             tunnels
                                 .iter()
                                 .choose(rng)
-                                .map(|(tunnel_id, (tunnel, _))| tunnel.clone())
+                                .map(|(_tunnel_id, (tunnel, _))| tunnel.clone())
                         });
                     }
                 }

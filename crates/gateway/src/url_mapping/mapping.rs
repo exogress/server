@@ -4,10 +4,7 @@ use std::str::FromStr;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 
-use exogress_config_core::{
-    AuthProvider, ClientConfig, CommonResponse, Probe, RawResponse, ResponseBody, StaticResponse,
-    StatusCodeRange, TemplateEngine,
-};
+use exogress_config_core::{AuthProvider, ClientConfig, Probe, StaticResponse};
 use exogress_entities::{
     AccountName, ConfigId, ConfigName, InstanceId, ProjectName, StaticResponseName, Upstream,
 };
@@ -25,12 +22,9 @@ use exogress_tunnel::ConnectTarget;
 use futures::channel::oneshot;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use hashbrown::HashMap;
-use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::time::delay_for;
-use typed_headers::Accept;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TlsConfig {

@@ -1,8 +1,11 @@
+use crate::clickhouse::Clickhouse;
 use crate::termination::StopReason;
 use exogress_server_common::assistant::{
-    GatewayConfigMessage, GetValue, Notification, SetValue, WsMessage,
+    GatewayConfigMessage, GetValue, Notification, SetValue, StatisticsReport, WsFromGwMessage,
+    WsToGwMessage,
 };
 use futures::{FutureExt, SinkExt, StreamExt};
+use hashbrown::HashMap;
 use redis::AsyncCommands;
 use std::convert::TryInto;
 use std::io;
@@ -50,127 +53,172 @@ pub async fn server(
     listen_addr: SocketAddr,
     common_gw_tls_config: GatewayCommonTlsConfig,
     redis: redis::Client,
+    clickhouse_client: Clickhouse,
     stop_wait: StopWait<StopReason>,
 ) {
     info!("Will spawn HTTP server on {}", listen_addr);
 
     let notifications = warp::path!("api" / "v1" / "gateways" / String / "notifications")
+        .and(warp::filters::query::query::<HashMap<String, String>>())
         .and(warp::filters::ws::ws())
         .map({
             shadow_clone!(redis);
+            shadow_clone!(clickhouse_client);
 
-            move |gw_hostname: String, ws: warp::ws::Ws| {
+            move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
                 shadow_clone!(mut redis);
                 shadow_clone!(common_gw_tls_config);
+                shadow_clone!(clickhouse_client);
 
-                ws.on_upgrade(move |mut websocket| {
-                    async move {
-                        let r: Result<(), anyhow::Error> = async move {
-                            let outgoing_msg = serde_json::to_string(&WsMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
+                let gw_location = query.get("location").unwrap().clone();
 
-                            websocket.send(warp::filters::ws::Message::text(outgoing_msg)).await?;
+                ws.on_upgrade(move |websocket| {
+                    {
+                        shadow_clone!(gw_hostname);
 
-                            match redis.get_async_connection().await {
-                                Ok(conn) => {
-                                    let mut pubsub = conn.into_pubsub();
+                        async move {
+                            let (mut ws_tx, mut ws_rx) = websocket.split();
 
-                                    match pubsub.subscribe("invalidations").await {
-                                        Ok(_) => {
-                                            info!("subscribed to invalidations");
-                                            let mut messages = pubsub.into_on_message();
+                            let statistics_saver = {
+                                shadow_clone!(gw_hostname);
 
-                                            let (mut to_ws_tx, mut to_ws_rx) = mpsc::channel(16);
+                                async move {
+                                    shadow_clone!(gw_hostname);
 
-                                            let forward_channel_to_ws = async {
-                                                while let Some(msg) = to_ws_rx.next().await {
-                                                    websocket.send(msg).await?;
+                                    while let Some(Ok(msg)) = ws_rx.next().await {
+                                        shadow_clone!(gw_hostname);
+
+                                        if msg.is_text() {
+                                            let msg = serde_json::from_str::<WsFromGwMessage>(msg.to_str().unwrap()).expect("FIXME");
+                                            info!("received statistics notification: {:?}", msg);
+                                            match msg {
+                                                WsFromGwMessage::Statistics { report: StatisticsReport::Traffic { records } } => {
+                                                    clickhouse_client.register_traffic_report(records, &gw_hostname, &gw_location).await?;
                                                 }
+                                                _ => {},
+                                            }
+                                        }
+                                    }
 
-                                                Ok::<_, anyhow::Error>(())
-                                            };
+                                    Ok::<_, anyhow::Error>(())
+                                }
+                            };
 
-                                            let forward_from_redis = {
-                                                shadow_clone!(mut to_ws_tx);
+                            let notifier = async move {
+                                let outgoing_msg = serde_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
 
-                                                async move {
-                                                    while let Some(msg) = messages.next().await {
-                                                        match msg.get_payload::<String>() {
-                                                            Ok(p) => {
-                                                                info!("redis -> assistant: {:?}", p);
-                                                                match serde_json::from_str::<Notification>(&p) {
-                                                                    Ok(notification) => {
-                                                                        let outgoing_msg = serde_json::to_string(&WsMessage::WebAppNotification(notification))
-                                                                            .expect("could not serialize");
-                                                                        if let Err(e) = to_ws_tx
-                                                                            .send(warp::filters::ws::Message::text(
-                                                                                outgoing_msg,
-                                                                            ))
-                                                                            .await
-                                                                        {
-                                                                            error!(
-                                                                                "error sending to websocket: {}",
-                                                                                e
-                                                                            );
+                                ws_tx.send(warp::filters::ws::Message::text(outgoing_msg)).await?;
+
+                                match redis.get_async_connection().await {
+                                    Ok(conn) => {
+                                        let mut pubsub = conn.into_pubsub();
+
+                                        match pubsub.subscribe("invalidations").await {
+                                            Ok(_) => {
+                                                info!("subscribed to invalidations");
+                                                let mut messages = pubsub.into_on_message();
+
+                                                let (mut to_ws_tx, mut to_ws_rx) = mpsc::channel(16);
+
+                                                let forward_channel_to_ws = async {
+                                                    while let Some(msg) = to_ws_rx.next().await {
+                                                        ws_tx.send(msg).await?;
+                                                    }
+
+                                                    Ok::<_, anyhow::Error>(())
+                                                };
+
+                                                let forward_from_redis = {
+                                                    shadow_clone!(mut to_ws_tx);
+
+                                                    async move {
+                                                        while let Some(msg) = messages.next().await {
+                                                            match msg.get_payload::<String>() {
+                                                                Ok(p) => {
+                                                                    info!("redis -> assistant: {:?}", p);
+                                                                    match serde_json::from_str::<Notification>(&p) {
+                                                                        Ok(notification) => {
+                                                                            let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
+                                                                                .expect("could not serialize");
+                                                                            if let Err(e) = to_ws_tx
+                                                                                .send(warp::filters::ws::Message::text(
+                                                                                    outgoing_msg,
+                                                                                ))
+                                                                                .await
+                                                                            {
+                                                                                error!(
+                                                                                    "error sending to websocket: {}",
+                                                                                    e
+                                                                                );
+                                                                                return;
+                                                                            }
+                                                                        }
+                                                                        Err(e) => {
+                                                                            error!("notification format error: {}", e);
                                                                             return;
                                                                         }
                                                                     }
-                                                                    Err(e) => {
-                                                                        error!("notification format error: {}", e);
-                                                                        return;
-                                                                    }
                                                                 }
-                                                            }
-                                                            Err(e) => {
-                                                                error!(
-                                                                    "error getting redis payload: {}",
-                                                                    e
-                                                                );
-                                                                break;
+                                                                Err(e) => {
+                                                                    error!(
+                                                                        "error getting redis payload: {}",
+                                                                        e
+                                                                    );
+                                                                    break;
+                                                                }
                                                             }
                                                         }
                                                     }
-                                                }
-                                            };
+                                                };
 
-                                            #[allow(unreachable_code)]
-                                                let periodically_send_ping = async move {
-                                                loop {
-                                                    delay_for(Duration::from_secs(15)).await;
+                                                #[allow(unreachable_code)]
+                                                    let periodically_send_ping = async move {
+                                                    loop {
+                                                        delay_for(Duration::from_secs(15)).await;
 
-                                                    to_ws_tx
-                                                        .send(warp::filters::ws::Message::ping(""))
-                                                        .await?;
-                                                }
+                                                        to_ws_tx
+                                                            .send(warp::filters::ws::Message::ping(""))
+                                                            .await?;
+                                                    }
 
-                                                Ok::<_, anyhow::Error>(())
-                                            };
+                                                    Ok::<_, anyhow::Error>(())
+                                                };
 
-                                            tokio::select! {
-                                        _ = forward_channel_to_ws => {},
-                                        _ = forward_from_redis => {},
-                                        _ = periodically_send_ping => {},
+                                                tokio::select! {
+                                            _ = forward_channel_to_ws => {},
+                                            _ = forward_from_redis => {},
+                                            _ = periodically_send_ping => {},
+                                        }
+                                            }
+                                            Err(e) => {
+                                                error!("couldn't subscribe to invalidations: {}", e)
+                                            }
+                                        }
                                     }
-                                        }
-                                        Err(e) => {
-                                            error!("couldn't subscribe to invalidations: {}", e)
-                                        }
+                                    Err(e) => {
+                                        error!("redis server connection  error: {}", e);
                                     }
                                 }
-                                Err(e) => {
-                                    error!("redis server connection  error: {}", e);
-                                }
+
+                                let _ = ws_tx.send(warp::filters::ws::Message::close()).await;
+
+                                Ok::<_, anyhow::Error>(())
+                            };
+
+                            tokio::select! {
+                                r = notifier => {
+                                    if let Err(e) = r {
+                                        warn!("Error on WS connection: {}", e);
+                                    }
+                                },
+                                r = statistics_saver => {
+                                    if let Err(e) = r {
+                                        warn!("Error on WS statistics_saver: {}", e);
+                                    }
+                                },
                             }
-
-                            let _ = websocket.send(warp::filters::ws::Message::close()).await;
-
-                            Ok(())
-                        }.await;
-
-                        if let Err(e) = r {
-                            warn!("Error on WS connection: {}", e);
                         }
-                    }
-                        .instrument(tracing::info_span!("gw", host = gw_hostname.as_str()))
+                    }.instrument(tracing::info_span!("gw", host = gw_hostname.as_str()))
                 })
             }
         });

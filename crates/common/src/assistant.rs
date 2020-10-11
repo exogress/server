@@ -1,6 +1,6 @@
 use crate::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
-use exogress_entities::ConfigId;
+use exogress_entities::{AccountName, ConfigId};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 
@@ -41,10 +41,37 @@ pub struct Notification {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum WsMessage {
+pub enum WsToGwMessage {
     #[serde(rename = "webapp_notification")]
     WebAppNotification(Notification),
 
     #[serde(rename = "gw_config")]
     GwConfig(GatewayConfigMessage),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+#[non_exhaustive]
+pub enum WsFromGwMessage {
+    #[serde(rename = "statistics")]
+    Statistics { report: StatisticsReport },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficRecord {
+    pub account_name: AccountName,
+    pub tunnel_bytes_gw_tx: u64,
+    pub tunnel_bytes_gw_rx: u64,
+    #[serde(with = "ts_milliseconds")]
+    pub from: DateTime<Utc>,
+    #[serde(with = "ts_milliseconds")]
+    pub to: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+#[non_exhaustive]
+pub enum StatisticsReport {
+    #[serde(rename = "traffic")]
+    Traffic { records: Vec<TrafficRecord> },
 }

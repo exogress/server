@@ -32,6 +32,7 @@ stop-handle = "0.1"
 lazy_static = "1.4.0"
 sha2 = "0.8.1"
 tokio-tungstenite = { version = "0.11", features = ["stream"] }
+tungstenite = "0.11.1"
 trust-dns-resolver = "0.19.5"
 httparse = "1.3.4"
 tokio-util = { version = "0.3.1", features = ["compat"] }

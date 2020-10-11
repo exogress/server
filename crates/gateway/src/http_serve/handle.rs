@@ -45,7 +45,6 @@ use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::webapp::Client;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
-use core::mem;
 use exogress_config_core::{AclEntry, Action, Auth, AuthProvider, ClientHandlerVariant};
 use exogress_entities::{ConfigId, ExceptionName, HandlerName, RateLimiterName};
 use exogress_server_common::assistant::GatewayConfigMessage;
@@ -234,7 +233,7 @@ pub async fn server(
                     let oauth2_result = match provider.as_str() {
                         "google" => google_oauth2_client.process_callback(params).await,
                         "github" => github_oauth2_client.process_callback(params).await,
-                        _ => todo!("unsupported provider"),
+                        _ => panic!("unsupported provider"),
                     };
 
                     let mut resp = Response::new("");
@@ -256,9 +255,6 @@ pub async fn server(
                             )
                             .await
                             .expect("FIXME");
-
-                            let handler_name =
-                                callback_result.oauth2_flow_data.handler_name.clone();
 
                             let mut redirect_to = callback_result.oauth2_flow_data.base_url.clone();
 
@@ -619,7 +615,7 @@ pub async fn server(
                                 .zip(&mut requested_segments)
                                 .take_while(|(a,b)| &a.as_ref() == b)
                                 .count();
-                            info!("matched_segments_count = {}", matched_segments_count);
+                            info!("matched_segments_count = {} <=> {}", matched_segments_count, handler.base_path.len());
                             if matched_segments_count == handler.base_path.len() {
                                 info!("BANG: segments matched");
                                 {
