@@ -722,5 +722,7 @@ fn main() {
     })
     .expect("error running server");
 
+    rt.shutdown_timeout(Duration::from_secs(5));
+
     info!("Web server stopped");
 }
