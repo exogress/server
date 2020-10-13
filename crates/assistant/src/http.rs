@@ -1,8 +1,9 @@
 use crate::clickhouse::Clickhouse;
 use crate::termination::StopReason;
+use crate::webapp::UpstreamReportWithGwInfo;
 use exogress_server_common::assistant::{
-    GatewayConfigMessage, GetValue, Notification, SetValue, StatisticsReport, WsFromGwMessage,
-    WsToGwMessage,
+    GatewayConfigMessage, GetValue, HealthReport, Notification, SetValue, StatisticsReport,
+    WsFromGwMessage, WsToGwMessage,
 };
 use futures::{FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
@@ -53,6 +54,7 @@ pub async fn server(
     listen_addr: SocketAddr,
     common_gw_tls_config: GatewayCommonTlsConfig,
     redis: redis::Client,
+    webapp_client: crate::webapp::Client,
     clickhouse_client: Clickhouse,
     stop_wait: StopWait<StopReason>,
 ) {
@@ -64,11 +66,13 @@ pub async fn server(
         .map({
             shadow_clone!(redis);
             shadow_clone!(clickhouse_client);
+            shadow_clone!(webapp_client);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
                 shadow_clone!(mut redis);
                 shadow_clone!(common_gw_tls_config);
                 shadow_clone!(clickhouse_client);
+                shadow_clone!(webapp_client);
 
                 let gw_location = query.get("location").unwrap().clone();
 
@@ -89,11 +93,32 @@ pub async fn server(
                                         shadow_clone!(gw_hostname);
 
                                         if msg.is_text() {
-                                            let msg = serde_json::from_str::<WsFromGwMessage>(msg.to_str().unwrap()).expect("FIXME");
-                                            info!("received statistics notification: {:?}", msg);
+                                            let txt = msg.to_str().unwrap();
+                                            let msg = serde_json::from_str::<WsFromGwMessage>(txt).expect("FIXME");
+                                            info!("received GW: {:?}", msg);
                                             match msg {
                                                 WsFromGwMessage::Statistics { report: StatisticsReport::Traffic { records } } => {
                                                     clickhouse_client.register_traffic_report(records, &gw_hostname, &gw_location).await?;
+                                                }
+                                                WsFromGwMessage::Statistics { report: StatisticsReport::Rules { records } } => {
+                                                    clickhouse_client.register_rules_processed(records, &gw_hostname, &gw_location).await?;
+                                                }
+                                                WsFromGwMessage::Health { report: HealthReport::UpstreamsHealth { records } } => {
+                                                    info!("records = {:?}", records);
+                                                    let full_recs = records
+                                                        .into_iter()
+                                                        .map(|r| {
+                                                            UpstreamReportWithGwInfo {
+                                                                gw_hostname: gw_hostname.clone(),
+                                                                gw_location: gw_location.clone(),
+                                                                inner: r
+                                                            }
+                                                        })
+                                                        .collect();
+                                                    webapp_client
+                                                        .report_health(full_recs)
+                                                        .await
+                                                        .expect("FIXME");
                                                 }
                                                 _ => {},
                                             }

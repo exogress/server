@@ -1,0 +1,70 @@
+use chrono::{DateTime, Utc};
+use exogress_entities::AccountName;
+use hashbrown::HashMap;
+use parking_lot::RwLock;
+use std::mem;
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct Counter {
+    pub rules_processed: u64,
+    pub from: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AccountRulesCounters {
+    inner: Arc<RwLock<HashMap<AccountName, Counter>>>,
+}
+
+#[derive(Debug)]
+pub struct RecordedRulesStatistics {
+    pub account_name: AccountName,
+    pub rules_processed: u64,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+}
+
+impl AccountRulesCounters {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&self, account: &AccountName) {
+        self.inner
+            .write()
+            .entry(account.clone())
+            .or_insert_with(|| Counter {
+                rules_processed: 0,
+                from: Utc::now(),
+            })
+            .rules_processed += 1;
+    }
+
+    pub fn flush(&self) -> Option<Vec<RecordedRulesStatistics>> {
+        let len = self.inner.read().len();
+        if len == 0 {
+            return None;
+        }
+        let mut result = Vec::with_capacity(len);
+        let old = mem::replace(&mut *self.inner.write(), Default::default());
+
+        for (account_name, counter) in old.into_iter() {
+            result.push(RecordedRulesStatistics {
+                account_name,
+                rules_processed: counter.rules_processed,
+                from: counter.from,
+                to: Utc::now(),
+            });
+        }
+
+        Some(result)
+    }
+}
+
+impl Default for AccountRulesCounters {
+    fn default() -> Self {
+        AccountRulesCounters {
+            inner: Arc::new(Default::default()),
+        }
+    }
+}

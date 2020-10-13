@@ -6,7 +6,7 @@ use crate::url_mapping::registry::Configs;
 use crate::webapp;
 use exogress_common_utils::ws_client::{connect_ws, Error};
 use exogress_server_common::assistant::{
-    Action, GatewayConfigMessage, StatisticsReport, WsFromGwMessage, WsToGwMessage,
+    Action, GatewayConfigMessage, WsFromGwMessage, WsToGwMessage,
 };
 use futures::channel::mpsc;
 use parking_lot::RwLock;
@@ -27,7 +27,7 @@ pub struct AssistantClient {
     webapp_client: webapp::Client,
     mappings: Configs,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
-    statistics_rx: mpsc::Receiver<StatisticsReport>,
+    statistics_rx: mpsc::Receiver<WsFromGwMessage>,
 }
 
 impl AssistantClient {
@@ -38,7 +38,7 @@ impl AssistantClient {
         mappings: &Configs,
         client_tunnels: &ClientTunnels,
         tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
-        statistics_rx: mpsc::Receiver<StatisticsReport>,
+        statistics_rx: mpsc::Receiver<WsFromGwMessage>,
         webapp_client: &webapp::Client,
         resolver: TokioAsyncResolver,
         app_stop_handle: &AppStopHandle,
@@ -94,7 +94,6 @@ impl AssistantClient {
 
             async move {
                 while let Some(msg) = ws_rx.next().await {
-                    info!("Got message {:?}", msg);
                     match msg {
                         Err(e) => {
                             warn!("Error while receiving from Notifier: {}", e);
@@ -119,7 +118,8 @@ impl AssistantClient {
                                                             .remove_by_notification_if_time_applicable(
                                                                 &domain_only,
                                                                 notification.generated_at,
-                                                            );
+                                                            )
+                                                            .await;
 
                                                         let host = url_prefix.host().to_string();
 
@@ -164,10 +164,9 @@ impl AssistantClient {
                     "received statistics report. will send to assistant WS: {:?}",
                     report
                 );
-                let msg = WsFromGwMessage::Statistics { report };
-                let report = serde_json::to_string(&msg).unwrap();
+                let report = serde_json::to_string(&report).unwrap();
                 if let Err(e) = ws_tx.send(tungstenite::Message::Text(report)).await {
-                    error!("send statistics error");
+                    error!("send statistics error: {:?}", e);
                     stop_handle.stop(StopReason::NotificationChannelError);
                 }
             }

@@ -42,16 +42,16 @@ pub struct HandlersProcessor {
 }
 
 impl HandlersProcessor {
-    pub fn new<'a>(
-        handlers: impl Iterator<
-            Item = (
-                HandlerName,
-                ClientHandlerConfig,
-                Option<(ConfigName, SmallVec<[InstanceId; 4]>)>,
-            ),
-        >,
+    // TODO: accept iterator instead of Vec
+    pub fn new(
+        handlers: Vec<(
+            HandlerName,
+            ClientHandlerConfig,
+            Option<(ConfigName, SmallVec<[InstanceId; 4]>)>,
+        )>,
     ) -> HandlersProcessor {
         let inner = handlers
+            .into_iter()
             .map(|(handler_name, handler_config, client_config_data)| {
                 (
                     Handler {

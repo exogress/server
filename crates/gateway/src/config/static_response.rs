@@ -79,7 +79,7 @@ impl StaticResponseExt for StaticResponse {
                         None => resp.content.clone(),
 
                         Some(TemplateEngine::Handlebars) => {
-                            let mut handlebars = Handlebars::new();
+                            let handlebars = Handlebars::new();
                             let data = hashmap! {
                                 "time" => Utc::now()
                             };

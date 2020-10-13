@@ -1,7 +1,7 @@
 use chrono::TimeZone;
 use clickhouse_rs::errors::Error;
 use clickhouse_rs::Block;
-use exogress_server_common::assistant::TrafficRecord;
+use exogress_server_common::assistant::{RulesRecord, TrafficRecord};
 
 #[derive(Clone)]
 pub struct Clickhouse {
@@ -10,7 +10,11 @@ pub struct Clickhouse {
 
 impl Clickhouse {
     pub async fn new(clickhouse_url: &str) -> Result<Self, Error> {
-        let ddl = r"
+        let pool = clickhouse_rs::Pool::new(clickhouse_url);
+
+        let mut client = pool.get_handle().await?;
+
+        let ddl_traffic_counters = r"
 CREATE TABLE IF NOT EXISTS traffic_counters (
     account_name String,
     gw_hostname String,
@@ -22,11 +26,20 @@ CREATE TABLE IF NOT EXISTS traffic_counters (
 ) Engine=MergeTree() 
 PARTITION BY toYYYYMM(from_datetime) 
 ORDER BY (from_datetime, account_name)";
+        client.execute(ddl_traffic_counters).await?;
 
-        let pool = clickhouse_rs::Pool::new(clickhouse_url);
-
-        let mut client = pool.get_handle().await?;
-        client.execute(ddl).await?;
+        let ddl_rules_processed = r"
+CREATE TABLE IF NOT EXISTS rules_counters (
+    account_name String,
+    gw_hostname String,
+    gw_location String,
+    from_datetime DateTime,
+    to_datetime DateTime,
+    rules_processed  UInt64
+) Engine=MergeTree() 
+PARTITION BY toYYYYMM(from_datetime) 
+ORDER BY (from_datetime, account_name)";
+        client.execute(ddl_rules_processed).await?;
 
         Ok(Clickhouse { pool })
     }
@@ -89,6 +102,60 @@ ORDER BY (from_datetime, account_name)";
             );
         let mut client = self.pool.get_handle().await?;
         client.insert("traffic_counters", block).await?;
+        Ok(())
+    }
+
+    pub async fn register_rules_processed(
+        &self,
+        record: Vec<RulesRecord>,
+        gw_hostname: &str,
+        gw_location: &str,
+    ) -> Result<(), Error> {
+        let block = Block::new()
+            .column(
+                "account_name",
+                record
+                    .iter()
+                    .map(|rec| rec.account_name.to_string())
+                    .collect::<Vec<_>>(),
+            )
+            .column(
+                "gw_hostname",
+                record
+                    .iter()
+                    .map(|_| gw_hostname.to_string())
+                    .collect::<Vec<_>>(),
+            )
+            .column(
+                "gw_location",
+                record
+                    .iter()
+                    .map(|_| gw_location.to_string())
+                    .collect::<Vec<_>>(),
+            )
+            .column(
+                "from_datetime",
+                record
+                    .iter()
+                    .map(|rec| chrono_tz::Tz::UTC.from_utc_datetime(&rec.from.naive_utc()))
+                    .collect::<Vec<_>>(),
+            )
+            .column(
+                "to_datetime",
+                record
+                    .iter()
+                    .map(|rec| chrono_tz::Tz::UTC.from_utc_datetime(&rec.to.naive_utc()))
+                    .collect::<Vec<_>>(),
+            )
+            .column(
+                "rules_processed",
+                record
+                    .iter()
+                    .map(|rec| rec.rules_processed)
+                    .collect::<Vec<_>>(),
+            );
+        let mut client = self.pool.get_handle().await?;
+        client.insert("rules_counters", block).await?;
         Ok(())
     }
 }

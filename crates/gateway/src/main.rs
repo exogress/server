@@ -5,8 +5,6 @@ extern crate shadow_clone;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
-extern crate serde_json;
-#[macro_use]
 extern crate tracing;
 #[macro_use]
 extern crate lazy_static;
@@ -15,16 +13,16 @@ extern crate prometheus;
 #[macro_use]
 extern crate maplit;
 
+use async_compression::futures::write::GzipDecoder;
+use clap::{crate_version, App, Arg};
+use futures::io::BufWriter;
+use futures_util::io::AsyncWriteExt;
+use rules_counter::AccountRulesCounters;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-
-use async_compression::futures::write::GzipDecoder;
-use clap::{crate_version, App, Arg};
-use futures::io::BufWriter;
-use futures_util::io::AsyncWriteExt;
 
 use progress_bar::progress_bar::ProgressBar;
 use reqwest::header;
@@ -40,7 +38,9 @@ use crate::stop_reasons::StopReason;
 use crate::url_mapping::notification_listener::AssistantClient;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
-use exogress_server_common::assistant::{StatisticsReport, TrafficRecord};
+use exogress_server_common::assistant::{
+    HealthReport, RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage,
+};
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
@@ -56,6 +56,7 @@ mod config;
 mod http_serve;
 mod int_server;
 mod mime_helpers;
+mod rules_counter;
 mod statistics;
 mod stop_reasons;
 mod url_mapping;
@@ -511,7 +512,7 @@ fn main() {
             tunnel_counters_tx,
         ));
 
-        let (mut statistics_tx, statistics_rx) = mpsc::channel(16);
+        let (mut statistics_tx, statistics_rx) = mpsc::channel::<WsFromGwMessage>(16);
 
         let individual_hostname = matches
             .value_of("individual_hostname")
@@ -523,8 +524,40 @@ fn main() {
             .expect("Please provide --location")
             .to_string();
 
-        let dump_statistics = {
+        let account_rules_counters = AccountRulesCounters::new();
+        let (health_state_change_tx, health_state_change_rx) = mpsc::channel(256);
+
+        let dump_health_changes = {
             shadow_clone!(individual_hostname);
+            shadow_clone!(mut statistics_tx);
+
+            const CHUNK: usize = 2048;
+            let mut ready_chunks = health_state_change_rx.ready_chunks(CHUNK);
+            async move {
+                while let Some(ready_chunks) = ready_chunks.next().await {
+                    let should_wait = ready_chunks.len() != CHUNK;
+
+                    info!("health report: {:?}", ready_chunks);
+
+                    let batch = WsFromGwMessage::Health {
+                        report: HealthReport::UpstreamsHealth {
+                            records: ready_chunks,
+                        },
+                    };
+
+                    statistics_tx.send(batch).await?;
+                    if should_wait {
+                        delay_for(Duration::from_secs(5)).await;
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(())
+            }
+        };
+
+        let dump_traffic_statistics = {
+            shadow_clone!(individual_hostname);
+            shadow_clone!(mut statistics_tx);
 
             const CHUNK: usize = 2048;
             let mut ready_chunks = tunnel_counters_rx.ready_chunks(CHUNK);
@@ -532,17 +565,19 @@ fn main() {
                 while let Some(ready_chunks) = ready_chunks.next().await {
                     let should_wait = ready_chunks.len() != CHUNK;
 
-                    let batch = StatisticsReport::Traffic {
-                        records: ready_chunks
-                            .into_iter()
-                            .map(|statistics| TrafficRecord {
-                                account_name: statistics.account_name,
-                                tunnel_bytes_gw_tx: statistics.bytes_written,
-                                tunnel_bytes_gw_rx: statistics.bytes_read,
-                                from: statistics.from,
-                                to: statistics.to,
-                            })
-                            .collect(),
+                    let batch = WsFromGwMessage::Statistics {
+                        report: StatisticsReport::Traffic {
+                            records: ready_chunks
+                                .into_iter()
+                                .map(|statistics| TrafficRecord {
+                                    account_name: statistics.account_name,
+                                    tunnel_bytes_gw_tx: statistics.bytes_written,
+                                    tunnel_bytes_gw_rx: statistics.bytes_read,
+                                    from: statistics.from,
+                                    to: statistics.to,
+                                })
+                                .collect(),
+                        },
                     };
 
                     statistics_tx.send(batch).await?;
@@ -556,9 +591,38 @@ fn main() {
             }
         };
 
-        tokio::spawn(dump_statistics);
+        let dump_rules_statistics = {
+            shadow_clone!(account_rules_counters);
 
-        let api_client = Client::new(cache_ttl, webapp_base_url);
+            #[allow(unreachable_code)]
+            async move {
+                loop {
+                    if let Some(recs) = account_rules_counters.flush() {
+                        let report = WsFromGwMessage::Statistics {
+                            report: StatisticsReport::Rules {
+                                records: recs
+                                    .into_iter()
+                                    .map(|r| RulesRecord {
+                                        account_name: r.account_name,
+                                        rules_processed: r.rules_processed,
+                                        from: r.from,
+                                        to: r.to,
+                                    })
+                                    .collect(),
+                            },
+                        };
+
+                        statistics_tx.send(report).await?;
+
+                        delay_for(Duration::from_secs(60)).await;
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(())
+            }
+        };
+
+        let api_client = Client::new(cache_ttl, health_state_change_tx, webapp_base_url);
 
         let resolver = TokioAsyncResolver::new(
             ResolverConfig::default(),
@@ -608,7 +672,24 @@ fn main() {
             assistant_base_url.clone(),
         );
 
-        http_serve::handle::server(
+        // std::thread::spawn(move || loop {
+        //     std::thread::sleep(Duration::from_secs(10));
+        //     let deadlocks = parking_lot::deadlock::check_deadlock();
+        //     if deadlocks.is_empty() {
+        //         continue;
+        //     }
+        //
+        //     println!("{} deadlocks detected", deadlocks.len());
+        //     for (i, threads) in deadlocks.iter().enumerate() {
+        //         println!("Deadlock #{}", i);
+        //         for t in threads {
+        //             println!("Thread Id {:#?}", t.thread_id());
+        //             println!("{:#?}", t.backtrace());
+        //         }
+        //     }
+        // });
+
+        let server = http_serve::handle::server(
             client_tunnels,
             listen_http_addr,
             listen_https_addr,
@@ -622,10 +703,20 @@ fn main() {
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
+            &account_rules_counters,
             dbip,
             resolver,
-        )
-        .await;
+        );
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::spawn(dump_traffic_statistics) => {},
+                _ = tokio::spawn(dump_rules_statistics) => {},
+                _ = tokio::spawn(dump_health_changes) => {},
+            }
+        });
+
+        server.await;
 
         Ok::<(), anyhow::Error>(())
     })

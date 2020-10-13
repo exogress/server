@@ -37,9 +37,10 @@ use crate::http_serve::auth;
 use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncoding};
 use crate::http_serve::request::RequestBody;
 use crate::http_serve::templates::respond_with_login;
+use crate::rules_counter::AccountRulesCounters;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{
-    HealthEndpoint, HealthState, JwtEcdsa, MappingAction, Oauth2Provider, Protocol, UrlForRewriting,
+    JwtEcdsa, MappingAction, Oauth2Provider, Protocol, UrlForRewriting,
 };
 use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::webapp::Client;
@@ -48,6 +49,7 @@ use cookie::Cookie;
 use exogress_config_core::{AclEntry, Action, Auth, AuthProvider, ClientHandlerVariant};
 use exogress_entities::{ConfigId, ExceptionName, HandlerName, RateLimiterName};
 use exogress_server_common::assistant::GatewayConfigMessage;
+use exogress_server_common::health::HealthState;
 use exogress_server_common::url_prefix::UrlPrefix;
 use http::uri::Authority;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
@@ -83,6 +85,7 @@ pub async fn server(
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
+    account_rules_counters: &AccountRulesCounters,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
     resolver: TokioAsyncResolver,
 ) {
@@ -529,6 +532,7 @@ pub async fn server(
             shadow_clone!(dbip);
             shadow_clone!(individual_hostname);
             shadow_clone!(tunnels);
+            shadow_clone!(account_rules_counters);
 
             move |(
                       ws_or_body,
@@ -558,7 +562,7 @@ pub async fn server(
                 shadow_clone!(tunnels);
                 shadow_clone!(individual_hostname);
                 shadow_clone!(mut tunnels);
-
+                shadow_clone!(account_rules_counters);
 
                 let accept = headers.typed_get::<Accept>().expect("FIXME").expect("FIXME");
 
@@ -617,7 +621,6 @@ pub async fn server(
                                 .count();
                             info!("matched_segments_count = {} <=> {}", matched_segments_count, handler.base_path.len());
                             if matched_segments_count == handler.base_path.len() {
-                                info!("BANG: segments matched");
                                 {
                                     let mut replaced_segments = replaced_url.path_segments_mut().unwrap();
                                     replaced_segments.clear();
@@ -645,6 +648,7 @@ pub async fn server(
                             // TODO: handle modifications
 
                             info!("action = {:?}", action);
+                            account_rules_counters.register(&account_name);
 
                             match action {
                                 Action::Respond { static_response_name } => {
@@ -796,18 +800,17 @@ pub async fn server(
                                 if let Some(connect_target) = handler.connect_target("") {
                                     'instances: for instance_id in &ordered_instances {
                                         if let ConnectTarget::Upstream(upstream) = &connect_target {
-                                            let endpoint = HealthEndpoint { instance_id: *instance_id, upstream: upstream.clone() };
-                                            let state = mapping_action.health.get(&endpoint);
+                                            let state = mapping_action.health.get_health(instance_id, upstream);
 
-                                            match state.as_deref() {
-                                                Some(&HealthState::NotYetKnown) => {
-                                                    info!("Unknown health state. Try to proxy anyway {:?}", endpoint);
+                                            match state {
+                                                Some(HealthState::NotYetKnown) => {
+                                                    info!("Unknown health state. Try to proxy anyway {} {}", instance_id, upstream);
                                                 }
                                                 Some(HealthState::Unhealthy { probe, reason }) => {
-                                                    info!("Skip {:?}. probe {:?} failed with reason {:?}", endpoint, probe, reason);
+                                                    info!("Skip {} {}. probe {:?} failed with reason {:?}", instance_id, upstream, probe, reason);
                                                     continue 'instances;
                                                 }
-                                                Some(&HealthState::Healthy) | None => {}
+                                                Some(HealthState::Healthy) | None => {}
                                             }
                                         };
 

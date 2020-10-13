@@ -17,7 +17,9 @@ use exogress_tunnel::{server_connection, server_framed, TunnelHello, TunnelHello
 use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
-use crate::clients::traffic_counter::{Counters, RecordedStatistics, TrafficCountedStream};
+use crate::clients::traffic_counter::{
+    RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
+};
 use exogress_entities::{ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
@@ -58,7 +60,7 @@ pub async fn tunnels_acceptor(
     tls_cert_path: String,
     tls_key_path: String,
     tunnels: ClientTunnels,
-    tunnel_counters_tx: mpsc::Sender<RecordedStatistics>,
+    tunnel_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
 ) -> io::Result<()> {
     let mut config = ServerConfig::new(NoClientAuth::new());
 
@@ -127,7 +129,7 @@ pub async fn tunnels_acceptor(
                 }
             };
 
-            let counters = Counters::new(tunnel_hello.account_name.clone());
+            let counters = TrafficCounters::new(tunnel_hello.account_name.clone());
             let metered = TrafficCountedStream::new(tls_conn, counters.clone());
 
             let (stop_tx, stop_rx) = oneshot::channel();

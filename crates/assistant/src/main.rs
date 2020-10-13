@@ -19,10 +19,10 @@ use std::panic::AssertUnwindSafe;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 
-mod http;
-// pub mod reporting;
 mod clickhouse;
+mod http;
 mod termination;
+mod webapp;
 
 fn main() {
     let spawn_args = App::new("spawn")
@@ -63,7 +63,7 @@ fn main() {
             Arg::with_name("clickhouse_url")
                 .long("clickhouse-url")
                 .value_name("URL")
-                .default_value("tcp://127.0.0.1:9000/exogress_counters")
+                .default_value("tcp://localhost:9000/exogress_counters")
                 .required(true)
                 .help("Set clickhouse URL")
                 .takes_value(true),
@@ -78,10 +78,12 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_common_utils::clap::threads::add_args(
-        exogress_server_common::clap::sentry::add_args(exogress_common_utils::clap::log::add_args(
-            spawn_args,
-        )),
+    let spawn_args = exogress_server_common::clap::webapp::add_args(
+        exogress_common_utils::clap::threads::add_args(
+            exogress_server_common::clap::sentry::add_args(
+                exogress_common_utils::clap::log::add_args(spawn_args),
+            ),
+        ),
     );
 
     let args = App::new("Exogress Assistant Server")
@@ -104,9 +106,13 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
+    let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "assistant");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
+
+    info!("Use Webapp url at {}", webapp_base_url);
+    let webapp_client = crate::webapp::Client::new(webapp_base_url);
 
     let clickhouse_url = matches
         .value_of("clickhouse_url")
@@ -166,6 +172,7 @@ fn main() {
                     tls_key_path: gw_tls_key_path.parse().unwrap(),
                 },
                 redis_client,
+                webapp_client,
                 clickhouse_client,
                 app_stop_wait,
             )

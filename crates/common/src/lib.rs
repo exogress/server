@@ -3,4 +3,5 @@ extern crate serde;
 
 pub mod assistant;
 pub mod clap;
+pub mod health;
 pub mod url_prefix;

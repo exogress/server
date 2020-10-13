@@ -15,7 +15,7 @@ use std::task::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::macros::support::Poll;
 
-pub struct Counters {
+pub struct TrafficCounters {
     account_name: AccountName,
     bytes_read: AtomicU64,
     bytes_written: AtomicU64,
@@ -23,7 +23,7 @@ pub struct Counters {
 }
 
 #[derive(Debug)]
-pub struct RecordedStatistics {
+pub struct RecordedTrafficStatistics {
     pub account_name: AccountName,
     pub bytes_read: u64,
     pub bytes_written: u64,
@@ -31,8 +31,8 @@ pub struct RecordedStatistics {
     pub to: DateTime<Utc>,
 }
 
-impl Counters {
-    pub fn flush(self: &Arc<Counters>) -> Option<RecordedStatistics> {
+impl TrafficCounters {
+    pub fn flush(self: &Arc<TrafficCounters>) -> Option<RecordedTrafficStatistics> {
         let bytes_read = self.bytes_read.swap(0, Ordering::SeqCst);
         let bytes_written = self.bytes_written.swap(0, Ordering::SeqCst);
 
@@ -41,7 +41,7 @@ impl Counters {
         }
 
         let now = Utc::now();
-        Some(RecordedStatistics {
+        Some(RecordedTrafficStatistics {
             account_name: self.account_name.clone(),
             bytes_read,
             bytes_written,
@@ -51,7 +51,7 @@ impl Counters {
     }
 
     pub fn new(account_name: AccountName) -> Arc<Self> {
-        Arc::new(Counters {
+        Arc::new(TrafficCounters {
             account_name,
             bytes_read: Default::default(),
             bytes_written: Default::default(),
@@ -62,7 +62,7 @@ impl Counters {
 
 pub struct TrafficCountedStream<I: AsyncRead + AsyncWrite + Unpin> {
     io: I,
-    counters: Arc<Counters>,
+    counters: Arc<TrafficCounters>,
 }
 
 impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
@@ -136,7 +136,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TrafficCountedStream<I> {
 }
 
 impl<I: AsyncRead + AsyncWrite + Unpin> TrafficCountedStream<I> {
-    pub fn new(io: I, counters: Arc<Counters>) -> Self {
+    pub fn new(io: I, counters: Arc<TrafficCounters>) -> Self {
         TrafficCountedStream { io, counters }
     }
 }
@@ -155,7 +155,7 @@ mod test {
         let mut buf = vec![0u8; 32768];
         let mut io = Cursor::new(&mut buf);
 
-        let counters = Counters::new("account".parse().unwrap());
+        let counters = TrafficCounters::new("account".parse().unwrap());
 
         let mut counted_stream = TrafficCountedStream::new(io, counters.clone());
         let mut result = Vec::new();

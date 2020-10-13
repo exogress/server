@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use lru_time_cache::LruCache;
-use parking_lot::Mutex;
 use patricia_tree::PatriciaMap;
 
 use crate::clients::ClientTunnels;
@@ -20,20 +19,24 @@ struct Inner {
 }
 
 impl Inner {
-    fn process_evicted(&mut self, evicted: Vec<(String, Option<Arc<Mapping>>)>) {
-        for (k, _mapping) in evicted.into_iter() {
+    async fn process_evicted(&mut self, evicted: Vec<(String, Option<Arc<Mapping>>)>) {
+        for (k, maybe_mapping) in evicted.into_iter() {
             self.from_prefix_lookup_tree.remove(k);
+            if let Some(mapping) = maybe_mapping {
+                mapping.health.health_deleted().await.expect("FIXME");
+            }
         }
     }
 
-    fn upsert(
+    async fn upsert(
         &mut self,
         url_prefix: &UrlPrefix,
         mapping: Option<Mapping>,
         generated_at: DateTime<Utc>,
     ) {
         //cleanup all Mappings overlapping with this one
-        self.remove_by_notification_if_time_applicable(url_prefix, generated_at);
+        self.remove_by_notification_if_time_applicable(url_prefix, generated_at)
+            .await;
 
         let from_key: String = url_prefix.to_string().into();
 
@@ -42,12 +45,12 @@ impl Inner {
 
         let (_, evicted) = self.lru_storage.notify_insert(from_key.clone(), for_lru);
 
-        self.process_evicted(evicted);
+        self.process_evicted(evicted).await;
 
         self.from_prefix_lookup_tree.insert(from_key, for_trie);
     }
 
-    fn remove_by_notification_if_time_applicable(
+    async fn remove_by_notification_if_time_applicable(
         &mut self,
         url_prefix: &UrlPrefix,
         generated_at: DateTime<Utc>,
@@ -82,16 +85,20 @@ impl Inner {
             if let Some(Some(mapping)) = maybe_mapping {
                 if generated_at <= mapping.generated_at {
                     // ignore if stale. process evicted before returning
-                    self.process_evicted(evicted);
+                    self.process_evicted(evicted).await;
                     continue;
                 }
             }
 
-            self.process_evicted(evicted);
+            self.process_evicted(evicted).await;
 
-            self.lru_storage.remove(&found_url_prefix_string);
+            let maybe_mapping = self.lru_storage.remove(&found_url_prefix_string);
             self.from_prefix_lookup_tree
                 .remove(&found_url_prefix_string);
+
+            if let Some(Some(mapping)) = maybe_mapping {
+                mapping.health.health_deleted().await.expect("FIXME");
+            }
         }
     }
 
@@ -121,20 +128,20 @@ impl Inner {
 
 #[derive(Clone)]
 pub struct Configs {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<tokio::sync::Mutex<Inner>>,
 }
 
 impl Configs {
     pub fn new(ttl: Duration) -> Self {
         Configs {
-            inner: Arc::new(Mutex::new(Inner {
+            inner: Arc::new(tokio::sync::Mutex::new(Inner {
                 lru_storage: LruCache::with_expiry_duration(ttl),
                 from_prefix_lookup_tree: Default::default(),
             })),
         }
     }
 
-    pub fn resolve(
+    pub async fn resolve(
         &self,
         url_prefix: UrlForRewriting,
         tunnels: ClientTunnels,
@@ -151,10 +158,8 @@ impl Configs {
             UrlPrefix,
         ),
     > {
-        self.inner
-            .lock()
-            .find_mapping(&url_prefix)
-            .map(move |(maybe_mapping, matched_prefix)| {
+        self.inner.lock().await.find_mapping(&url_prefix).map(
+            move |(maybe_mapping, matched_prefix)| {
                 (
                     maybe_mapping.and_then(|r| match r.handle(url_prefix, external_port, proto) {
                         Ok(r) => Some(r),
@@ -165,26 +170,33 @@ impl Configs {
                     }),
                     matched_prefix,
                 )
-            })
+            },
+        )
     }
 
-    pub fn remove_by_notification_if_time_applicable(
+    pub async fn remove_by_notification_if_time_applicable(
         &self,
         url_prefix: &UrlPrefix,
         generated_at: DateTime<Utc>,
     ) {
         self.inner
             .lock()
+            .await
             .remove_by_notification_if_time_applicable(url_prefix, generated_at)
+            .await
     }
 
-    pub fn upsert(
+    pub async fn upsert(
         &self,
         url_prefix: &UrlPrefix,
         mapping: Option<Mapping>,
         generated_at: DateTime<Utc>,
     ) {
-        self.inner.lock().upsert(url_prefix, mapping, generated_at)
+        self.inner
+            .lock()
+            .await
+            .upsert(url_prefix, mapping, generated_at)
+            .await
     }
 }
 

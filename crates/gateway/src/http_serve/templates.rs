@@ -24,7 +24,7 @@ struct ProviderInfo {
 }
 
 fn render(url: &Url, requested_url: &Url, handler_name: &HandlerName, auth: &Auth) -> String {
-    let mut handlebars = Handlebars::new();
+    let handlebars = Handlebars::new();
 
     let mut url = url.clone();
 

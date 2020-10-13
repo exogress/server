@@ -1,6 +1,7 @@
+use crate::health::{HealthEndpoint, HealthState};
 use crate::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
-use exogress_entities::{AccountName, ConfigId};
+use exogress_entities::{AccountName, ConfigId, ProjectName};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 
@@ -55,6 +56,9 @@ pub enum WsToGwMessage {
 pub enum WsFromGwMessage {
     #[serde(rename = "statistics")]
     Statistics { report: StatisticsReport },
+
+    #[serde(rename = "health")]
+    Health { report: HealthReport },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,9 +73,40 @@ pub struct TrafficRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RulesRecord {
+    pub account_name: AccountName,
+    pub rules_processed: u64,
+    #[serde(with = "ts_milliseconds")]
+    pub from: DateTime<Utc>,
+    #[serde(with = "ts_milliseconds")]
+    pub to: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 #[non_exhaustive]
 pub enum StatisticsReport {
     #[serde(rename = "traffic")]
     Traffic { records: Vec<TrafficRecord> },
+
+    #[serde(rename = "rules")]
+    Rules { records: Vec<RulesRecord> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+#[non_exhaustive]
+pub enum HealthReport {
+    #[serde(rename = "upstreams")]
+    UpstreamsHealth { records: Vec<UpstreamReport> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpstreamReport {
+    pub account_name: AccountName,
+    pub project_name: ProjectName,
+    pub health_endpoint: HealthEndpoint,
+    pub health: Option<HealthState>, // None == no longer exist
+    #[serde(with = "ts_milliseconds")]
+    pub datetime: DateTime<Utc>,
 }

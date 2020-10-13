@@ -4,11 +4,11 @@ use std::str::FromStr;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 
-use exogress_config_core::{AuthProvider, ClientConfig, Probe, StaticResponse};
+use exogress_config_core::{AuthProvider, ClientConfig, StaticResponse};
 use exogress_entities::{
     AccountName, ConfigId, ConfigName, InstanceId, ProjectName, StaticResponseName, Upstream,
 };
-use http::{StatusCode, Uri};
+use http::Uri;
 use smallvec::SmallVec;
 use url::Url;
 
@@ -16,12 +16,17 @@ use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
 use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::webapp::ConfigsResponse;
-use dashmap::DashMap;
+use core::mem;
+use exogress_server_common::assistant::UpstreamReport;
+use exogress_server_common::health::{HealthEndpoint, HealthState, UnhealthyReason};
 use exogress_server_common::url_prefix::UrlPrefix;
 use exogress_tunnel::ConnectTarget;
-use futures::channel::oneshot;
+use futures::channel::{mpsc, oneshot};
 use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
+use hashbrown::hash_map::Entry;
+use hashbrown::HashMap;
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::time::delay_for;
@@ -420,38 +425,109 @@ pub struct Mapping {
     jwt_ecdsa: JwtEcdsa,
     rate_limiters: RateLimiters,
     healthcheck_stop_tx: oneshot::Sender<()>,
-    health: Arc<DashMap<HealthEndpoint, HealthState>>,
+    pub health: HealthStorage,
     static_responses: BTreeMap<StaticResponseName, StaticResponse>,
 }
 
-#[derive(Debug)]
-pub enum UnhealthyReason {
-    Timeout,
-    Unreachable,
-    BadStatus(StatusCode),
+#[derive(Clone, Debug)]
+pub struct HealthStorage {
+    inner: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
+    notify_on_change_tx: mpsc::Sender<UpstreamReport>,
+    account_name: AccountName,
+    project_name: ProjectName,
 }
 
-#[derive(Debug)]
-pub enum HealthState {
-    Healthy,
-    Unhealthy {
-        probe: Probe,
-        reason: UnhealthyReason,
-    },
-    NotYetKnown,
+impl HealthStorage {
+    pub fn new(
+        account_name: &AccountName,
+        project_name: &ProjectName,
+        notify_on_change_tx: mpsc::Sender<UpstreamReport>,
+    ) -> Self {
+        HealthStorage {
+            inner: Arc::new(Default::default()),
+            notify_on_change_tx,
+            account_name: account_name.clone(),
+            project_name: project_name.clone(),
+        }
+    }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq)]
-pub struct HealthEndpoint {
-    pub instance_id: InstanceId,
-    pub upstream: Upstream,
+impl HealthStorage {
+    async fn set_health(
+        &mut self,
+        instance_id: &InstanceId,
+        upstream: &Upstream,
+        state: HealthState,
+    ) -> Result<(), mpsc::SendError> {
+        let endpoint = HealthEndpoint {
+            instance_id: instance_id.clone(),
+            upstream: upstream.clone(),
+        };
+
+        match self.inner.lock().entry(endpoint.clone()) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(state.clone());
+            }
+            Entry::Occupied(mut occupied) => {
+                if occupied.get() == &state {
+                    return Ok(());
+                };
+                occupied.insert(state.clone());
+            }
+        }
+
+        self.notify_on_change_tx
+            .send(UpstreamReport {
+                account_name: self.account_name.clone(),
+                project_name: self.project_name.clone(),
+                health_endpoint: endpoint,
+                health: Some(state),
+                datetime: Utc::now(),
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    pub(crate) fn get_health(
+        &self,
+        instance_id: &InstanceId,
+        upstream: &Upstream,
+    ) -> Option<HealthState> {
+        let endpoint = HealthEndpoint {
+            instance_id: instance_id.clone(),
+            upstream: upstream.clone(),
+        };
+
+        self.inner.lock().get(&endpoint).cloned()
+    }
+
+    pub async fn health_deleted(&self) -> Result<(), mpsc::SendError> {
+        let old = mem::replace(&mut *self.inner.lock(), Default::default());
+
+        let mut notify_on_change_tx = self.notify_on_change_tx.clone();
+
+        for (endpoint, _) in old.into_iter() {
+            notify_on_change_tx
+                .send(UpstreamReport {
+                    account_name: self.account_name.clone(),
+                    project_name: self.project_name.clone(),
+                    health_endpoint: endpoint,
+                    health: None,
+                    datetime: Utc::now(),
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Mapping {
     pub fn new(
         config_response: ConfigsResponse,
         handlers_processor: HandlersProcessor,
-        health: Arc<DashMap<HealthEndpoint, HealthState>>,
+        health: HealthStorage,
         static_responses: BTreeMap<StaticResponseName, StaticResponse>,
         rate_limiters: RateLimiters,
         client_tunnels: ClientTunnels,
@@ -488,20 +564,17 @@ impl Mapping {
 
             async move {
                 shadow_clone!(project);
-                shadow_clone!(health);
+                shadow_clone!(mut health);
 
                 {
                     for config in &config_response.configs {
                         for instance_id in &config.instance_ids {
                             for (upstream, upstream_definition) in &config.config.upstreams {
                                 if !upstream_definition.health.is_empty() {
-                                    health.insert(
-                                        HealthEndpoint {
-                                            instance_id: *instance_id,
-                                            upstream: upstream.clone(),
-                                        },
-                                        HealthState::NotYetKnown,
-                                    );
+                                    health
+                                        .set_health(instance_id, upstream, HealthState::NotYetKnown)
+                                        .await
+                                        .expect("FIXME");
                                 }
                             }
                         }
@@ -558,7 +631,7 @@ impl Mapping {
 
                                             async move {
                                                 shadow_clone!(connect_target);
-                                                shadow_clone!(health);
+                                                shadow_clone!(mut health);
 
                                                 let url = connect_target
                                                     .with_path(probe.target.path.as_str())
@@ -580,13 +653,9 @@ impl Mapping {
                                                 match r {
                                                     Ok(Ok(resp)) if resp.status().is_success() => {
                                                         health
-                                                            .insert(
-                                                                HealthEndpoint {
-                                                                    instance_id: *instance_id,
-                                                                    upstream: upstream.clone(),
-                                                                },
-                                                                HealthState::Healthy,
-                                                            );
+                                                            .set_health(instance_id, upstream,HealthState::Healthy)
+                                                            .await
+                                                            .expect("FIXME");
                                                         debug!(
                                                             "healthcheck ok instance_id={}, upstream={}",
                                                             instance_id, upstream
@@ -600,16 +669,14 @@ impl Mapping {
                                                             upstream
                                                         );
                                                         health
-                                                            .insert(
-                                                                HealthEndpoint {
-                                                                    instance_id: *instance_id,
-                                                                    upstream: upstream.clone(),
-                                                                },
+                                                            .set_health(instance_id, upstream,
                                                                 HealthState::Unhealthy {
                                                                     probe: probe.clone(),
                                                                     reason: UnhealthyReason::BadStatus(resp.status()),
-                                                                },
-                                                            );
+                                                                }
+                                                            )
+                                                            .await
+                                                            .expect("FIXME");
                                                     }
                                                     Ok(Err(e)) => {
                                                         info!(
@@ -617,33 +684,35 @@ impl Mapping {
                                                             e, instance_id, upstream
                                                         );
                                                         health
-                                                            .insert(
-                                                                HealthEndpoint {
-                                                                    instance_id: *instance_id,
-                                                                    upstream: upstream.clone(),
-                                                                },
+                                                            .set_health(
+                                                                instance_id,
+                                                                upstream,
                                                                 HealthState::Unhealthy {
                                                                     probe: probe.clone(),
                                                                     reason: UnhealthyReason::Unreachable,
-                                                                },
-                                                            );
+                                                                }
+                                                            )
+                                                            .await
+                                                            .expect("FIXME");
+
                                                     }
-                                                    Err(e) => {
+                                                    Err(_e) => {
                                                         error!(
                                                             "healthcheck timeout instance_id={}, upstream={}",
                                                             instance_id, upstream
                                                         );
                                                         health
-                                                            .insert(
-                                                                HealthEndpoint {
-                                                                    instance_id: *instance_id,
-                                                                    upstream: upstream.clone(),
-                                                                },
+                                                            .set_health(
+                                                                instance_id,
+                                                                upstream,
                                                                 HealthState::Unhealthy {
                                                                     probe: probe.clone(),
                                                                     reason: UnhealthyReason::Timeout,
-                                                                },
-                                                            );
+                                                                }
+                                                            )
+                                                            .await
+                                                            .expect("FIXME");
+
                                                     }
                                                 }
 
@@ -715,7 +784,7 @@ pub struct MappingAction {
     pub handler: ClientHandler,
     pub jwt_ecdsa: JwtEcdsa,
     pub external_base_url: Url,
-    pub health: Arc<DashMap<HealthEndpoint, HealthState>>,
+    pub health: HealthStorage,
     pub static_responses: BTreeMap<StaticResponseName, StaticResponse>,
 }
 

@@ -2,19 +2,25 @@ use std::time::Duration;
 
 use crate::clients::ClientTunnels;
 use crate::url_mapping::handlers::HandlersProcessor;
-use crate::url_mapping::mapping::{Mapping, MappingAction, Protocol, UrlForRewriting};
+use crate::url_mapping::mapping::{
+    HealthStorage, Mapping, MappingAction, Protocol, UrlForRewriting,
+};
 use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::registry::Configs;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
 use exogress_config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
 use exogress_entities::{AccountName, ConfigName, InstanceId, MountPointName, ProjectName};
+use exogress_server_common::assistant::UpstreamReport;
 use exogress_server_common::url_prefix::UrlPrefix;
+use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
+use hashbrown::hash_map::Entry;
+use hashbrown::HashMap;
 use http::StatusCode;
 use itertools::Itertools;
 use lru_time_cache::LruCache;
+use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -23,10 +29,11 @@ use url::Url;
 #[derive(Clone)]
 pub struct Client {
     reqwest: reqwest::Client,
-    retrieve_configs: Arc<DashMap<String, Arc<ManualResetEvent>>>,
+    retrieve_configs: Arc<Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
     certificates: Arc<parking_lot::Mutex<LruCache<String, Option<CertificateResponse>>>>,
     configs: Configs,
     base_url: Url,
+    health_state_change_tx: mpsc::Sender<UpstreamReport>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -131,7 +138,11 @@ pub struct ConfigsResponse {
 }
 
 impl Client {
-    pub fn new(ttl: Duration, base_url: Url) -> Self {
+    pub fn new(
+        ttl: Duration,
+        health_state_change_tx: mpsc::Sender<UpstreamReport>,
+        base_url: Url,
+    ) -> Self {
         Client {
             configs: Configs::new(ttl),
             reqwest: reqwest::ClientBuilder::new()
@@ -146,6 +157,7 @@ impl Client {
             certificates: Arc::new(parking_lot::Mutex::new(
                 LruCache::with_expiry_duration_and_capacity(ttl, 1024),
             )),
+            health_state_change_tx,
         }
     }
 
@@ -194,12 +206,16 @@ impl Client {
         individual_hostname: String,
     ) -> Result<Option<(MappingAction, RateLimiters, UrlPrefix)>, Error> {
         // Try to read from cache
-        if let Some((cached, url_prefix)) = self.configs.resolve(
-            url_for_rewriting.clone(),
-            tunnels.clone(),
-            external_port,
-            proto,
-        ) {
+        if let Some((cached, url_prefix)) = self
+            .configs
+            .resolve(
+                url_for_rewriting.clone(),
+                tunnels.clone(),
+                external_port,
+                proto,
+            )
+            .await
+        {
             match cached {
                 Some((data, rate_limiters)) => {
                     // mapping exist
@@ -216,9 +232,12 @@ impl Client {
 
         let host = url_for_rewriting.host();
 
+        let health_state_change_tx = self.health_state_change_tx.clone();
+
         // take lock and deal with in_flight queries
         let in_flight_request = self
             .retrieve_configs
+            .lock()
             .entry(host.clone().into())
             .or_insert_with({
                 shadow_clone!(url_for_rewriting);
@@ -273,6 +292,8 @@ impl Client {
                                                     config_response
                                                 );
 
+                                                let project = config_response.project.clone();
+                                                let account = config_response.account.clone();
 
                                                 let grouped = config_response
                                                     .configs
@@ -291,9 +312,6 @@ impl Client {
                                                             })
                                                             .next() // Take last revision only
                                                             .expect("FIXME");
-
-                                                        let instances_ids =
-                                                            config_entry.instance_ids.clone();
 
                                                         let prj_static_responses = config_response
                                                             .project_config
@@ -410,13 +428,18 @@ impl Client {
                                                             .flatten()
                                                             .chain(prj_handlers)
                                                     })
-                                                    .flatten();
+                                                    .flatten()
+                                                    .collect::<Vec<_>>();
 
                                                 let handlers_processor =
                                                     HandlersProcessor::new(handlers);
                                                 info!("handlers = {:#?}", handlers_processor);
 
-                                                let instances_health = Arc::new(Default::default());
+                                                let instances_health = HealthStorage::new(
+                                                    &account,
+                                                    &project,
+                                                    health_state_change_tx
+                                                );
 
                                                 let mapping = Mapping::new(
                                                     config_response.clone(),
@@ -446,7 +469,7 @@ impl Client {
                                                     &config_response.url_prefix,
                                                     Some(mapping),
                                                     config_response.generated_at,
-                                                );
+                                                ).await;
                                             }
                                             Err(e) => {
                                                 error!(
@@ -460,7 +483,7 @@ impl Client {
                                             &url_for_rewriting.to_url_prefix(),
                                             None,
                                             Utc::now(), //FIXME: return generated_at in 404 resp
-                                        );
+                                        ).await;
                                     } else {
                                         error!(
                                             "Bad status on configs retrieving: {}",
@@ -484,9 +507,8 @@ impl Client {
         in_flight_request.wait().await;
 
         {
-            if let dashmap::mapref::entry::Entry::Occupied(entry) =
-                self.retrieve_configs.entry(host.into())
-            {
+            let mut cfg = self.retrieve_configs.lock();
+            if let Entry::Occupied(entry) = cfg.entry(host.into()) {
                 if Arc::ptr_eq(entry.get(), &in_flight_request) {
                     // we are now sure that it's the same request
                     entry.remove_entry();
@@ -494,9 +516,10 @@ impl Client {
             }
         }
 
-        if let Some((cached, url_prefix)) =
-            self.configs
-                .resolve(url_for_rewriting, tunnels, external_port, proto)
+        if let Some((cached, url_prefix)) = self
+            .configs
+            .resolve(url_for_rewriting, tunnels, external_port, proto)
+            .await
         {
             Ok(cached.map(|(a, b)| (a, b, url_prefix)))
         } else {
