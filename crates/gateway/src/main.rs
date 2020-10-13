@@ -613,8 +613,9 @@ fn main() {
                         };
 
                         statistics_tx.send(report).await?;
-
                         delay_for(Duration::from_secs(60)).await;
+                    } else {
+                        delay_for(Duration::from_secs(10)).await;
                     }
                 }
 
