@@ -34,6 +34,7 @@ if (env.BRANCH_NAME == "master") {
     IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}"
     IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}"
     IMAGE_ASSISTANT = "r.lancastr.net/${IMAGE_ASSISTANT}"
+    IMAGE_DIRECTOR = "r.lancastr.net/${IMAGE_DIRECTOR}"
     PUSH = true
     TAG = "${BASE_VERSION}"
 } else if (env.BRANCH_NAME == "develop") {
@@ -41,6 +42,7 @@ if (env.BRANCH_NAME == "master") {
     IMAGE_SIGNALER = "r.lancastr.net/${IMAGE_SIGNALER}-${env.BRANCH_NAME}"
     IMAGE_GATEWAY = "r.lancastr.net/${IMAGE_GATEWAY}-${env.BRANCH_NAME}"
     IMAGE_ASSISTANT = "r.lancastr.net/${IMAGE_ASSISTANT}-${env.BRANCH_NAME}"
+    IMAGE_DIRECTOR = "r.lancastr.net/${IMAGE_DIRECTOR}-${env.BRANCH_NAME}"
     TAG = "${BASE_VERSION}.build.${env.BUILD_NUMBER}"
     PUSH = true
 }
