@@ -4,6 +4,7 @@ IMAGE = "servers"
 IMAGE_SIGNALER = "signaler"
 IMAGE_GATEWAY = "gateway"
 IMAGE_ASSISTANT = "assistant"
+IMAGE_DIRECTOR = "director"
 PUSH = false
 DOCKER_AUTH = "\$(cat ~/.docker/config.json |jq -r \".auths[] .auth\")"
 BASE_VERSION = ""
