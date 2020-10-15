@@ -4,6 +4,7 @@ members = [
  "gateway",
  "signaler",
  "assistant",
+ "director",
 ]
 
 [profile.release]

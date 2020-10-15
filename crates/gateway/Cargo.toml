@@ -69,6 +69,8 @@ globset = { version = "0.4.5", features = ["serde1"] }
 maplit = "1.0.2"
 #lru-disk-cache = "0.4.0"
 http-serde = "1.0.1"
+tls-parser = "0.9.2"
+nom = "^5.0"
 
 exogress-server-common = { path = "../common", version = "0.1" }
 exogress-assistant = { path = "../assistant", version = "0.1" }

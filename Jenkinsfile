@@ -88,6 +88,11 @@ node("linux-docker") {
                 sh "docker tag ${IMAGE_ASSISTANT}:${TAG} ${IMAGE_ASSISTANT}:latest"
             }
 
+            stage('build_director') {
+                sh "docker build --no-cache --target=director -t ${IMAGE_DIRECTOR}:${TAG} ."
+                sh "docker tag ${IMAGE_DIRECTOR}:${TAG} ${IMAGE_DIRECTOR}:latest"
+            }
+
             stage('save_artifacts') {
                 if (PUSH == true) {
                     sh "docker push $IMAGE_SIGNALER:$TAG"
@@ -98,6 +103,9 @@ node("linux-docker") {
 
                     sh "docker push $IMAGE_ASSISTANT:$TAG"
                     sh "docker push $IMAGE_ASSISTANT:latest"
+
+                    sh "docker push $IMAGE_DIRECTOR:$TAG"
+                    sh "docker push $IMAGE_DIRECTOR:latest"
                 }
             }
             if (currentBuild.getPreviousBuild()?.getResult() != "SUCCESS") {
@@ -126,6 +134,9 @@ node("linux-docker") {
 
                 sh "docker rmi $IMAGE_ASSISTANT:$TAG || true"
                 sh "docker rmi $IMAGE_ASSISTANT:latest || true"
+
+                sh "docker rmi $IMAGE_DIRECTOR:$TAG || true"
+                sh "docker rmi $IMAGE_DIRECTOR:latest || true"
             }
         }
     }

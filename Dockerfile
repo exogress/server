@@ -40,3 +40,9 @@ COPY --from=builder /code/crates/target/release/exogress-assistant /usr/local/bi
 RUN exogress-assistant autocompletion bash > /etc/profile.d/exogress-assistant.sh && \
     echo "source /etc/profile.d/exogress-assistant.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-assistant"]
+
+FROM base as director
+COPY --from=builder /code/crates/target/release/exogress-director /usr/local/bin/
+RUN exogress-director autocompletion bash > /etc/profile.d/exogress-director.sh && \
+    echo "source /etc/profile.d/exogress-director.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-director"]

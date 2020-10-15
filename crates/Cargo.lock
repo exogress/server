@@ -922,6 +922,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "exogress-director"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bytes 0.5.6",
+ "clap",
+ "dashmap",
+ "derive_builder",
+ "exogress-common-utils",
+ "exogress-server-common",
+ "futures",
+ "hashbrown 0.8.2",
+ "object-pool",
+ "parking_lot 0.11.0",
+ "sentry",
+ "serde",
+ "shadow-clone",
+ "stop-handle",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "weighted-rs",
+]
+
+[[package]]
 name = "exogress-entities"
 version = "0.1.0"
 dependencies = [
@@ -973,6 +1000,7 @@ dependencies = [
  "maxminddb",
  "memmap",
  "mime",
+ "nom",
  "nonzero_ext",
  "oauth2",
  "parking_lot 0.11.0",
@@ -996,6 +1024,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time 0.2.22",
+ "tls-parser",
  "tokio",
  "tokio-either",
  "tokio-rustls",
@@ -2262,6 +2291,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37fd5004feb2ce328a52b0b3d01dbf4ffff72583493900ed15f22d4111c51693"
 
 [[package]]
+name = "object-pool"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57280719d7b44758cab397e55d4a1a194d4a62575ceea8c794841742b9636e6c"
+dependencies = [
+ "parking_lot 0.10.2",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3236,18 +3274,18 @@ dependencies = [
 
 [[package]]
 name = "serde"
-version = "1.0.116"
+version = "1.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96fe57af81d28386a513cbc6858332abc6117cfdb5999647c6444b8f43a370a5"
+checksum = "b88fa983de7720629c9387e9f517353ed404164b1e482c970a90c1a4aaf7dc1a"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.116"
+version = "1.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f630a6370fd8e457873b4bd2ffdae75408bc291ba72be773772a4c2a065d9ae8"
+checksum = "cbd1ae72adb44aab48f325a02444a5fc079349a8d804c1fc922aed3f7454c74e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4386,6 +4424,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8eff4b7516a57307f9349c64bf34caa34b940b66fed4b2fb3136cb7386e5739"
 dependencies = [
  "webpki",
+]
+
+[[package]]
+name = "weighted-rs"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99eded5892abe2ef0b82002aa60227c1e40ff0caa6a653a5dda8471feded40a4"
+dependencies = [
+ "rand 0.7.3",
 ]
 
 [[package]]

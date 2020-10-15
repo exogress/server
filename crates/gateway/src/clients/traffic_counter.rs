@@ -145,7 +145,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin> TrafficCountedStream<I> {
 mod test {
     use super::*;
     use std::io::Cursor;
-    use std::net::SocketAddr;
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;

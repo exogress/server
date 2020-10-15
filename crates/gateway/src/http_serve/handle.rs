@@ -23,6 +23,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use stop_handle::stop_handle;
+use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
@@ -33,10 +34,10 @@ use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
 use crate::config::static_response::StaticResponseExt;
 use crate::dbip::LocationAndIsp;
-use crate::http_serve::auth;
 use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncoding};
 use crate::http_serve::request::RequestBody;
 use crate::http_serve::templates::respond_with_login;
+use crate::http_serve::{auth, director};
 use crate::rules_counter::AccountRulesCounters;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{
@@ -49,6 +50,7 @@ use cookie::Cookie;
 use exogress_config_core::{AclEntry, Action, Auth, AuthProvider, ClientHandlerVariant};
 use exogress_entities::{ConfigId, ExceptionName, HandlerName, RateLimiterName};
 use exogress_server_common::assistant::GatewayConfigMessage;
+use exogress_server_common::director::SourceInfo;
 use exogress_server_common::health::HealthState;
 use exogress_server_common::url_prefix::UrlPrefix;
 use http::uri::Authority;
@@ -60,15 +62,236 @@ use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
 use std::collections::BTreeMap;
 use std::io;
+use std::io::{BufReader, Cursor};
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
+use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
 use typed_headers::{Accept, ContentCoding, ContentEncoding, HeaderMapExt};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     idp: String,
     exp: usize,
+}
+
+fn extract_sni_hostname(buf: &[u8]) -> Result<Option<Option<String>>, anyhow::Error> {
+    match tls_parser::parse_tls_plaintext(buf) {
+        Ok((_rem, record)) => Ok(Some(
+            record
+                .msg
+                .into_iter()
+                .filter_map(|msg| match msg {
+                    tls_parser::tls::TlsMessage::Handshake(handshake) => match handshake {
+                        tls_parser::tls::TlsMessageHandshake::ClientHello(hello) => {
+                            if let Some(ext) = hello.ext {
+                                tls_parser::tls_extensions::parse_tls_extensions(ext)
+                                    .ok()
+                                    .and_then(|(_, ext)| {
+                                        ext
+                                            .into_iter()
+                                            .filter_map(|ext| match ext {
+                                                tls_parser::tls_extensions::TlsExtension::SNI(snis) => snis
+                                                    .into_iter()
+                                                    .filter_map(|(sni_type, value)| {
+                                                        if tls_parser::tls_extensions::SNIType::HostName
+                                                            == sni_type
+                                                        {
+                                                            Some(value)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    })
+                                                    .next(),
+                                                _ => None,
+                                            })
+                                            .next()
+                                    })
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .next()
+                .and_then(|m| String::from_utf8(m.to_vec()).ok()),
+        )),
+        Err(nom::Err::Incomplete(_needed)) => {
+            Ok(None)
+        }
+        Err(e) => Err(anyhow!("parse error: {}", e)),
+    }
+}
+
+async fn accept_https(
+    listen_https_addr: SocketAddr,
+    tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
+    public_base_url: Url,
+    webapp_client: Client,
+    incoming_https_connections_tx: mpsc::Sender<
+        Result<director::Connection<tokio_rustls::server::TlsStream<TcpStream>>, io::Error>,
+    >,
+) -> Result<(), anyhow::Error> {
+    let mut listener = TcpListener::bind(listen_https_addr).await?;
+    loop {
+        shadow_clone!(tls_gw_common);
+        shadow_clone!(incoming_https_connections_tx);
+        shadow_clone!(public_base_url);
+        shadow_clone!(webapp_client);
+
+        let (mut conn, _director_addr) = listener.accept().await?;
+        let _ = conn.set_nodelay(true);
+
+        let handle_connection = {
+            shadow_clone!(mut incoming_https_connections_tx);
+
+            async move {
+                shadow_clone!(tls_gw_common);
+                shadow_clone!(public_base_url);
+                shadow_clone!(webapp_client);
+
+                let header_len = conn.read_u16().await?;
+                let mut buf = vec![0u8; header_len.try_into().unwrap()];
+                conn.read_exact(&mut buf).await?;
+                let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
+
+                let mut peeked_buf = vec![0u8; 512];
+                let sni_hostname = loop {
+                    let bytes_read = conn.peek(&mut peeked_buf[..]).await?;
+                    if bytes_read == 0 {
+                        return Ok(());
+                    }
+
+                    let to_parse = peeked_buf[..bytes_read].to_vec();
+
+                    let client_hello_parse_result = extract_sni_hostname(&to_parse[..]);
+
+                    const MAX_CLIENT_HELLO_LEN: usize = 16536;
+
+                    match client_hello_parse_result? {
+                        None => {
+                            if bytes_read < MAX_CLIENT_HELLO_LEN {
+                                peeked_buf.resize(
+                                    std::cmp::min(peeked_buf.len() * 2, MAX_CLIENT_HELLO_LEN),
+                                    0,
+                                );
+                            } else {
+                                return Err(anyhow!("could not parse ClientHello: too long"));
+                            }
+                        }
+                        Some(sni_hostname) => {
+                            break sni_hostname;
+                        }
+                    };
+                };
+
+                let hostname = if let Some(hostname) = sni_hostname {
+                    hostname
+                } else {
+                    return Err(anyhow!("no hostname in ClientHello"));
+                };
+
+                info!("SNI hostname = {}", hostname);
+
+                // let builder = warp::TlsConfigBuilder::new();
+
+                let (cert, pkey) = if public_base_url.host().unwrap().to_string() == hostname {
+                    let locked = tls_gw_common.read();
+
+                    let cfg = (&*tls_gw_common.read()).clone();
+
+                    match &cfg {
+                        Some(cert_data)
+                            if cert_data.common_gw_hostname == hostname
+                                || cfg!(debug_assertions) =>
+                        {
+                            (
+                                cert_data.common_gw_host_certificate.clone(),
+                                cert_data.common_gw_host_private_key.clone(),
+                            )
+                        }
+                        Some(cert_data) => {
+                            info!(
+                                "common cert for wrong hostname found. expected {}, found {}",
+                                hostname, cert_data.common_gw_hostname
+                            );
+                            return Err(anyhow!("wrong hostname"));
+                        }
+                        None => {
+                            info!("certificate haven't been set by assistant channel");
+                            return Err(anyhow!("no certificate set"));
+                        }
+                    }
+                } else {
+                    shadow_clone!(webapp_client);
+
+                    match webapp_client.get_certificate(hostname.clone()).await {
+                        Ok(Some(certs)) => (certs.certificate, certs.private_key),
+                        Ok(None) => {
+                            let locked = tls_gw_common.read();
+
+                            match &*locked {
+                                Some(cert_data) if cfg!(debug_assertions) => (
+                                    cert_data.common_gw_host_certificate.clone(),
+                                    cert_data.common_gw_host_private_key.clone(),
+                                ),
+                                _ => {
+                                    return Err(anyhow!("no certificate found"));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("error retrieving certificate for {}: {}", hostname, e);
+                            return Err(anyhow!("error retrieving certificates: {}", e));
+                        }
+                    }
+                };
+
+                let mut config = ServerConfig::new(NoClientAuth::new());
+
+                let cert_vec = cert.as_bytes().to_vec();
+                let key_vec = pkey.as_bytes().to_vec();
+
+                let mut cert_rdr = BufReader::new(Cursor::new(&cert_vec));
+                let certs = tokio_rustls::rustls::internal::pemfile::certs(&mut cert_rdr)
+                    .map_err(|_| anyhow!("cert error"))?;
+
+                let key = match tokio_rustls::rustls::internal::pemfile::pkcs8_private_keys(
+                    &mut BufReader::new(Cursor::new(&key_vec)),
+                ) {
+                    Ok(pkcs8) if !pkcs8.is_empty() => {
+                        info!("using PKCS8 tunnel certificate");
+                        pkcs8
+                    }
+                    _ => tokio_rustls::rustls::internal::pemfile::rsa_private_keys(
+                        &mut BufReader::new(Cursor::new(&key_vec)),
+                    )
+                    .map_err(|_| anyhow!("private key error"))?,
+                };
+
+                config.set_single_cert(certs, key[0].clone())?;
+
+                config.set_protocols(&["h2".into(), "http/1.1".into()]);
+
+                let acceptor = TlsAcceptor::from(Arc::new(config));
+
+                let tls_conn = acceptor.accept(conn).await?;
+
+                let conn = director::Connection::new(tls_conn, source_info);
+                incoming_https_connections_tx
+                    .send(Ok::<_, io::Error>(conn))
+                    .await?;
+
+                Ok::<_, anyhow::Error>(())
+            }
+        };
+
+        tokio::spawn(handle_connection);
+    }
 }
 
 pub async fn server(
@@ -192,22 +415,55 @@ pub async fn server(
     let health = warp::path!("_exg" / "health")
         .and_then(move || async move { Ok::<_, warp::Rejection>("Healthy") });
 
-    let (_, http_server) = warp::serve(
-        acme.or(health)
-            .or(redirect_http_server)
-            .with(warp::trace::request()),
-    )
-    .bind_with_graceful_shutdown(listen_http_addr, {
-        async move {
-            let reason = https_stop_wait.await;
-            info!(
-                "Triggering graceful shutdown of HTTP by request: {}",
-                reason
-            );
-        }
-    });
+    let (mut incoming_http_connections_tx, incoming_http_connections_rx) = mpsc::channel(16);
 
-    tokio::spawn(http_server);
+    let http_acceptor = tokio::spawn(
+        #[allow(unreachable_code)]
+        async move {
+            let mut listener = TcpListener::bind(listen_http_addr).await?;
+            loop {
+                let (mut conn, _director_addr) = listener.accept().await?;
+                let _ = conn.set_nodelay(true);
+
+                let header_len = conn.read_u16().await?;
+                let mut buf = vec![0u8; header_len.try_into().unwrap()];
+                conn.read_exact(&mut buf).await?;
+                let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
+                let conn = director::Connection::new(conn, source_info);
+                incoming_http_connections_tx
+                    .send(Ok::<_, io::Error>(conn))
+                    .await?;
+            }
+
+            Ok::<_, anyhow::Error>(())
+        },
+    );
+
+    let (incoming_https_connections_tx, incoming_https_connections_rx) = mpsc::channel(16);
+    let https_acceptor = tokio::spawn(accept_https(
+        listen_https_addr,
+        tls_gw_common.clone(),
+        public_base_url,
+        webapp_client.clone(),
+        incoming_https_connections_tx,
+    ));
+
+    let http_server = tokio::spawn(
+        warp::serve(
+            acme.or(health)
+                .or(redirect_http_server)
+                .with(warp::trace::request()),
+        )
+        .serve_incoming_with_graceful_shutdown2(incoming_http_connections_rx, {
+            async move {
+                let reason = https_stop_wait.await;
+                info!(
+                    "Triggering graceful shutdown of HTTP by request: {}",
+                    reason
+                );
+            }
+        }),
+    );
 
     let client = reqwest::ClientBuilder::new()
         .gzip(true)
@@ -971,112 +1227,38 @@ pub async fn server(
             }
         });
 
-    let (_, https_server) = warp::serve(
-        health
-            .or(oauth2_callback)
-            .or(server)
-            .with(warp::trace::request()),
-    )
-    .tls({
-        shadow_clone!(webapp_client);
+    let https_server = tokio::spawn(
+        warp::serve(
+            health
+                .or(oauth2_callback)
+                .or(server)
+                .with(warp::trace::request()),
+        )
+        .serve_incoming_with_graceful_shutdown2(incoming_https_connections_rx, {
+            async move {
+                let reason = app_stop_wait.await;
 
-        move |maybe_hostname| {
-            shadow_clone!(webapp_client);
-            shadow_clone!(public_base_url);
-            shadow_clone!(tls_gw_common);
+                https_stop_handle.stop(reason.clone());
 
-            info!("Serve hostname (from SNI) `{:?}`", maybe_hostname);
+                info!("Triggering graceful shutdown by request: {}", reason);
+            }
+        }),
+    );
 
-            Box::pin(async move {
-                if let Some(hostname) = maybe_hostname {
-                    let mut builder = warp::TlsConfigBuilder::new();
-
-                    info!(
-                        "compare {:?} with {:?}",
-                        public_base_url.host().unwrap().to_string(),
-                        hostname
-                    );
-
-                    if public_base_url.host().unwrap().to_string() == hostname {
-                        let locked = tls_gw_common.read();
-
-                        match &*locked {
-                            Some(cert_data)
-                                if cert_data.common_gw_hostname == hostname
-                                    || cfg!(debug_assertions) =>
-                            {
-                                info!("successfully set cert and key");
-                                builder = builder
-                                    .cert(cert_data.common_gw_host_certificate.as_ref())
-                                    .key(cert_data.common_gw_host_private_key.as_ref());
-                            }
-                            Some(cert_data) => {
-                                info!(
-                                    "common cert for wrong hostname found. expected {}, found {}",
-                                    hostname, cert_data.common_gw_hostname
-                                );
-                                return None;
-                            }
-                            None => {
-                                info!("certificate haven't been set by assistant channel");
-                                return None;
-                            }
-                        }
-                    } else {
-                        shadow_clone!(webapp_client);
-
-                        match webapp_client.get_certificate(hostname.clone()).await {
-                            Ok(Some(certs)) => {
-                                builder = builder
-                                    .cert(certs.certificate.as_bytes())
-                                    .key(certs.private_key.as_bytes());
-                            }
-                            Ok(None) => {
-                                let locked = tls_gw_common.read();
-
-                                match &*locked {
-                                    Some(cert_data) if cfg!(debug_assertions) => {
-                                        info!("successfully set cert and key");
-                                        builder = builder
-                                            .cert(cert_data.common_gw_host_certificate.as_ref())
-                                            .key(cert_data.common_gw_host_private_key.as_ref());
-                                    }
-                                    _ => {
-                                        return None;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("error retrieving certificate for {}: {}", hostname, e);
-                                return None;
-                            }
-                        }
-                    }
-
-                    match builder.build() {
-                        Err(e) => {
-                            error!("Error in TLS certificate: {}", e);
-                            None
-                        }
-                        Ok(r) => Some(Arc::new(r)),
-                    }
-                } else {
-                    None
-                }
-            })
-        }
-    })
-    .bind_with_graceful_shutdown(listen_https_addr, {
-        async move {
-            let reason = app_stop_wait.await;
-
-            https_stop_handle.stop(reason.clone());
-
-            info!("Triggering graceful shutdown by request: {}", reason);
-        }
-    });
-
-    https_server.await;
+    tokio::select! {
+        r = http_server => {
+            info!("http_server stopped: {:?}", r);
+        },
+        r = https_server => {
+            info!("https_server stopped: {:?}", r);
+        },
+        r = http_acceptor => {
+            info!("http_acceptor stopped: {:?}", r);
+        },
+        r = https_acceptor => {
+            info!("https_acceptor stopped: {:?}", r);
+        },
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
