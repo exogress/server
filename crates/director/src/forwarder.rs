@@ -82,76 +82,90 @@ async fn forwarder(
                 let local_addr = incoming.local_addr()?;
 
                 info!("accepted connection from {}", incoming_addr);
-                if let Some(dst_addr) = rules.inner.lock().next() {
-                    tokio::spawn(async move {
+                tokio::spawn({
+                    shadow_clone!(rules);
+
+                    async move {
                         for _retry in 0..max_retries {
-                            let try_connect = async {
-                                let conn_result = TcpStream::connect(SocketAddr::from((
-                                    dst_addr,
-                                    forward_to_port,
-                                )))
-                                .await;
+                            let maybe_dst_addr = rules.inner.lock().next();
+                            if let Some(dst_addr) = maybe_dst_addr {
+                                info!("try proxy to {}", dst_addr);
+                                let try_connect = async {
+                                    let conn_result = TcpStream::connect(SocketAddr::from((
+                                        dst_addr,
+                                        forward_to_port,
+                                    )))
+                                    .await;
 
-                                match conn_result {
-                                    Ok(mut forward_to) => {
-                                        let (incoming_tx, incoming_rx) = incoming.split();
-                                        let (dst_tx, mut dst_rx) = forward_to.split();
+                                    match conn_result {
+                                        Ok(mut forward_to) => {
+                                            let (incoming_tx, incoming_rx) = incoming.split();
+                                            let (dst_tx, mut dst_rx) = forward_to.split();
 
-                                        let header = bincode::serialize(&SourceInfo {
-                                            local_addr,
-                                            remote_addr: incoming_addr,
-                                        })
-                                        .unwrap();
+                                            let header = bincode::serialize(&SourceInfo {
+                                                local_addr,
+                                                remote_addr: incoming_addr,
+                                            })
+                                            .unwrap();
 
-                                        dst_rx.write_u16(header.len().try_into().unwrap()).await?;
-                                        dst_rx.write_all(&header).await?;
+                                            dst_rx
+                                                .write_u16(header.len().try_into().unwrap())
+                                                .await?;
+                                            dst_rx.write_all(&header).await?;
 
-                                        let buf1 = buf_pool.pull(|| [0; BUF_SIZE]);
-                                        let buf2 = buf_pool.pull(|| [0; BUF_SIZE]);
+                                            let buf1 = buf_pool.pull(|| [0; BUF_SIZE]);
+                                            let buf2 = buf_pool.pull(|| [0; BUF_SIZE]);
 
-                                        let (_, mut reusable_buff1) = buf1.detach();
-                                        let (_, mut reusable_buff2) = buf2.detach();
+                                            let (_, mut reusable_buff1) = buf1.detach();
+                                            let (_, mut reusable_buff2) = buf2.detach();
 
-                                        let forward1 =
-                                            forward(incoming_tx, dst_rx, &mut reusable_buff1[..]);
-                                        let forward2 =
-                                            forward(dst_tx, incoming_rx, &mut reusable_buff2[..]);
+                                            let forward1 = forward(
+                                                incoming_tx,
+                                                dst_rx,
+                                                &mut reusable_buff1[..],
+                                            );
+                                            let forward2 = forward(
+                                                dst_tx,
+                                                incoming_rx,
+                                                &mut reusable_buff2[..],
+                                            );
 
-                                        let r = tokio::select! {
-                                            r = forward1 => r,
-                                            r = forward2 => r,
-                                        };
+                                            let r = tokio::select! {
+                                                r = forward1 => r,
+                                                r = forward2 => r,
+                                            };
 
-                                        if buf_pool.len() < max_buf_pool_size {
-                                            buf_pool.attach(reusable_buff1);
-                                            buf_pool.attach(reusable_buff2);
+                                            if buf_pool.len() < max_buf_pool_size {
+                                                buf_pool.attach(reusable_buff1);
+                                                buf_pool.attach(reusable_buff2);
+                                            }
+
+                                            return r;
                                         }
+                                        Err(e) => {
+                                            warn!("could not connect to gateway: {}", e);
+                                        }
+                                    }
 
-                                        return r;
+                                    Err(io::Error::new(
+                                        io::ErrorKind::ConnectionRefused,
+                                        "could not connect to any of gateways",
+                                    ))
+                                };
+
+                                match try_connect.await {
+                                    Ok(()) => {
+                                        info!("connection finished");
+                                        break;
                                     }
                                     Err(e) => {
-                                        warn!("could not connect to gateway: {}", e);
+                                        error!("could not connect to gateway: {}", e);
                                     }
-                                }
-
-                                Err(io::Error::new(
-                                    io::ErrorKind::ConnectionRefused,
-                                    "could not connect to any of gateways",
-                                ))
-                            };
-
-                            match try_connect.await {
-                                Ok(()) => {
-                                    info!("connection finished");
-                                    break;
-                                }
-                                Err(e) => {
-                                    error!("could not connect to gateway: {}", e);
-                                }
-                            };
+                                };
+                            }
                         }
-                    });
-                }
+                    }
+                });
             }
             Err(e) => {
                 warn!("could not accept incoming connection: {}", e);
