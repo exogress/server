@@ -57,6 +57,7 @@ mod dbip;
 mod config;
 mod http_serve;
 mod int_server;
+mod joined_io;
 mod mime_helpers;
 mod rules_counter;
 mod statistics;
