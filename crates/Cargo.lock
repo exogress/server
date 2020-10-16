@@ -1006,6 +1006,7 @@ dependencies = [
  "parking_lot 0.11.0",
  "patricia_tree",
  "percent-encoding 2.1.0",
+ "pin-utils",
  "progress_bar",
  "prometheus",
  "rand 0.7.3",

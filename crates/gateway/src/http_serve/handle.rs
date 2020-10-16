@@ -39,7 +39,6 @@ use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncodi
 use crate::http_serve::request::RequestBody;
 use crate::http_serve::templates::respond_with_login;
 use crate::http_serve::{auth, director};
-use crate::joined_io::JoinedIo;
 use crate::rules_counter::AccountRulesCounters;
 use crate::stop_reasons::AppStopWait;
 use crate::url_mapping::mapping::{
@@ -354,12 +353,10 @@ pub async fn server(
                                 };
                             };
 
-                            let (read, write) = conn.into_split();
-
                             header.truncate(header_bytes_read);
 
                             Ok::<_, anyhow::Error>((
-                                JoinedIo::new(Cursor::new(header).chain(read), write),
+                                crate::chain::chain(Cursor::new(header), conn),
                                 sni_hostname,
                                 source_info,
                             ))
