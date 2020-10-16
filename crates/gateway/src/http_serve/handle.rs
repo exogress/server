@@ -68,6 +68,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::time::delay_for;
 use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
 use typed_headers::{Accept, ContentCoding, ContentEncoding, HeaderMapExt};
 
@@ -160,10 +161,25 @@ async fn accept_https(
                 let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
 
                 let mut peeked_buf = vec![0u8; 512];
+                let mut last_bytes_read = 0;
+                let mut same_length_count = 0;
                 let sni_hostname = loop {
                     let bytes_read = conn.peek(&mut peeked_buf[..]).await?;
                     if bytes_read == 0 {
                         return Ok(());
+                    }
+
+                    if last_bytes_read == bytes_read {
+                        same_length_count += 1;
+                        if same_length_count > 3 {
+                            return Ok(());
+                        } else {
+                            delay_for(Duration::from_millis(5)).await;
+                            continue;
+                        }
+                    } else {
+                        last_bytes_read = bytes_read;
+                        same_length_count = 0;
                     }
 
                     let to_parse = peeked_buf[..bytes_read].to_vec();
