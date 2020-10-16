@@ -134,6 +134,7 @@ pub async fn server(
     tunnels: ClientTunnels,
     listen_http_addr: SocketAddr,
     listen_https_addr: SocketAddr,
+    listen_http_acme_challenge_addr: SocketAddr,
     external_https_port: u16,
     webapp_client: Client,
     app_stop_wait: AppStopWait,
@@ -182,66 +183,75 @@ pub async fn server(
             },
         );
 
-    let acme = warp::path!(".well-known" / "acme-challenge" / String)
+    let own_acme = warp::path!(".well-known" / "acme-challenge" / String).and_then({
+        shadow_clone!(webroot);
+
+        move |token: String| {
+            shadow_clone!(webroot);
+
+            async move {
+                let filename = format!(".well-known/acme-challenge/{}", token);
+
+                let read_local_file = async {
+                    let full_path = webroot.clone().join(&filename);
+
+                    info!("check ACME challenges in {}", full_path.display());
+                    let mut file = File::open(full_path).await?;
+                    let mut content = String::new();
+                    file.read_to_string(&mut content).await?;
+
+                    Ok::<_, io::Error>(content)
+                };
+
+                match read_local_file.await {
+                    Ok(content) => {
+                        info!("validation request successfully served from local filder");
+                        Ok(Response::builder()
+                            .header(CONTENT_TYPE, "text/plain")
+                            .body(content)
+                            .unwrap())
+                    }
+                    Err(_) => {
+                        info!("validation request successfully served from local filder");
+                        Err(warp::reject::not_found())
+                    }
+                }
+            }
+        }
+    });
+
+    let deligated_acme = warp::path!(".well-known" / "acme-challenge" / String)
         .and(filters::host::optional())
         .and_then({
             shadow_clone!(webapp_client);
-            shadow_clone!(webroot);
 
             move |token: String, host: Option<Authority>| {
                 shadow_clone!(webapp_client);
-                shadow_clone!(webroot);
 
                 async move {
+                    let hostname = host.expect("no host in request");
                     let filename = format!(".well-known/acme-challenge/{}", token);
 
-                    let read_local_file = async {
-                        let full_path = webroot.clone().join(&filename);
+                    info!(
+                        "ACME HTTP challenge verification request: {} on {}",
+                        hostname, filename
+                    );
 
-                        info!("check ACME challenges in {}", full_path.display());
-                        let mut file = File::open(full_path).await?;
-                        let mut content = String::new();
-                        file.read_to_string(&mut content).await?;
+                    let res = webapp_client
+                        .acme_http_challenge_verification(hostname.as_str(), filename.as_str())
+                        .await;
 
-                        Ok::<_, io::Error>(content)
-                    };
-
-                    match read_local_file.await {
-                        Ok(content) => {
-                            info!("validation request successfully served from local filder");
+                    match res {
+                        Ok(info) => {
+                            info!("validation request succeeded for host {}", hostname);
                             Ok(Response::builder()
-                                .header(CONTENT_TYPE, "text/plain")
-                                .body(content)
+                                .header(CONTENT_TYPE, info.content_type.as_str())
+                                .body(info.file_content)
                                 .unwrap())
                         }
-                        Err(_e) => {
-                            let hostname = host.expect("no host in request");
-
-                            info!(
-                                "ACME HTTP challenge verification request: {} on {}",
-                                filename, hostname
-                            );
-
-                            let res = webapp_client
-                                .acme_http_challenge_verification(
-                                    hostname.as_str(),
-                                    filename.as_str(),
-                                )
-                                .await;
-
-                            match res {
-                                Ok(info) => {
-                                    info!("validation request succeeded for host {}", hostname);
-                                    Ok(Response::builder()
-                                        .header(CONTENT_TYPE, info.content_type.as_str())
-                                        .body(info.file_content)
-                                        .unwrap())
-                                }
-                                Err(e) => {
-                                    warn!("error in ACME verification: {}", e);
-                                    Err(warp::reject::not_found())
-                                }
-                            }
+                        Err(e) => {
+                            warn!("error in ACME verification: {}", e);
+                            Err(warp::reject::not_found())
                         }
                     }
                 }
@@ -470,9 +480,14 @@ pub async fn server(
         }
     });
 
+    let acme_http_server = tokio::spawn(
+        warp::serve(own_acme.with(warp::trace::request())).bind(listen_http_acme_challenge_addr),
+    );
+
     let http_server = tokio::spawn(
         warp::serve(
-            acme.or(health)
+            deligated_acme
+                .or(health)
                 .or(redirect_http_server)
                 .with(warp::trace::request()),
         )
@@ -1273,6 +1288,9 @@ pub async fn server(
         },
         r = https_server => {
             info!("https_server stopped: {:?}", r);
+        },
+        r = acme_http_server => {
+            info!("acme_http_server stopped: {:?}", r);
         },
         r = http_acceptor => {
             info!("http_acceptor stopped: {:?}", r);

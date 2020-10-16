@@ -117,6 +117,15 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("listen_http_acme_challenge")
+                .long("listen-http-acme-challenge")
+                .value_name("SOCKET_ADDR")
+                .default_value("0.0.0.0:80")
+                .required(true)
+                .help("Set HTTP listen address for ACME challenge")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("listen_http")
                 .long("listen-http")
                 .value_name("SOCKET_ADDR")
@@ -341,6 +350,14 @@ fn main() {
         .parse()
         .expect("bad int_api_base_url");
 
+    let listen_http_acme_challenge_addr = matches
+        .value_of("listen_http_acme_challenge")
+        .map(|r| {
+            r.parse::<SocketAddr>()
+                .expect("Failed to parse listen HTTP address (ip:port) for ACME challenge")
+        })
+        .unwrap();
+
     let listen_http_addr = matches
         .value_of("listen_http")
         .map(|r| {
@@ -497,6 +514,7 @@ fn main() {
             .map(|r| r.parse().expect("Could not parse external_https_port"))
             .unwrap_or_else(|| listen_https_addr.port());
 
+        info!("Listening ACME HTTP on {}", listen_http_acme_challenge_addr);
         info!("Listening HTTP on {}", listen_http_addr);
         info!(
             "Listening HTTPS on {}, external_port is {}",
@@ -697,6 +715,7 @@ fn main() {
             client_tunnels,
             listen_http_addr,
             listen_https_addr,
+            listen_http_acme_challenge_addr,
             external_https_port,
             api_client,
             app_stop_wait,
