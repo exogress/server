@@ -76,41 +76,57 @@ node("linux-docker") {
                 sh "docker tag ${IMAGE}:${TAG} ${IMAGE}:latest"
             }
 
-            stage('build_signaler') {
-                sh "docker build  --target=signaler -t ${IMAGE_SIGNALER}:${TAG} ."
-                sh "docker tag ${IMAGE_SIGNALER}:${TAG} ${IMAGE_SIGNALER}:latest"
-            }
-
-            stage('build_gateway') {
-                sh "docker build  --target=gateway -t ${IMAGE_GATEWAY}:${TAG} ."
-                sh "docker tag ${IMAGE_GATEWAY}:${TAG} ${IMAGE_GATEWAY}:latest"
-            }
-
-            stage('build_assistant') {
-                sh "docker build  --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} ."
-                sh "docker tag ${IMAGE_ASSISTANT}:${TAG} ${IMAGE_ASSISTANT}:latest"
-            }
-
-            stage('build_director') {
-                sh "docker build  --target=director -t ${IMAGE_DIRECTOR}:${TAG} ."
-                sh "docker tag ${IMAGE_DIRECTOR}:${TAG} ${IMAGE_DIRECTOR}:latest"
-            }
-
-            stage('save_artifacts') {
-                if (PUSH == true) {
-                    sh "docker push $IMAGE_SIGNALER:$TAG"
-                    sh "docker push $IMAGE_SIGNALER:latest"
-
-                    sh "docker push $IMAGE_GATEWAY:$TAG"
-                    sh "docker push $IMAGE_GATEWAY:latest"
-
-                    sh "docker push $IMAGE_ASSISTANT:$TAG"
-                    sh "docker push $IMAGE_ASSISTANT:latest"
-
-                    sh "docker push $IMAGE_DIRECTOR:$TAG"
-                    sh "docker push $IMAGE_DIRECTOR:latest"
+            parallel(
+                "signaler": {
+                    node("linux-docker") {
+                        stage('build_signaler') {
+                            sh "docker build --no-cache --target=signaler -t ${IMAGE_SIGNALER}:${TAG} ."
+                            sh "docker tag ${IMAGE_SIGNALER}:${TAG} ${IMAGE_SIGNALER}:latest"
+                            if (PUSH == true) {
+                                sh "docker push $IMAGE_SIGNALER:$TAG"
+                                sh "docker push $IMAGE_SIGNALER:latest"
+                            }
+                        }
+                    }
+                },
+                "gateway": {
+                    node("linux-docker") {
+                        stage('build_gateway') {
+                            sh "docker build --no-cache --target=gateway -t ${IMAGE_GATEWAY}:${TAG} ."
+                            sh "docker tag ${IMAGE_GATEWAY}:${TAG} ${IMAGE_GATEWAY}:latest"
+                            if (PUSH == true) {
+                                sh "docker push $IMAGE_GATEWAY:$TAG"
+                                sh "docker push $IMAGE_GATEWAY:latest"
+                            }
+                        }
+                    }
+                },
+                "assistant": {
+                    node("linux-docker") {
+                        stage('build_assistant') {
+                            sh "docker build --no-cache --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} ."
+                            sh "docker tag ${IMAGE_ASSISTANT}:${TAG} ${IMAGE_ASSISTANT}:latest"
+                            if (PUSH == true) {
+                                sh "docker push $IMAGE_ASSISTANT:$TAG"
+                                sh "docker push $IMAGE_ASSISTANT:latest"
+                            }
+                        }
+                    }
+                },
+                "director": {
+                    node("linux-docker") {
+                        stage('build_director') {
+                            sh "docker build --no-cache --target=director -t ${IMAGE_DIRECTOR}:${TAG} ."
+                            sh "docker tag ${IMAGE_DIRECTOR}:${TAG} ${IMAGE_DIRECTOR}:latest"
+                            if (PUSH == true) {
+                                sh "docker push $IMAGE_DIRECTOR:$TAG"
+                                sh "docker push $IMAGE_DIRECTOR:latest"
+                            }
+                        }
+                    }
                 }
-            }
+            )
+
             if (currentBuild.getPreviousBuild()?.getResult() != "SUCCESS") {
                 slackSend channel: '#dev',
                         color: 'good',
