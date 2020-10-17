@@ -79,6 +79,7 @@ async fn forwarder(
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {
+                let _ = incoming.set_nodelay(true);
                 let local_addr = incoming.local_addr()?;
 
                 info!("accepted connection from {}", incoming_addr);
@@ -99,6 +100,8 @@ async fn forwarder(
 
                                     match conn_result {
                                         Ok(mut forward_to) => {
+                                            let _ = forward_to.set_nodelay(true);
+
                                             let (incoming_tx, incoming_rx) = incoming.split();
                                             let (dst_tx, mut dst_rx) = forward_to.split();
 
