@@ -12,6 +12,7 @@ mod termination;
 
 use crate::termination::StopReason;
 use clap::{App, Arg};
+use exogress_common_utils::termination::stop_signal_listener;
 use forwarder::{ForwarderBuilder, ForwardingRules};
 use std::net::IpAddr;
 use stop_handle::stop_handle;
@@ -150,6 +151,8 @@ fn main() {
     info!("listen_https = {}", listen_https);
 
     rt.block_on(async move {
+        tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
+
         let forwarder = ForwarderBuilder::default()
             .listen_http(listen_http)
             .listen_https(listen_https)
