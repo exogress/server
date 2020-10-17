@@ -431,7 +431,7 @@ pub async fn server(
 
                         let mut config = ServerConfig::new(NoClientAuth::new());
 
-                        config.session_storage = Arc::new(NoServerSessionStorage {});
+                        // config.session_storage = Arc::new(NoServerSessionStorage {});
 
                         let cert_vec = cert.as_bytes().to_vec();
                         let key_vec = pkey.as_bytes().to_vec();
