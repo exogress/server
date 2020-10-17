@@ -79,6 +79,15 @@ node("linux-docker") {
             parallel(
                 "signaler": {
                     node("linux-docker") {
+                        stage("checkout") {
+                            checkout([
+                                    $class           : 'GitSCM',
+                                    branches         : scm.branches,
+                                    extensions       : scm.extensions + [[$class: 'SubmoduleOption', recursiveSubmodules: true, parentCredentials: true]],
+                                    userRemoteConfigs: scm.userRemoteConfigs
+                            ])
+                        }
+
                         stage('build_signaler') {
                             sh "docker build --no-cache --target=signaler -t ${IMAGE_SIGNALER}:${TAG} ."
                             sh "docker tag ${IMAGE_SIGNALER}:${TAG} ${IMAGE_SIGNALER}:latest"
@@ -91,6 +100,15 @@ node("linux-docker") {
                 },
                 "gateway": {
                     node("linux-docker") {
+                        stage("checkout") {
+                            checkout([
+                                    $class           : 'GitSCM',
+                                    branches         : scm.branches,
+                                    extensions       : scm.extensions + [[$class: 'SubmoduleOption', recursiveSubmodules: true, parentCredentials: true]],
+                                    userRemoteConfigs: scm.userRemoteConfigs
+                            ])
+                        }
+
                         stage('build_gateway') {
                             sh "docker build --no-cache --target=gateway -t ${IMAGE_GATEWAY}:${TAG} ."
                             sh "docker tag ${IMAGE_GATEWAY}:${TAG} ${IMAGE_GATEWAY}:latest"
@@ -103,6 +121,15 @@ node("linux-docker") {
                 },
                 "assistant": {
                     node("linux-docker") {
+                        stage("checkout") {
+                            checkout([
+                                    $class           : 'GitSCM',
+                                    branches         : scm.branches,
+                                    extensions       : scm.extensions + [[$class: 'SubmoduleOption', recursiveSubmodules: true, parentCredentials: true]],
+                                    userRemoteConfigs: scm.userRemoteConfigs
+                            ])
+                        }
+
                         stage('build_assistant') {
                             sh "docker build --no-cache --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} ."
                             sh "docker tag ${IMAGE_ASSISTANT}:${TAG} ${IMAGE_ASSISTANT}:latest"
@@ -115,6 +142,15 @@ node("linux-docker") {
                 },
                 "director": {
                     node("linux-docker") {
+                        stage("checkout") {
+                            checkout([
+                                    $class           : 'GitSCM',
+                                    branches         : scm.branches,
+                                    extensions       : scm.extensions + [[$class: 'SubmoduleOption', recursiveSubmodules: true, parentCredentials: true]],
+                                    userRemoteConfigs: scm.userRemoteConfigs
+                            ])
+                        }
+
                         stage('build_director') {
                             sh "docker build --no-cache --target=director -t ${IMAGE_DIRECTOR}:${TAG} ."
                             sh "docker tag ${IMAGE_DIRECTOR}:${TAG} ${IMAGE_DIRECTOR}:latest"
