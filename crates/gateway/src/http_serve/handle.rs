@@ -900,6 +900,7 @@ pub async fn server(
                         info!("requested_url: {:?}", requested_url);
 
                         let mut replaced_url = requested_url.clone();
+                        replaced_url.set_scheme("http").unwrap();
                         {
                             let mut requested_segments = requested_url.path_segments().unwrap();
                             info!("handle base_path = {:?}", handler.base_path);
@@ -1590,7 +1591,11 @@ async fn proxy_ws(
     connector: Connector,
     connect_target: ConnectTarget,
 ) -> Result<Response<hyper::Body>, Error> {
+    info!("handle WS connection. proxy_to = {:?}", proxy_to);
+
     connect_target.update_url(&mut proxy_to);
+
+    info!("handle WS connection. handler = {:?}", connect_target);
 
     let should_use_tls = if proxy_to.scheme() == "http" {
         proxy_to.set_scheme("ws").unwrap();
