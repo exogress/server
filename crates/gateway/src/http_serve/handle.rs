@@ -70,7 +70,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
+use tokio_rustls::rustls::{NoClientAuth, NoServerSessionStorage, ServerConfig};
 use typed_headers::{Accept, ContentCoding, ContentEncoding, HeaderMapExt};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -430,6 +430,8 @@ pub async fn server(
                         };
 
                         let mut config = ServerConfig::new(NoClientAuth::new());
+
+                        config.session_storage = Arc::new(NoServerSessionStorage {});
 
                         let cert_vec = cert.as_bytes().to_vec();
                         let key_vec = pkey.as_bytes().to_vec();
