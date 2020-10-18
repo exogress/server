@@ -268,7 +268,7 @@ pub async fn server(
             let mut listener = TcpListener::bind(listen_http_addr).await?;
             loop {
                 let (mut conn, _director_addr) = listener.accept().await?;
-                let _ = conn.set_nodelay(true);
+                conn.set_nodelay(true)?;
 
                 let header_len = conn.read_u16().await?;
                 let mut buf = vec![0u8; header_len.try_into().unwrap()];
@@ -298,7 +298,7 @@ pub async fn server(
                 shadow_clone!(webapp_client);
 
                 let (mut conn, _director_addr) = listener.accept().await?;
-                let _ = conn.set_nodelay(true);
+                conn.set_nodelay(true)?;
 
                 let handle_connection = {
                     shadow_clone!(mut incoming_https_connections_tx);

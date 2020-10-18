@@ -6,6 +6,8 @@ extern crate derive_builder;
 extern crate tracing;
 #[macro_use]
 extern crate shadow_clone;
+#[macro_use]
+extern crate anyhow;
 
 mod forwarder;
 mod termination;

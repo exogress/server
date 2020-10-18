@@ -78,7 +78,7 @@ pub async fn tunnels_acceptor(
 
     loop {
         let (tunnel_stream, _peer_addr) = listener.accept().await?;
-        let _ = tunnel_stream.set_nodelay(true);
+        tunnel_stream.set_nodelay(true)?;
 
         shadow_clone!(tunnels);
         shadow_clone!(acceptor);

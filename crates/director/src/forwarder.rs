@@ -1,3 +1,4 @@
+use anyhow::Context;
 use exogress_server_common::director::SourceInfo;
 use object_pool::Pool;
 use parking_lot::Mutex;
@@ -45,18 +46,39 @@ pub struct Forwarder {
 }
 
 async fn forward(
-    mut tx: impl AsyncRead + Unpin,
-    mut rx: impl AsyncWrite + Unpin,
-    buf: &mut [u8],
-) -> Result<(), io::Error> {
+    mut incoming: impl AsyncRead + AsyncWrite + Unpin,
+    mut forward_to: impl AsyncRead + AsyncWrite + Unpin,
+    buf1: &mut [u8],
+    buf2: &mut [u8],
+) -> Result<(), anyhow::Error> {
     loop {
-        let bytes_read = tx.read(buf).await?;
+        tokio::select! {
+            bytes_read_result = incoming.read(buf1) => {
+                let bytes_read = bytes_read_result
+                    .with_context(|| "error reading from incoming")?;
+                if bytes_read == 0 {
+                    return Ok(());
+                } else {
+                    forward_to
+                        .write_all(&buf1[..bytes_read])
+                        .await
+                        .with_context(|| "error writing to forwarded")?;
+                }
+            },
 
-        if bytes_read == 0 {
-            break Ok(());
+            bytes_read_result = forward_to.read(buf2) => {
+                let bytes_read = bytes_read_result
+                    .with_context(|| "error reading from forwarded")?;
+                if bytes_read == 0 {
+                    return Ok(());
+                } else {
+                    incoming
+                        .write_all(&buf2[..bytes_read])
+                        .await
+                        .with_context(|| "error writing to incoming")?;
+                }
+            }
         }
-
-        rx.write(&buf[..bytes_read]).await?;
     }
 }
 
@@ -79,7 +101,7 @@ async fn forwarder(
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {
-                let _ = incoming.set_nodelay(true);
+                incoming.set_nodelay(true)?;
                 let local_addr = incoming.local_addr()?;
 
                 info!("accepted connection from {}", incoming_addr);
@@ -100,10 +122,7 @@ async fn forwarder(
 
                                     match conn_result {
                                         Ok(mut forward_to) => {
-                                            let _ = forward_to.set_nodelay(true);
-
-                                            let (incoming_tx, incoming_rx) = incoming.split();
-                                            let (dst_tx, mut dst_rx) = forward_to.split();
+                                            forward_to.set_nodelay(true)?;
 
                                             let header = bincode::serialize(&SourceInfo {
                                                 local_addr,
@@ -111,36 +130,28 @@ async fn forwarder(
                                             })
                                             .unwrap();
 
-                                            dst_rx
+                                            forward_to
                                                 .write_u16(header.len().try_into().unwrap())
                                                 .await?;
-                                            dst_rx.write_all(&header).await?;
+                                            forward_to.write_all(&header).await?;
 
-                                            let buf1 = buf_pool.pull(|| [0; BUF_SIZE]);
-                                            let buf2 = buf_pool.pull(|| [0; BUF_SIZE]);
+                                            let reusable_buf1 = buf_pool.pull(|| [0; BUF_SIZE]);
+                                            let reusable_buf2 = buf_pool.pull(|| [0; BUF_SIZE]);
 
-                                            let (_, mut reusable_buff1) = buf1.detach();
-                                            let (_, mut reusable_buff2) = buf2.detach();
+                                            let (_, mut buf1) = reusable_buf1.detach();
+                                            let (_, mut buf2) = reusable_buf2.detach();
 
-                                            let forward1 = forward(
-                                                incoming_tx,
-                                                dst_rx,
-                                                &mut reusable_buff1[..],
-                                            );
-                                            let forward2 = forward(
-                                                dst_tx,
-                                                incoming_rx,
-                                                &mut reusable_buff2[..],
-                                            );
-
-                                            let r = tokio::select! {
-                                                r = forward1 => r,
-                                                r = forward2 => r,
-                                            };
+                                            let r = forward(
+                                                &mut incoming,
+                                                &mut forward_to,
+                                                &mut buf1,
+                                                &mut buf2,
+                                            )
+                                            .await;
 
                                             if buf_pool.len() < max_buf_pool_size {
-                                                buf_pool.attach(reusable_buff1);
-                                                buf_pool.attach(reusable_buff2);
+                                                buf_pool.attach(buf1);
+                                                buf_pool.attach(buf2);
                                             }
 
                                             return r;
@@ -150,10 +161,7 @@ async fn forwarder(
                                         }
                                     }
 
-                                    Err(io::Error::new(
-                                        io::ErrorKind::ConnectionRefused,
-                                        "could not connect to any of gateways",
-                                    ))
+                                    Err(anyhow!("could not connect to any of gateways"))
                                 };
 
                                 match try_connect.await {
