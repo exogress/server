@@ -894,8 +894,6 @@ pub async fn server(
                 shadow_clone!(mut tunnels);
                 shadow_clone!(account_rules_counters);
 
-                let accept = headers.typed_get::<Accept>().expect("FIXME").expect("FIXME");
-
                 let remote_addr = remote_addr.unwrap().ip();
                 let local_addr = local_addr.unwrap().ip();
 
@@ -988,6 +986,7 @@ pub async fn server(
                                         .get(static_response_name) {
 
                                         let mut resp = Response::new(Body::from(""));
+                                        let accept = headers.typed_get::<Accept>().expect("FIXME").expect("FIXME");
 
                                         match static_response.try_respond(&accept, &mut resp) {
                                             Ok(()) => {
