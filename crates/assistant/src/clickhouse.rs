@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS traffic_counters (
     from_datetime DateTime,
     to_datetime DateTime,
     tunnel_bytes_gw_rx  UInt64,
-    tunnel_bytes_gw_tx  UInt64
+    tunnel_bytes_gw_tx  UInt64,
+    https_bytes_gw_rx  UInt64,
+    https_bytes_gw_tx  UInt64
 ) Engine=MergeTree() 
 PARTITION BY toYYYYMM(from_datetime) 
 ORDER BY (from_datetime, account_name)";
@@ -98,6 +100,20 @@ ORDER BY (from_datetime, account_name)";
                 record
                     .iter()
                     .map(|rec| rec.tunnel_bytes_gw_tx)
+                    .collect::<Vec<_>>(),
+            )
+            .column(
+                "https_bytes_gw_rx",
+                record
+                    .iter()
+                    .map(|rec| rec.https_bytes_gw_rx)
+                    .collect::<Vec<_>>(),
+            )
+            .column(
+                "https_bytes_gw_tx",
+                record
+                    .iter()
+                    .map(|rec| rec.https_bytes_gw_tx)
                     .collect::<Vec<_>>(),
             );
         let mut client = self.pool.get_handle().await?;

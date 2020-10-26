@@ -1,7 +1,7 @@
 ///! Count traffic on AsyncRead/AsyncWrite channels
 use bytes::{Buf, BufMut};
 use chrono::{DateTime, Utc};
-use core::mem;
+use core::{fmt, mem};
 use exogress_entities::AccountName;
 use futures::ready;
 use parking_lot::Mutex;
@@ -9,7 +9,7 @@ use std::convert::TryInto;
 use std::io;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -19,6 +19,7 @@ pub struct TrafficCounters {
     account_name: AccountName,
     bytes_read: AtomicU64,
     bytes_written: AtomicU64,
+    is_closed: AtomicBool,
     initiated_at: Mutex<DateTime<Utc>>,
 }
 
@@ -31,23 +32,78 @@ pub struct RecordedTrafficStatistics {
     pub to: DateTime<Utc>,
 }
 
+#[derive(Debug)]
+pub enum OneOfTrafficStatistics {
+    Tunnel(RecordedTrafficStatistics),
+    Https(RecordedTrafficStatistics),
+}
+
+impl OneOfTrafficStatistics {
+    pub fn account_name(&self) -> &AccountName {
+        match self {
+            OneOfTrafficStatistics::Https(s) => &s.account_name,
+            OneOfTrafficStatistics::Tunnel(s) => &s.account_name,
+        }
+    }
+    pub fn from(&self) -> &DateTime<Utc> {
+        match self {
+            OneOfTrafficStatistics::Https(s) => &s.from,
+            OneOfTrafficStatistics::Tunnel(s) => &s.from,
+        }
+    }
+    pub fn to(&self) -> &DateTime<Utc> {
+        match self {
+            OneOfTrafficStatistics::Https(s) => &s.to,
+            OneOfTrafficStatistics::Tunnel(s) => &s.to,
+        }
+    }
+    pub fn bytes_read(&self) -> &u64 {
+        match self {
+            OneOfTrafficStatistics::Https(s) => &s.bytes_read,
+            OneOfTrafficStatistics::Tunnel(s) => &s.bytes_read,
+        }
+    }
+    pub fn bytes_written(&self) -> &u64 {
+        match self {
+            OneOfTrafficStatistics::Https(s) => &s.bytes_written,
+            OneOfTrafficStatistics::Tunnel(s) => &s.bytes_written,
+        }
+    }
+    pub fn is_https(&self) -> bool {
+        match self {
+            OneOfTrafficStatistics::Https(_) => true,
+            _ => false,
+        }
+    }
+    pub fn is_tunnel(&self) -> bool {
+        match self {
+            OneOfTrafficStatistics::Tunnel(_) => true,
+            _ => false,
+        }
+    }
+}
+
 impl TrafficCounters {
-    pub fn flush(self: &Arc<TrafficCounters>) -> Option<RecordedTrafficStatistics> {
+    pub fn flush(self: &Arc<TrafficCounters>) -> Result<Option<RecordedTrafficStatistics>, ()> {
         let bytes_read = self.bytes_read.swap(0, Ordering::SeqCst);
         let bytes_written = self.bytes_written.swap(0, Ordering::SeqCst);
 
         if bytes_read == 0 && bytes_written == 0 {
-            return None;
+            return if self.is_closed.load(Ordering::SeqCst) {
+                Err(())
+            } else {
+                Ok(None)
+            };
         }
 
         let now = Utc::now();
-        Some(RecordedTrafficStatistics {
+        Ok(Some(RecordedTrafficStatistics {
             account_name: self.account_name.clone(),
             bytes_read,
             bytes_written,
             from: mem::replace(&mut self.initiated_at.lock(), now),
             to: now,
-        })
+        }))
     }
 
     pub fn new(account_name: AccountName) -> Arc<Self> {
@@ -55,6 +111,7 @@ impl TrafficCounters {
             account_name,
             bytes_read: Default::default(),
             bytes_written: Default::default(),
+            is_closed: false.into(),
             initiated_at: Mutex::new(Utc::now()),
         })
     }
@@ -63,6 +120,15 @@ impl TrafficCounters {
 pub struct TrafficCountedStream<I: AsyncRead + AsyncWrite + Unpin> {
     io: I,
     counters: Arc<TrafficCounters>,
+}
+
+impl<I> fmt::Debug for TrafficCountedStream<I>
+where
+    I: AsyncRead + AsyncWrite + Unpin,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TrafficCountedStream")
+    }
 }
 
 impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
@@ -75,11 +141,20 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        let num_bytes = ready!(Pin::new(&mut self.io).poll_read(cx, buf))?;
-        self.counters
-            .bytes_read
-            .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
-        Poll::Ready(Ok(num_bytes))
+        let res = (|| {
+            let num_bytes = ready!(Pin::new(&mut self.io).poll_read(cx, buf))?;
+            self.counters
+                .bytes_read
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+            Poll::Ready(Ok(num_bytes))
+        })();
+        match res {
+            Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
+                self.counters.is_closed.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        res
     }
 
     fn poll_read_buf<B: BufMut>(
@@ -90,11 +165,20 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
     where
         Self: Sized,
     {
-        let num_bytes = ready!(Pin::new(&mut self.io).poll_read_buf(cx, buf))?;
-        self.counters
-            .bytes_read
-            .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
-        Poll::Ready(Ok(num_bytes))
+        let res = (|| {
+            let num_bytes = ready!(Pin::new(&mut self.io).poll_read_buf(cx, buf))?;
+            self.counters
+                .bytes_read
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+            Poll::Ready(Ok(num_bytes))
+        })();
+        match res {
+            Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
+                self.counters.is_closed.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        res
     }
 }
 
@@ -104,19 +188,42 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TrafficCountedStream<I> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let num_bytes = ready!(Pin::new(&mut self.io).poll_write(cx, buf))?;
-        self.counters
-            .bytes_written
-            .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
-        Poll::Ready(Ok(num_bytes))
+        let res = (|| {
+            let num_bytes = ready!(Pin::new(&mut self.io).poll_write(cx, buf))?;
+            self.counters
+                .bytes_written
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+            Poll::Ready(Ok(num_bytes))
+        })();
+        match res {
+            Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
+                self.counters.is_closed.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        res
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_flush(cx)
+        let res = Pin::new(&mut self.io).poll_flush(cx);
+        match res {
+            Poll::Ready(Err(_)) => {
+                self.counters.is_closed.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        res
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_shutdown(cx)
+        let res = Pin::new(&mut self.io).poll_shutdown(cx);
+        match res {
+            Poll::Ready(_) => {
+                self.counters.is_closed.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        res
     }
 
     fn poll_write_buf<B: Buf>(
@@ -127,11 +234,20 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TrafficCountedStream<I> {
     where
         Self: Sized,
     {
-        let num_bytes = ready!(Pin::new(&mut self.io).poll_write_buf(cx, buf))?;
-        self.counters
-            .bytes_written
-            .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
-        Poll::Ready(Ok(num_bytes))
+        let res = (|| {
+            let num_bytes = ready!(Pin::new(&mut self.io).poll_write_buf(cx, buf))?;
+            self.counters
+                .bytes_written
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+            Poll::Ready(Ok(num_bytes))
+        })();
+        match res {
+            Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
+                self.counters.is_closed.store(true, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        res
     }
 }
 
@@ -164,7 +280,7 @@ mod test {
         let to_write = vec![0u8; 1000];
         counted_stream.write_all(&to_write).await.unwrap();
 
-        let counts = counters.flush().unwrap();
+        let counts = counters.flush().unwrap().unwrap();
 
         assert_eq!(counts.bytes_read, 32768);
         assert_eq!(counts.bytes_written, 1000);

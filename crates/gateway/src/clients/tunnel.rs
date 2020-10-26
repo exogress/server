@@ -202,16 +202,23 @@ pub async fn tunnels_acceptor(
             let flush_counters = async move {
                 loop {
                     delay_for(Duration::from_secs(60)).await;
-                    if let Some(stats) = counters.flush() {
-                        tunnel_counters_tx.send(stats).await?;
+                    match counters.flush() {
+                        Ok(Some(stats)) => {
+                            tunnel_counters_tx.send(stats).await?;
+                        }
+                        Err(()) => {
+                            break;
+                        }
+                        Ok(None) => {}
                     }
                 }
 
                 Ok::<_, anyhow::Error>(())
             };
 
+            tokio::spawn(flush_counters);
+
             tokio::select! {
-                _ = flush_counters => {},
                 res = bg => {
                     match res {
                         Ok(()) => {

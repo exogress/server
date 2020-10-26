@@ -34,6 +34,7 @@ use url::Url;
 
 use crate::clients::{tunnels_acceptor, ClientTunnels};
 
+use crate::clients::traffic_counter::OneOfTrafficStatistics;
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::stop_reasons::StopReason;
@@ -51,7 +52,7 @@ use tokio::time::delay_for;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
-mod clients;
+pub(crate) mod clients;
 mod dbip;
 // mod environments;
 mod chain;
@@ -524,6 +525,7 @@ fn main() {
         let client_tunnels = ClientTunnels::new(int_api_base_url);
 
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
+        let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
 
         tokio::spawn(tunnels_acceptor(
             listen_tunnel_addr,
@@ -581,7 +583,11 @@ fn main() {
             shadow_clone!(mut statistics_tx);
 
             const CHUNK: usize = 2048;
-            let mut ready_chunks = tunnel_counters_rx.ready_chunks(CHUNK);
+            let mut ready_chunks = futures::stream::select(
+                tunnel_counters_rx.map(OneOfTrafficStatistics::Tunnel),
+                https_counters_rx.map(OneOfTrafficStatistics::Https),
+            )
+            .ready_chunks(CHUNK);
             async move {
                 while let Some(ready_chunks) = ready_chunks.next().await {
                     let should_wait = ready_chunks.len() != CHUNK;
@@ -591,11 +597,29 @@ fn main() {
                             records: ready_chunks
                                 .into_iter()
                                 .map(|statistics| TrafficRecord {
-                                    account_name: statistics.account_name,
-                                    tunnel_bytes_gw_tx: statistics.bytes_written,
-                                    tunnel_bytes_gw_rx: statistics.bytes_read,
-                                    from: statistics.from,
-                                    to: statistics.to,
+                                    account_name: statistics.account_name().clone(),
+                                    tunnel_bytes_gw_tx: if statistics.is_tunnel() {
+                                        *statistics.bytes_written()
+                                    } else {
+                                        0
+                                    },
+                                    tunnel_bytes_gw_rx: if statistics.is_tunnel() {
+                                        *statistics.bytes_read()
+                                    } else {
+                                        0
+                                    },
+                                    https_bytes_gw_tx: if statistics.is_https() {
+                                        *statistics.bytes_written()
+                                    } else {
+                                        0
+                                    },
+                                    https_bytes_gw_rx: if statistics.is_https() {
+                                        *statistics.bytes_read()
+                                    } else {
+                                        0
+                                    },
+                                    from: statistics.from().clone(),
+                                    to: statistics.to().clone(),
                                 })
                                 .collect(),
                         },
@@ -727,6 +751,7 @@ fn main() {
             github_oauth2_client,
             assistant_base_url,
             &account_rules_counters,
+            https_counters_tx,
             dbip,
             resolver,
         );

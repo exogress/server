@@ -33,6 +33,9 @@ use warp::{filters, Filter, Rejection, Reply};
 
 use crate::clients::{ClientTunnels, ConnectedTunnel};
 // use crate::http_serve::auth;
+use crate::clients::traffic_counter::{
+    RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
+};
 use crate::config::static_response::StaticResponseExt;
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncoding};
@@ -54,6 +57,7 @@ use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::director::SourceInfo;
 use exogress_server_common::health::HealthState;
 use exogress_server_common::url_prefix::UrlPrefix;
+use futures::channel::mpsc;
 use http::uri::Authority;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use parking_lot::RwLock;
@@ -68,9 +72,8 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
-use tokio_rustls::rustls::{NoClientAuth, NoServerSessionStorage, ServerConfig};
+use tokio::time::{delay_for, timeout};
+use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
 use typed_headers::{Accept, ContentCoding, ContentEncoding, HeaderMapExt};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -145,6 +148,7 @@ pub async fn server(
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
     account_rules_counters: &AccountRulesCounters,
+    https_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
     resolver: TokioAsyncResolver,
 ) {
@@ -296,6 +300,7 @@ pub async fn server(
                 shadow_clone!(incoming_https_connections_tx);
                 shadow_clone!(public_base_url);
                 shadow_clone!(webapp_client);
+                shadow_clone!(mut https_counters_tx);
 
                 let (mut conn, _director_addr) = listener.accept().await?;
                 conn.set_nodelay(true)?;
@@ -373,13 +378,12 @@ pub async fn server(
 
                         info!("SNI hostname = {}", hostname);
 
-                        // let builder = warp::TlsConfigBuilder::new();
-
-                        let (cert, pkey) = if public_base_url.host().unwrap().to_string()
+                        let (cert, pkey, maybe_account_name) = if public_base_url
+                            .host()
+                            .unwrap()
+                            .to_string()
                             == hostname
                         {
-                            let locked = tls_gw_common.read();
-
                             let cfg = (&*tls_gw_common.read()).clone();
 
                             match &cfg {
@@ -390,6 +394,7 @@ pub async fn server(
                                     (
                                         cert_data.common_gw_host_certificate.clone(),
                                         cert_data.common_gw_host_private_key.clone(),
+                                        None,
                                     )
                                 }
                                 Some(cert_data) => {
@@ -408,7 +413,11 @@ pub async fn server(
                             shadow_clone!(webapp_client);
 
                             match webapp_client.get_certificate(hostname.clone()).await {
-                                Ok(Some(certs)) => (certs.certificate, certs.private_key),
+                                Ok(Some(certs)) => (
+                                    certs.certificate,
+                                    certs.private_key,
+                                    Some(certs.account_name),
+                                ),
                                 Ok(None) => {
                                     let locked = tls_gw_common.read();
 
@@ -416,6 +425,7 @@ pub async fn server(
                                         Some(cert_data) if cfg!(debug_assertions) => (
                                             cert_data.common_gw_host_certificate.clone(),
                                             cert_data.common_gw_host_private_key.clone(),
+                                            Some("fixme-metered-dev-account".parse().unwrap()),
                                         ),
                                         _ => {
                                             return Err(anyhow!("no certificate found"));
@@ -459,7 +469,35 @@ pub async fn server(
 
                         let acceptor = TlsAcceptor::from(Arc::new(config));
 
-                        let tls_conn = acceptor.accept(conn).await?;
+                        let metered = if let Some(account_name) = maybe_account_name {
+                            let counters = TrafficCounters::new(account_name.clone());
+                            let counted_stream = TrafficCountedStream::new(conn, counters.clone());
+
+                            let flush_counters = {
+                                async move {
+                                    loop {
+                                        delay_for(Duration::from_secs(20)).await;
+                                        if let Ok(Some(stats)) = counters.flush() {
+                                            https_counters_tx.send(stats).await?;
+                                            // info!(
+                                            //     "HTTPS traffic counted statistics on {}: {:?}",
+                                            //     account_name, stats
+                                            // );
+                                        }
+                                    }
+
+                                    Ok::<_, anyhow::Error>(())
+                                }
+                            };
+
+                            tokio::spawn(flush_counters);
+
+                            tokio_either::Either::Left(counted_stream)
+                        } else {
+                            tokio_either::Either::Right(conn)
+                        };
+
+                        let tls_conn = acceptor.accept(metered).await?;
 
                         let conn = director::Connection::new(tls_conn, source_info);
                         incoming_https_connections_tx

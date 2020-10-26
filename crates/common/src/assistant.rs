@@ -66,6 +66,8 @@ pub struct TrafficRecord {
     pub account_name: AccountName,
     pub tunnel_bytes_gw_tx: u64,
     pub tunnel_bytes_gw_rx: u64,
+    pub https_bytes_gw_tx: u64,
+    pub https_bytes_gw_rx: u64,
     #[serde(with = "ts_milliseconds")]
     pub from: DateTime<Utc>,
     #[serde(with = "ts_milliseconds")]

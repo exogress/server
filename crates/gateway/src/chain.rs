@@ -145,23 +145,23 @@ where
     U: AsyncWrite,
 {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().second) }.poll_write(cx, buf)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().second) }.poll_flush(cx)
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().second) }.poll_shutdown(cx)
     }
 
     fn poll_write_buf<B: Buf>(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut B,
     ) -> Poll<io::Result<usize>>

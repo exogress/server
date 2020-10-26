@@ -46,6 +46,7 @@ pub struct AcmeHttpChallengeVerificationResponse {
 pub struct CertificateResponse {
     pub certificate: String,
     pub private_key: String,
+    pub account_name: AccountName,
 }
 
 #[derive(thiserror::Error, Debug)]
