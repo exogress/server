@@ -132,7 +132,7 @@ pub async fn server(
                             let notifier = async move {
                                 let outgoing_msg = serde_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
 
-                                ws_tx.send(warp::filters::ws::Message::text(outgoing_msg)).await?;
+                                tokio::time::timeout(Duration::from_secs(5), ws_tx.send(warp::filters::ws::Message::text(outgoing_msg))).await??;
 
                                 match redis.get_async_connection().await {
                                     Ok(conn) => {
@@ -147,7 +147,7 @@ pub async fn server(
 
                                                 let forward_channel_to_ws = async {
                                                     while let Some(msg) = to_ws_rx.next().await {
-                                                        ws_tx.send(msg).await?;
+                                                        tokio::time::timeout(Duration::from_secs(5), ws_tx.send(msg)).await??;
                                                     }
 
                                                     Ok::<_, anyhow::Error>(())
@@ -165,17 +165,25 @@ pub async fn server(
                                                                         Ok(notification) => {
                                                                             let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
                                                                                 .expect("could not serialize");
-                                                                            if let Err(e) = to_ws_tx
+                                                                            let r = tokio::time::timeout(Duration::from_secs(5), to_ws_tx
                                                                                 .send(warp::filters::ws::Message::text(
                                                                                     outgoing_msg,
-                                                                                ))
-                                                                                .await
-                                                                            {
-                                                                                error!(
-                                                                                    "error sending to websocket: {}",
-                                                                                    e
-                                                                                );
-                                                                                return;
+                                                                                ))).await;
+                                                                            match r {
+                                                                                Err(_) => {
+                                                                                    error!(
+                                                                                        "timeout sending to websocket",
+                                                                                    );
+                                                                                    return;
+                                                                                }
+                                                                                Ok(Err(e)) => {
+                                                                                    error!(
+                                                                                        "error sending to websocket: {}",
+                                                                                        e
+                                                                                    );
+                                                                                    return;
+                                                                                }
+                                                                                Ok(Ok(_)) => {}
                                                                             }
                                                                         }
                                                                         Err(e) => {
@@ -201,19 +209,27 @@ pub async fn server(
                                                     loop {
                                                         delay_for(Duration::from_secs(15)).await;
 
-                                                        to_ws_tx
-                                                            .send(warp::filters::ws::Message::ping(""))
-                                                            .await?;
+                                                        tokio::time::timeout(Duration::from_secs(5), to_ws_tx
+                                                            .send(warp::filters::ws::Message::ping("")))
+                                                            .await??;
                                                     }
 
                                                     Ok::<_, anyhow::Error>(())
                                                 };
 
                                                 tokio::select! {
-                                            _ = forward_channel_to_ws => {},
-                                            _ = forward_from_redis => {},
-                                            _ = periodically_send_ping => {},
-                                        }
+                                                    r = forward_channel_to_ws => {
+                                                        info!("forward_channel_to_ws closed: {:?}", r);
+                                                    },
+                                                    r = forward_from_redis => {
+                                                        info!("forward_from_redis closed: {:?}", r);
+                                                    },
+                                                    r = periodically_send_ping => {
+                                                        info!("periodically_send_ping closed: {:?}", r);
+                                                    },
+                                                }
+
+                                                info!("WS forwarder closed");
                                             }
                                             Err(e) => {
                                                 error!("couldn't subscribe to invalidations: {}", e)
@@ -225,23 +241,22 @@ pub async fn server(
                                     }
                                 }
 
-                                let _ = ws_tx.send(warp::filters::ws::Message::close()).await;
+                                let res = tokio::time::timeout(Duration::from_secs(5), ws_tx.send(warp::filters::ws::Message::close()), ).await;
+                                info!("Send close message result = {:?}", res);
 
                                 Ok::<_, anyhow::Error>(())
                             };
 
                             tokio::select! {
                                 r = notifier => {
-                                    if let Err(e) = r {
-                                        warn!("Error on WS connection: {}", e);
-                                    }
+                                    warn!("WS connection closed: {:?}", r);
                                 },
                                 r = statistics_saver => {
-                                    if let Err(e) = r {
-                                        warn!("Error on WS statistics_saver: {}", e);
-                                    }
+                                    warn!("WS statistics_saver closed: {:?}", r);
                                 },
-                            }
+                            };
+
+                            info!("ws connection closed");
                         }
                     }.instrument(tracing::info_span!("gw", host = gw_hostname.as_str()))
                 })

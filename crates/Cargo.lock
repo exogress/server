@@ -1004,6 +1004,7 @@ dependencies = [
  "nom",
  "nonzero_ext",
  "oauth2",
+ "object-pool",
  "parking_lot 0.11.0",
  "patricia_tree",
  "percent-encoding 2.1.0",
