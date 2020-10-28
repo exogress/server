@@ -17,6 +17,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::time::{delay_for, Duration};
 use tracing_futures::Instrument;
+use warp::ws::Message;
 use warp::Filter;
 
 // TODO: add pings
@@ -82,13 +83,32 @@ pub async fn server(
 
                         async move {
                             let (mut ws_tx, mut ws_rx) = websocket.split();
+                            let (mut ch_ws_tx, mut ch_ws_rx) = mpsc::channel(16);
+                            let (mut pong_tx, pong_rx) = mpsc::channel(16);
+
+                            let forward_to_ws = async move {
+                                while let Some(msg) = ch_ws_rx.next().await {
+                                    ws_tx.send(msg).await?;
+                                }
+
+                                Ok::<_, anyhow::Error>(())
+                            };
+
+                            #[allow(unreachable_code)]
+                            let ensure_pong_received = async move {
+                                let mut timeout_stream = tokio::stream::StreamExt::timeout(pong_rx,Duration::from_secs(30));
+                                while let Some(r) = timeout_stream.next().await {
+                                    r?;
+                                }
+
+                                Ok::<_, anyhow::Error>(())
+                            };
 
                             let statistics_saver = {
                                 shadow_clone!(gw_hostname);
+                                shadow_clone!(mut ch_ws_tx);
 
                                 async move {
-                                    shadow_clone!(gw_hostname);
-
                                     while let Some(Ok(msg)) = ws_rx.next().await {
                                         shadow_clone!(gw_hostname);
 
@@ -122,6 +142,13 @@ pub async fn server(
                                                 }
                                                 _ => {},
                                             }
+                                        } else if msg.is_ping() {
+                                            // pong is sent automatically
+                                        } else if msg.is_pong() {
+                                            pong_tx.send(()).await?;
+                                        } else {
+                                            info!("unexpected message received. exiting: {:?}", msg);
+                                            break;
                                         }
                                     }
 
@@ -132,7 +159,7 @@ pub async fn server(
                             let notifier = async move {
                                 let outgoing_msg = serde_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
 
-                                tokio::time::timeout(Duration::from_secs(5), ws_tx.send(warp::filters::ws::Message::text(outgoing_msg))).await??;
+                                tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::text(outgoing_msg))).await??;
 
                                 match redis.get_async_connection().await {
                                     Ok(conn) => {
@@ -143,18 +170,8 @@ pub async fn server(
                                                 info!("subscribed to invalidations");
                                                 let mut messages = pubsub.into_on_message();
 
-                                                let (mut to_ws_tx, mut to_ws_rx) = mpsc::channel(16);
-
-                                                let forward_channel_to_ws = async {
-                                                    while let Some(msg) = to_ws_rx.next().await {
-                                                        tokio::time::timeout(Duration::from_secs(5), ws_tx.send(msg)).await??;
-                                                    }
-
-                                                    Ok::<_, anyhow::Error>(())
-                                                };
-
                                                 let forward_from_redis = {
-                                                    shadow_clone!(mut to_ws_tx);
+                                                    shadow_clone!(mut ch_ws_tx);
 
                                                     async move {
                                                         while let Some(msg) = messages.next().await {
@@ -165,7 +182,7 @@ pub async fn server(
                                                                         Ok(notification) => {
                                                                             let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
                                                                                 .expect("could not serialize");
-                                                                            let r = tokio::time::timeout(Duration::from_secs(5), to_ws_tx
+                                                                            let r = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
                                                                                 .send(warp::filters::ws::Message::text(
                                                                                     outgoing_msg,
                                                                                 ))).await;
@@ -205,22 +222,23 @@ pub async fn server(
                                                 };
 
                                                 #[allow(unreachable_code)]
-                                                    let periodically_send_ping = async move {
-                                                    loop {
-                                                        delay_for(Duration::from_secs(15)).await;
+                                                let periodically_send_ping = {
+                                                    shadow_clone!(mut ch_ws_tx);
 
-                                                        tokio::time::timeout(Duration::from_secs(5), to_ws_tx
-                                                            .send(warp::filters::ws::Message::ping("")))
-                                                            .await??;
+                                                    async move {
+                                                        loop {
+                                                            delay_for(Duration::from_secs(15)).await;
+
+                                                            tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
+                                                                .send(warp::filters::ws::Message::ping("")))
+                                                                .await??;
+                                                        }
+
+                                                        Ok::<_, anyhow::Error>(())
                                                     }
-
-                                                    Ok::<_, anyhow::Error>(())
                                                 };
 
                                                 tokio::select! {
-                                                    r = forward_channel_to_ws => {
-                                                        info!("forward_channel_to_ws closed: {:?}", r);
-                                                    },
                                                     r = forward_from_redis => {
                                                         info!("forward_from_redis closed: {:?}", r);
                                                     },
@@ -241,7 +259,7 @@ pub async fn server(
                                     }
                                 }
 
-                                let res = tokio::time::timeout(Duration::from_secs(5), ws_tx.send(warp::filters::ws::Message::close()), ).await;
+                                let res = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::close()), ).await;
                                 info!("Send close message result = {:?}", res);
 
                                 Ok::<_, anyhow::Error>(())
@@ -253,6 +271,12 @@ pub async fn server(
                                 },
                                 r = statistics_saver => {
                                     warn!("WS statistics_saver closed: {:?}", r);
+                                },
+                                r = forward_to_ws => {
+                                    warn!("WS forward_to_ws stopped: {:?}", r);
+                                },
+                                r = ensure_pong_received => {
+                                    warn!("WS ensure_pong_received stopped: {:?}", r);
                                 },
                             };
 

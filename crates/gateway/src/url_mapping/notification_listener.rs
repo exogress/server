@@ -11,7 +11,9 @@ use exogress_server_common::assistant::{
 use futures::channel::mpsc;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::time::delay_for;
 use tokio_either::Either;
 use tokio_rustls::client::TlsStream;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
@@ -82,6 +84,16 @@ impl AssistantClient {
         let stop_handle = self.stop_handle.clone();
 
         let (mut ws_tx, mut ws_rx) = self.stream.split();
+        let (ch_ws_tx, mut ch_ws_rx) = mpsc::channel(16);
+        let (mut pong_tx, pong_rx) = mpsc::channel::<()>(16);
+
+        let forward_to_ws = async move {
+            while let Some(msg) = ch_ws_rx.next().await {
+                ws_tx.send(msg).await?;
+            }
+
+            Ok::<_, anyhow::Error>(())
+        };
 
         let tls_gw_common = self.tls_gw_common;
         let client_tunnels = self.client_tunnels;
@@ -89,8 +101,9 @@ impl AssistantClient {
         let mappings = self.mappings;
         let mut statistics_rx = self.statistics_rx;
 
+        #[allow(unreachable_code)]
         let consume = {
-            let stop_handle = stop_handle.clone();
+            shadow_clone!(stop_handle);
 
             async move {
                 while let Some(msg) = ws_rx.next().await {
@@ -148,33 +161,86 @@ impl AssistantClient {
                                 }
                             }
                         }
-                        Ok(msg) if msg.is_ping() => {}
+                        Ok(msg) if msg.is_ping() => {
+                            // pong is sent automatically
+                        }
+                        Ok(msg) if msg.is_pong() => {
+                            pong_tx.send(()).await?;
+                        }
                         Ok(msg) => {
                             error!("received unexpected message from assistant: {:?}", msg);
                             stop_handle.stop(StopReason::NotificationChannelError);
                         }
                     }
                 }
+
+                Ok::<_, anyhow::Error>(())
             }
         };
 
-        let produce = async move {
-            while let Some(report) = statistics_rx.next().await {
-                info!(
-                    "received statistics report. will send to assistant WS: {:?}",
-                    report
-                );
-                let report = serde_json::to_string(&report).unwrap();
-                if let Err(e) = ws_tx.send(tungstenite::Message::Text(report)).await {
-                    error!("send statistics error: {:?}", e);
-                    stop_handle.stop(StopReason::NotificationChannelError);
+        #[allow(unreachable_code)]
+        let ensure_pong_received = async move {
+            let mut timeout_stream =
+                tokio::stream::StreamExt::timeout(pong_rx, Duration::from_secs(30));
+            while let Some(r) = timeout_stream.next().await {
+                r?;
+            }
+
+            Ok::<_, anyhow::Error>(())
+        };
+
+        let produce = {
+            shadow_clone!(mut ch_ws_tx);
+            shadow_clone!(stop_handle);
+
+            async move {
+                while let Some(report) = statistics_rx.next().await {
+                    info!(
+                        "received statistics report. will send to assistant WS: {:?}",
+                        report
+                    );
+                    let report = serde_json::to_string(&report).unwrap();
+                    if let Err(e) = ch_ws_tx.send(tungstenite::Message::Text(report)).await {
+                        error!("send statistics error: {:?}", e);
+                        stop_handle.stop(StopReason::NotificationChannelError);
+                    }
                 }
+            }
+        };
+
+        #[allow(unreachable_code)]
+        let periodically_send_ping = {
+            shadow_clone!(mut ch_ws_tx);
+
+            async move {
+                loop {
+                    delay_for(Duration::from_secs(15)).await;
+
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        ch_ws_tx.send(tungstenite::Message::Ping(vec![])),
+                    )
+                    .await??;
+                }
+
+                Ok::<_, anyhow::Error>(())
             }
         };
 
         tokio::select! {
             _ = consume => {},
             _ = produce => {},
+            r = periodically_send_ping => {
+                warn!("periodically_send_ping error: {:?}", r);
+            },
+            r = forward_to_ws => {
+                warn!("forward_to_ws error: {:?}", r);
+            },
+            r = ensure_pong_received => {
+                warn!("ensure_pong_received error: {:?}", r);
+            },
         }
+
+        stop_handle.stop(StopReason::NotificationChannelError);
     }
 }
