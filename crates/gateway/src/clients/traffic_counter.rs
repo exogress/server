@@ -2,7 +2,7 @@
 use bytes::{Buf, BufMut};
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
-use exogress_entities::AccountName;
+use exogress_entities::{AccountName, AccountUniqueId};
 use futures::ready;
 use parking_lot::Mutex;
 use std::convert::TryInto;
@@ -16,7 +16,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::macros::support::Poll;
 
 pub struct TrafficCounters {
-    account_name: AccountName,
+    account_unique_id: AccountUniqueId,
     bytes_read: AtomicU64,
     bytes_written: AtomicU64,
     is_closed: AtomicBool,
@@ -25,7 +25,7 @@ pub struct TrafficCounters {
 
 #[derive(Debug)]
 pub struct RecordedTrafficStatistics {
-    pub account_name: AccountName,
+    pub account_unique_id: AccountUniqueId,
     pub bytes_read: u64,
     pub bytes_written: u64,
     pub from: DateTime<Utc>,
@@ -39,10 +39,10 @@ pub enum OneOfTrafficStatistics {
 }
 
 impl OneOfTrafficStatistics {
-    pub fn account_name(&self) -> &AccountName {
+    pub fn account_unique_id(&self) -> &AccountUniqueId {
         match self {
-            OneOfTrafficStatistics::Https(s) => &s.account_name,
-            OneOfTrafficStatistics::Tunnel(s) => &s.account_name,
+            OneOfTrafficStatistics::Https(s) => &s.account_unique_id,
+            OneOfTrafficStatistics::Tunnel(s) => &s.account_unique_id,
         }
     }
     pub fn from(&self) -> &DateTime<Utc> {
@@ -98,7 +98,7 @@ impl TrafficCounters {
 
         let now = Utc::now();
         Ok(Some(RecordedTrafficStatistics {
-            account_name: self.account_name.clone(),
+            account_unique_id: self.account_unique_id.clone(),
             bytes_read,
             bytes_written,
             from: mem::replace(&mut self.initiated_at.lock(), now),
@@ -106,9 +106,9 @@ impl TrafficCounters {
         }))
     }
 
-    pub fn new(account_name: AccountName) -> Arc<Self> {
+    pub fn new(account_unique_id: AccountUniqueId) -> Arc<Self> {
         Arc::new(TrafficCounters {
-            account_name,
+            account_unique_id,
             bytes_read: Default::default(),
             bytes_written: Default::default(),
             is_closed: false.into(),

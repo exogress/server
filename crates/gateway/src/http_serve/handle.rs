@@ -52,7 +52,7 @@ use crate::webapp::Client;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
 use exogress_config_core::{AclEntry, Action, Auth, AuthProvider, ClientHandlerVariant};
-use exogress_entities::{ConfigId, ExceptionName, HandlerName, RateLimiterName};
+use exogress_entities::{ConfigId, ExceptionName, HandlerName, RateLimiterName, Ulid};
 use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::director::SourceInfo;
 use exogress_server_common::health::HealthState;
@@ -83,44 +83,48 @@ struct Claims {
 }
 
 fn extract_sni_hostname(buf: &[u8]) -> Result<Option<Option<String>>, anyhow::Error> {
-    match tls_parser::parse_tls_plaintext(buf) {
+    let parse = tls_parser::parse_tls_plaintext(buf);
+    match parse {
         Ok((_rem, record)) => Ok(Some(
             record
                 .msg
                 .into_iter()
-                .filter_map(|msg| match msg {
-                    tls_parser::tls::TlsMessage::Handshake(handshake) => match handshake {
-                        tls_parser::tls::TlsMessageHandshake::ClientHello(hello) => {
-                            if let Some(ext) = hello.ext {
-                                tls_parser::tls_extensions::parse_tls_extensions(ext)
-                                    .ok()
-                                    .and_then(|(_, ext)| {
-                                        ext
-                                            .into_iter()
-                                            .filter_map(|ext| match ext {
-                                                tls_parser::tls_extensions::TlsExtension::SNI(snis) => snis
-                                                    .into_iter()
-                                                    .filter_map(|(sni_type, value)| {
-                                                        if tls_parser::tls_extensions::SNIType::HostName
-                                                            == sni_type
-                                                        {
-                                                            Some(value)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    })
-                                                    .next(),
-                                                _ => None,
-                                            })
-                                            .next()
-                                    })
-                            } else {
-                                None
+                .filter_map(|msg| {
+                    info!("msg = {:?}", msg);
+                    match msg {
+                        tls_parser::tls::TlsMessage::Handshake(handshake) => match handshake {
+                            tls_parser::tls::TlsMessageHandshake::ClientHello(hello) => {
+                                if let Some(ext) = hello.ext {
+                                    tls_parser::tls_extensions::parse_tls_extensions(ext)
+                                        .ok()
+                                        .and_then(|(_, ext)| {
+                                            ext
+                                                .into_iter()
+                                                .filter_map(|ext| match ext {
+                                                    tls_parser::tls_extensions::TlsExtension::SNI(snis) => snis
+                                                        .into_iter()
+                                                        .filter_map(|(sni_type, value)| {
+                                                            if tls_parser::tls_extensions::SNIType::HostName
+                                                                == sni_type
+                                                            {
+                                                                Some(value)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                        .next(),
+                                                    _ => None,
+                                                })
+                                                .next()
+                                        })
+                                } else {
+                                    None
+                                }
                             }
-                        }
+                            _ => None,
+                        },
                         _ => None,
-                    },
-                    _ => None,
+                    }
                 })
                 .next()
                 .and_then(|m| String::from_utf8(m.to_vec()).ok()),
@@ -359,6 +363,7 @@ pub async fn server(
                             };
 
                             header.truncate(header_bytes_read);
+                            info!("SNI received");
 
                             Ok::<_, anyhow::Error>((
                                 crate::chain::chain(Cursor::new(header), conn),
@@ -378,7 +383,7 @@ pub async fn server(
 
                         info!("SNI hostname = {}", hostname);
 
-                        let (cert, pkey, maybe_account_name) = if public_base_url
+                        let (cert, pkey, maybe_account_unique_id) = if public_base_url
                             .host()
                             .unwrap()
                             .to_string()
@@ -416,7 +421,7 @@ pub async fn server(
                                 Ok(Some(certs)) => (
                                     certs.certificate,
                                     certs.private_key,
-                                    Some(certs.account_name),
+                                    Some(certs.account_unique_id),
                                 ),
                                 Ok(None) => {
                                     let locked = tls_gw_common.read();
@@ -425,7 +430,7 @@ pub async fn server(
                                         Some(cert_data) if cfg!(debug_assertions) => (
                                             cert_data.common_gw_host_certificate.clone(),
                                             cert_data.common_gw_host_private_key.clone(),
-                                            Some("gleb".parse().unwrap()),
+                                            Some(Ulid::nil().to_string().parse().unwrap()), // FIXME
                                         ),
                                         _ => {
                                             return Err(anyhow!("no certificate found"));
@@ -469,8 +474,8 @@ pub async fn server(
 
                         let acceptor = TlsAcceptor::from(Arc::new(config));
 
-                        let metered = if let Some(account_name) = maybe_account_name {
-                            let counters = TrafficCounters::new(account_name.clone());
+                        let metered = if let Some(account_unique_id) = maybe_account_unique_id {
+                            let counters = TrafficCounters::new(account_unique_id.clone());
                             let counted_stream = TrafficCountedStream::new(conn, counters.clone());
 
                             let flush_counters = {
@@ -903,6 +908,7 @@ pub async fn server(
                 }
 
                 async move {
+                    let account_unique_id = mapping_action.handler.account_unique_id.clone();
                     let account_name = mapping_action.handler.account_name.clone();
                     let project_name = mapping_action.handler.project_name.clone();
                     // let url = mapping_action.handler.url.clone();
@@ -977,7 +983,7 @@ pub async fn server(
                             // TODO: handle modifications
 
                             info!("action = {:?}", action);
-                            account_rules_counters.register(&account_name);
+                            account_rules_counters.register(&account_unique_id);
 
                             match action {
                                 Action::Respond { static_response_name } => {
@@ -1118,6 +1124,7 @@ pub async fn server(
                             } else if let Some((config_name, instances_ids)) = &handler.client_config_data {
                                 let config_id = ConfigId {
                                     account_name: account_name.clone(),
+                                    account_unique_id: account_unique_id.clone(),
                                     project_name: project_name.clone(),
                                     config_name: config_name.clone(),
                                 };

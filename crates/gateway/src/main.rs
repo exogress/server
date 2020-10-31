@@ -526,12 +526,16 @@ fn main() {
 
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
+        let (health_state_change_tx, health_state_change_rx) = mpsc::channel(256);
+
+        let api_client = Client::new(cache_ttl, health_state_change_tx, webapp_base_url);
 
         tokio::spawn(tunnels_acceptor(
             listen_tunnel_addr,
             individual_tls_cert_path.into(),
             individual_tls_key_path.into(),
             client_tunnels.clone(),
+            api_client.clone(),
             tunnel_counters_tx,
         ));
 
@@ -548,7 +552,6 @@ fn main() {
             .to_string();
 
         let account_rules_counters = AccountRulesCounters::new();
-        let (health_state_change_tx, health_state_change_rx) = mpsc::channel(256);
 
         let dump_health_changes = {
             shadow_clone!(individual_hostname);
@@ -597,7 +600,7 @@ fn main() {
                             records: ready_chunks
                                 .into_iter()
                                 .map(|statistics| TrafficRecord {
-                                    account_name: statistics.account_name().clone(),
+                                    account_unique_id: statistics.account_unique_id().clone(),
                                     tunnel_bytes_gw_tx: if statistics.is_tunnel() {
                                         *statistics.bytes_written()
                                     } else {
@@ -618,8 +621,7 @@ fn main() {
                                     } else {
                                         0
                                     },
-                                    from: statistics.from().clone(),
-                                    to: statistics.to().clone(),
+                                    flushed_at: statistics.to().clone(),
                                 })
                                 .collect(),
                         },
@@ -648,10 +650,10 @@ fn main() {
                                 records: recs
                                     .into_iter()
                                     .map(|r| RulesRecord {
-                                        account_name: r.account_name,
+                                        account_unique_id: r.account_unique_id,
                                         rules_processed: r.rules_processed,
-                                        from: r.from,
-                                        to: r.to,
+                                        requests_processed: r.requests_processed,
+                                        flushed_at: r.to,
                                     })
                                     .collect(),
                             },
@@ -667,8 +669,6 @@ fn main() {
                 Ok::<_, anyhow::Error>(())
             }
         };
-
-        let api_client = Client::new(cache_ttl, health_state_change_tx, webapp_base_url);
 
         let resolver = TokioAsyncResolver::new(
             ResolverConfig::default(),

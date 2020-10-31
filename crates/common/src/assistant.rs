@@ -1,7 +1,7 @@
 use crate::health::{HealthEndpoint, HealthState};
 use crate::url_prefix::UrlPrefix;
 use chrono::serde::ts_milliseconds;
-use exogress_entities::{AccountName, ConfigId, ProjectName};
+use exogress_entities::{AccountName, AccountUniqueId, ConfigId, ProjectName};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 
@@ -63,25 +63,22 @@ pub enum WsFromGwMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficRecord {
-    pub account_name: AccountName,
+    pub account_unique_id: AccountUniqueId,
     pub tunnel_bytes_gw_tx: u64,
     pub tunnel_bytes_gw_rx: u64,
     pub https_bytes_gw_tx: u64,
     pub https_bytes_gw_rx: u64,
     #[serde(with = "ts_milliseconds")]
-    pub from: DateTime<Utc>,
-    #[serde(with = "ts_milliseconds")]
-    pub to: DateTime<Utc>,
+    pub flushed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RulesRecord {
-    pub account_name: AccountName,
+    pub account_unique_id: AccountUniqueId,
     pub rules_processed: u64,
+    pub requests_processed: u64,
     #[serde(with = "ts_milliseconds")]
-    pub from: DateTime<Utc>,
-    #[serde(with = "ts_milliseconds")]
-    pub to: DateTime<Utc>,
+    pub flushed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

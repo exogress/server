@@ -117,11 +117,8 @@ pub async fn server(
                                             let msg = serde_json::from_str::<WsFromGwMessage>(txt).expect("FIXME");
                                             info!("received GW: {:?}", msg);
                                             match msg {
-                                                WsFromGwMessage::Statistics { report: StatisticsReport::Traffic { records } } => {
-                                                    clickhouse_client.register_traffic_report(records, &gw_hostname, &gw_location).await?;
-                                                }
-                                                WsFromGwMessage::Statistics { report: StatisticsReport::Rules { records } } => {
-                                                    clickhouse_client.register_rules_processed(records, &gw_hostname, &gw_location).await?;
+                                                WsFromGwMessage::Statistics { report  } => {
+                                                    clickhouse_client.register_statistics_report(report, &gw_hostname, &gw_location).await?;
                                                 }
                                                 WsFromGwMessage::Health { report: HealthReport::UpstreamsHealth { records } } => {
                                                     info!("records = {:?}", records);

@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 
 use exogress_config_core::{AuthProvider, ClientConfig, StaticResponse};
 use exogress_entities::{
-    AccountName, ConfigId, ConfigName, InstanceId, ProjectName, StaticResponseName, Upstream,
+    AccountName, AccountUniqueId, ConfigId, ConfigName, InstanceId, ProjectName,
+    StaticResponseName, Upstream,
 };
 use http::Uri;
 use smallvec::SmallVec;
@@ -214,11 +215,13 @@ impl Matched {
                 handlers_processor,
                 account_name,
                 project_name,
+                account_unique_id,
             } => Ok(ClientHandler {
                 account_name: account_name.clone(),
                 handlers_processor: handlers_processor.clone(),
                 url,
                 project_name: project_name.clone(),
+                account_unique_id: account_unique_id.clone(),
             }),
         }
     }
@@ -349,6 +352,7 @@ pub enum ProxyMatchedTo {
     Client {
         handlers_processor: HandlersProcessor,
         account_name: AccountName,
+        account_unique_id: AccountUniqueId,
         project_name: ProjectName,
     },
 }
@@ -356,12 +360,14 @@ pub enum ProxyMatchedTo {
 impl ProxyMatchedTo {
     pub fn new(
         account_name: AccountName,
+        account_unique_id: AccountUniqueId,
         project_name: ProjectName,
         handlers_processor: &HandlersProcessor,
     ) -> Result<Self, RewriteMatchedToError> {
         Ok(ProxyMatchedTo::Client {
             handlers_processor: handlers_processor.clone(),
             account_name,
+            account_unique_id,
             project_name,
         })
     }
@@ -421,6 +427,7 @@ pub struct Mapping {
     pub config_names: SmallVec<[ConfigName; 8]>,
     handlers_processor: HandlersProcessor,
     pub account: AccountName,
+    pub account_unique_id: AccountUniqueId,
     pub project: ProjectName,
     jwt_ecdsa: JwtEcdsa,
     rate_limiters: RateLimiters,
@@ -541,6 +548,7 @@ impl Mapping {
         let match_pattern = config_response.url_prefix.as_str().parse().expect("FIXME");
 
         let account = config_response.account.clone();
+        let account_unique_id = config_response.account_unique_id.clone();
         let project = config_response.project.clone();
         let generated_at = config_response.generated_at.clone();
 
@@ -593,6 +601,7 @@ impl Mapping {
                     for config in &config_response.configs {
                         let config_id = ConfigId {
                             account_name: account.clone(),
+                            account_unique_id: account_unique_id.clone(),
                             project_name: project.clone(),
                             config_name: config.config_name.clone(),
                         };
@@ -747,6 +756,7 @@ impl Mapping {
             config_names,
             handlers_processor,
             account,
+            account_unique_id,
             project,
             jwt_ecdsa,
             rate_limiters,
@@ -774,6 +784,7 @@ pub enum UrlMappingError {
 #[derive(Clone, Debug)]
 pub struct ClientHandler {
     pub account_name: AccountName,
+    pub account_unique_id: AccountUniqueId,
     pub project_name: ProjectName,
     pub handlers_processor: HandlersProcessor,
     pub url: Url,
@@ -823,6 +834,7 @@ impl Mapping {
                 .resolve_handler(
                     &ProxyMatchedTo::new(
                         self.account.clone(),
+                        self.account_unique_id.clone(),
                         self.project.clone(),
                         &self.handlers_processor,
                     )

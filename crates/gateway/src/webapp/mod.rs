@@ -9,8 +9,11 @@ use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::registry::Configs;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
+use exogress_common_utils::jwt::{jwt_token, JwtError};
 use exogress_config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
-use exogress_entities::{AccountName, ConfigName, InstanceId, MountPointName, ProjectName};
+use exogress_entities::{
+    AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName,
+};
 use exogress_server_common::assistant::UpstreamReport;
 use exogress_server_common::url_prefix::UrlPrefix;
 use futures::channel::mpsc;
@@ -47,6 +50,12 @@ pub struct CertificateResponse {
     pub certificate: String,
     pub private_key: String,
     pub account_name: AccountName,
+    pub account_unique_id: AccountUniqueId,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct AuthorizeTunnelResponse {
+    pub account_unique_id: AccountUniqueId,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -59,6 +68,12 @@ pub enum Error {
 
     #[error("not found")]
     NotFound,
+
+    #[error("forbidden")]
+    Forbidden,
+
+    #[error("JWT token Error: `{0}`")]
+    JwtError(#[from] JwtError),
 
     #[error("URL prefix error: `{0}`")]
     Url(#[from] url::ParseError),
@@ -131,6 +146,7 @@ pub struct ConfigsResponse {
     pub generated_at: DateTime<Utc>,
     pub url_prefix: UrlPrefix,
     pub account: AccountName,
+    pub account_unique_id: AccountUniqueId,
     pub project: ProjectName,
     pub mount_point: MountPointName,
     pub project_config: ProjectConfig,
@@ -574,6 +590,44 @@ impl Client {
             Ok(res.json().await?)
         } else if res.status() == http::StatusCode::NOT_FOUND {
             Err(Error::NotFound)
+        } else {
+            Err(Error::BadResponse)
+        }
+    }
+
+    pub async fn authorize_tunnel(
+        &self,
+        project_name: &ProjectName,
+        instance_id: &InstanceId,
+        access_key_id: &AccessKeyId,
+        secret_access_key: &str,
+    ) -> Result<AuthorizeTunnelResponse, Error> {
+        let mut url = self.base_url.clone();
+        url.path_segments_mut()
+            .unwrap()
+            .push("int")
+            .push("api")
+            .push("v1")
+            .push("tunnels")
+            .push("auth");
+
+        url.query_pairs_mut()
+            .append_pair("project", project_name.as_str())
+            .append_pair("instance_id", &instance_id.to_string());
+
+        let token = jwt_token(access_key_id, secret_access_key)?;
+
+        let res = self
+            .reqwest
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            Ok(res.json().await?)
+        } else if res.status() == http::StatusCode::FORBIDDEN {
+            Err(Error::Forbidden)
         } else {
             Err(Error::BadResponse)
         }

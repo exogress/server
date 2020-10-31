@@ -20,7 +20,8 @@ use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionS
 use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
-use exogress_entities::{ConfigId, TunnelId};
+use crate::webapp;
+use exogress_entities::{AccountUniqueId, ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
 use std::convert::TryInto;
@@ -60,6 +61,7 @@ pub async fn tunnels_acceptor(
     tls_cert_path: String,
     tls_key_path: String,
     tunnels: ClientTunnels,
+    webapp: webapp::Client,
     tunnel_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
 ) -> io::Result<()> {
     let mut config = ServerConfig::new(NoClientAuth::new());
@@ -82,6 +84,7 @@ pub async fn tunnels_acceptor(
 
         shadow_clone!(tunnels);
         shadow_clone!(acceptor);
+        shadow_clone!(webapp);
         shadow_clone!(mut tunnel_counters_tx);
 
         tokio::spawn(async move {
@@ -95,7 +98,15 @@ pub async fn tunnels_acceptor(
                 tls_conn.read_exact(&mut payload).await?;
                 let tunnel_hello = bincode::deserialize::<TunnelHello>(&payload)?;
 
-                // TODO: check instance_id, access_key and access secret
+                let account_unique_id = webapp
+                    .authorize_tunnel(
+                        &tunnel_hello.project_name,
+                        &tunnel_hello.instance_id,
+                        &tunnel_hello.access_key_id,
+                        &tunnel_hello.secret_access_key,
+                    )
+                    .await?
+                    .account_unique_id;
 
                 info!("Accepted tunnel from instance {}", tunnel_hello.instance_id);
 
@@ -107,29 +118,30 @@ pub async fn tunnels_acceptor(
                     .await?;
                 tls_conn.write_all(&resp_bytes).await?;
 
-                Ok::<_, anyhow::Error>(tunnel_hello)
+                Ok::<_, anyhow::Error>((tunnel_hello, account_unique_id))
             };
 
-            let tunnel_hello = match timeout(Duration::from_secs(5), accept_tunnel).await {
-                Ok(Ok(tunnel_hello)) => {
-                    // warn!(
-                    //     "accepted new TLS tunnel with tunnel_hello {:?}",
-                    //     tunnel_hello
-                    // );
+            let (tunnel_hello, account_unique_id) =
+                match timeout(Duration::from_secs(5), accept_tunnel).await {
+                    Ok(Ok((tunnel_hello, account_unique_id))) => {
+                        // warn!(
+                        //     "accepted new TLS tunnel with tunnel_hello {:?}",
+                        //     tunnel_hello
+                        // );
 
-                    tunnel_hello
-                }
-                Ok(Err(e)) => {
-                    warn!("error on TLS tunnel: {}. Closing connection", e);
-                    return Err(e.into());
-                }
-                Err(tokio::time::Elapsed { .. }) => {
-                    warn!("no initial connection data received. Closing connection");
-                    return Err(anyhow::Error::msg("timeout on handshake"));
-                }
-            };
+                        (tunnel_hello, account_unique_id)
+                    }
+                    Ok(Err(e)) => {
+                        warn!("error on TLS tunnel: {}. Closing connection", e);
+                        return Err(e.into());
+                    }
+                    Err(tokio::time::Elapsed { .. }) => {
+                        warn!("no initial connection data received. Closing connection");
+                        return Err(anyhow::Error::msg("timeout on handshake"));
+                    }
+                };
 
-            let counters = TrafficCounters::new(tunnel_hello.account_name.clone());
+            let counters = TrafficCounters::new(account_unique_id.clone());
             let metered = TrafficCountedStream::new(tls_conn, counters.clone());
 
             let (stop_tx, stop_rx) = oneshot::channel();
@@ -140,6 +152,7 @@ pub async fn tunnels_acceptor(
             let config_id = ConfigId {
                 config_name: tunnel_hello.config_name,
                 account_name: tunnel_hello.account_name,
+                account_unique_id,
                 project_name: tunnel_hello.project_name,
             };
 
