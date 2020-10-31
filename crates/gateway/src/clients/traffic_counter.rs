@@ -260,6 +260,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> TrafficCountedStream<I> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use exogress_entities::Ulid;
     use std::io::Cursor;
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -270,7 +271,7 @@ mod test {
         let mut buf = vec![0u8; 32768];
         let mut io = Cursor::new(&mut buf);
 
-        let counters = TrafficCounters::new("account".parse().unwrap());
+        let counters = TrafficCounters::new(Ulid::new().to_string().parse().unwrap());
 
         let mut counted_stream = TrafficCountedStream::new(io, counters.clone());
         let mut result = Vec::new();
