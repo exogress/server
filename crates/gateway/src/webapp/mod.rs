@@ -25,6 +25,7 @@ use itertools::Itertools;
 use lru_time_cache::LruCache;
 use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
+use reqwest::Identity;
 use smallvec::SmallVec;
 use std::sync::Arc;
 use url::Url;
@@ -159,16 +160,21 @@ impl Client {
         ttl: Duration,
         health_state_change_tx: mpsc::Sender<UpstreamReport>,
         base_url: Url,
+        maybe_identity: Option<Vec<u8>>,
     ) -> Self {
+        let mut builder = reqwest::ClientBuilder::new()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .use_rustls_tls()
+            .trust_dns(true);
+
+        if let Some(identity) = maybe_identity {
+            builder = builder.identity(Identity::from_pem(&identity).unwrap());
+        }
+
         Client {
             configs: Configs::new(ttl),
-            reqwest: reqwest::ClientBuilder::new()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(10))
-                .use_rustls_tls()
-                .trust_dns(true)
-                .build()
-                .unwrap(),
+            reqwest: builder.build().unwrap(),
             retrieve_configs: Arc::new(Default::default()),
             base_url,
             certificates: Arc::new(parking_lot::Mutex::new(
@@ -190,8 +196,7 @@ impl Client {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .unwrap()
-            .push("int")
-            .push("api")
+            .push("int_api")
             .push("v1")
             .push("acme_http_challenge_verification");
 
@@ -283,8 +288,7 @@ impl Client {
                             let mut url = base_url.clone();
                             url.path_segments_mut()
                                 .unwrap()
-                                .push("int")
-                                .push("api")
+                                .push("int_api")
                                 .push("v1")
                                 .push("configs");
 
@@ -577,8 +581,7 @@ impl Client {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .unwrap()
-            .push("int")
-            .push("api")
+            .push("int_api")
             .push("v1")
             .push("domains")
             .push(domain)
@@ -605,8 +608,7 @@ impl Client {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .unwrap()
-            .push("int")
-            .push("api")
+            .push("int_api")
             .push("v1")
             .push("tunnels")
             .push("auth");

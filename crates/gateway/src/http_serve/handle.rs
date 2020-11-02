@@ -152,6 +152,7 @@ pub async fn server(
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
     account_rules_counters: &AccountRulesCounters,
+    maybe_identity: Option<Vec<u8>>,
     https_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
     resolver: TokioAsyncResolver,
@@ -561,11 +562,13 @@ pub async fn server(
             shadow_clone!(google_oauth2_client);
             shadow_clone!(github_oauth2_client);
             shadow_clone!(assistant_base_url);
+            shadow_clone!(maybe_identity);
 
             move |provider: String, params| {
                 shadow_clone!(google_oauth2_client);
                 shadow_clone!(github_oauth2_client);
                 shadow_clone!(assistant_base_url);
+                shadow_clone!(maybe_identity);
 
                 async move {
                     let oauth2_result = match provider.as_str() {
@@ -590,6 +593,7 @@ pub async fn server(
                                     oauth2_flow_data: callback_result.oauth2_flow_data.clone(),
                                 },
                                 Duration::from_secs(15),
+                                maybe_identity,
                             )
                             .await
                             .expect("FIXME");
@@ -1296,15 +1300,17 @@ pub async fn server(
             shadow_clone!(google_oauth2_client);
             shadow_clone!(github_oauth2_client);
             shadow_clone!(assistant_base_url);
+            shadow_clone!(maybe_identity);
 
             move |r| {
                 shadow_clone!(google_oauth2_client);
                 shadow_clone!(github_oauth2_client);
                 shadow_clone!(assistant_base_url);
+                shadow_clone!(maybe_identity);
 
                 warn!("Error: {:?}", r);
 
-                handle_rejection(r, google_oauth2_client, github_oauth2_client, assistant_base_url)
+                handle_rejection(r, google_oauth2_client, github_oauth2_client, assistant_base_url, maybe_identity)
             }
         });
 
@@ -1368,6 +1374,7 @@ async fn handle_rejection(
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
+    maybe_identity: Option<Vec<u8>>,
 ) -> Result<impl Reply, Infallible> {
     let mut resp = Response::new(Body::empty());
 
@@ -1469,7 +1476,9 @@ async fn handle_rejection(
         mapping_action,
     }) = err.find::<Authenticate>()
     {
-        match retrieve_assistant_key::<AuthFinalizer>(&assistant_base_url, &secret).await {
+        match retrieve_assistant_key::<AuthFinalizer>(&assistant_base_url, &secret, maybe_identity)
+            .await
+        {
             Ok(res) => {
                 let handler_name = res.oauth2_flow_data.handler_name.clone();
                 let used_provider = res.oauth2_flow_data.provider.clone();

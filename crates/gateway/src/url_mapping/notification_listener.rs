@@ -41,23 +41,32 @@ impl AssistantClient {
         client_tunnels: &ClientTunnels,
         tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
         statistics_rx: mpsc::Receiver<WsFromGwMessage>,
+        maybe_identity: Option<Vec<u8>>,
         webapp_client: &webapp::Client,
         resolver: TokioAsyncResolver,
         app_stop_handle: &AppStopHandle,
     ) -> Result<AssistantClient, Error> {
         shadow_clone!(mappings);
+        let scheme = assistant_base_url.scheme().to_string();
 
         let mut url = assistant_base_url;
         {
             let mut segments = url.path_segments_mut().unwrap();
             segments
-                .push("api")
+                .push("int_api")
                 .push("v1")
                 .push("gateways")
                 .push(individual_hostname)
                 .push("notifications");
         }
         url.query_pairs_mut().append_pair("location", gw_location);
+
+        if scheme == "https" {
+            url.set_scheme("wss").unwrap();
+        } else if scheme == "http" {
+            url.set_scheme("ws").unwrap();
+        };
+
         let notifier_req = Request::builder()
             .method(Method::GET)
             .uri(url.to_string())
@@ -65,7 +74,7 @@ impl AssistantClient {
             .unwrap();
 
         info!("connecting to notification listener..");
-        let (stream, _resp) = connect_ws(notifier_req, resolver).await?;
+        let (stream, _resp) = connect_ws(notifier_req, resolver, maybe_identity).await?;
 
         Ok(AssistantClient {
             client_tunnels: client_tunnels.clone(),

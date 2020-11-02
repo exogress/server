@@ -21,7 +21,7 @@ use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
 use crate::webapp;
-use exogress_entities::{AccountUniqueId, ConfigId, TunnelId};
+use exogress_entities::{ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
 use std::convert::TryInto;

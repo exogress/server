@@ -1,6 +1,7 @@
 use crate::clients::tunnel::MAX_ALLOWED_TUNNELS;
 use exogress_entities::ConfigId;
 use exogress_signaling::TunnelRequest;
+use reqwest::Identity;
 use std::time::Duration;
 use url::Url;
 
@@ -20,14 +21,19 @@ pub async fn request_connection(
     mut int_base_url: Url,
     hostname: String,
     config_id: ConfigId,
+    maybe_identity: Option<Vec<u8>>,
 ) -> Result<(), Error> {
-    let client = reqwest::ClientBuilder::new()
+    let mut builder = reqwest::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .use_rustls_tls()
-        .trust_dns(true)
-        .build()
-        .expect("could not create reqwest client");
+        .trust_dns(true);
+
+    if let Some(identity) = maybe_identity {
+        builder = builder.identity(Identity::from_pem(&identity).unwrap());
+    }
+
+    let client = builder.build().expect("could not create reqwest client");
 
     let msg = TunnelRequest {
         hostname,
@@ -38,7 +44,7 @@ pub async fn request_connection(
 
     {
         let mut segments = int_base_url.path_segments_mut().unwrap();
-        segments.push("api");
+        segments.push("int_api");
         segments.push("v1");
         segments.push("accounts");
         segments.push(config_id.account_name.as_str());

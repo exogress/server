@@ -19,6 +19,7 @@ use stop_handle::stop_handle;
 use crate::termination::StopReason;
 use exogress_common_utils::termination::stop_signal_listener;
 use exogress_entities::Ulid;
+use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use tokio::runtime::Builder;
@@ -65,12 +66,15 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_server_common::clap::webapp::add_args(
+    let spawn_args = exogress_server_common::clap::int_api::add_args(
         exogress_common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
                 exogress_common_utils::clap::log::add_args(spawn_args),
             ),
         ),
+        true,
+        false,
+        false,
     );
 
     let args = App::new("Exogress Signaler Server")
@@ -93,10 +97,16 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
+    let IntApiBaseUrls {
+        webapp_url: webapp_base_url,
+        int_api_client_cert,
+        ..
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "signaler");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
+
+    let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
 
     let redis_addr: String = matches
         .value_of("redis_addr")
@@ -131,10 +141,12 @@ fn main() {
 
     let maybe_panic = rt.block_on({
         shadow_clone!(webapp_base_url);
+        shadow_clone!(int_api_client_cert);
         shadow_clone!(signaler_id);
 
         AssertUnwindSafe(async move {
-            let presence_client = presence::Client::new(webapp_base_url, signaler_id);
+            let presence_client =
+                presence::Client::new(webapp_base_url, signaler_id, int_api_client_cert);
 
             tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
@@ -216,7 +228,7 @@ fn main() {
     }
 
     rt.block_on(async move {
-        presence::Client::new(webapp_base_url, signaler_id)
+        presence::Client::new(webapp_base_url, signaler_id, int_api_client_cert)
             .unregister_signaler()
             .await
     })

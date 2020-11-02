@@ -3,6 +3,7 @@ use exogress_entities::HandlerName;
 use exogress_server_common::assistant::{GetValue, SetValue};
 use http::StatusCode;
 use oauth2::basic::BasicTokenResponse;
+use reqwest::Identity;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -81,6 +82,7 @@ pub enum AssistantError {
 pub async fn retrieve_assistant_key<T: DeserializeOwned>(
     assistant_url: &Url,
     key: &str,
+    maybe_identity: Option<Vec<u8>>,
 ) -> Result<T, AssistantError> {
     let mut url = assistant_url.clone();
     if url.scheme() == "wss" {
@@ -91,12 +93,22 @@ pub async fn retrieve_assistant_key<T: DeserializeOwned>(
 
     url.path_segments_mut()
         .unwrap()
-        .push("api")
+        .push("int_api")
         .push("v1")
         .push("keys")
         .push(key);
 
-    let resp = reqwest::Client::new().get(url).send().await?;
+    let mut builder = reqwest::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .use_rustls_tls()
+        .trust_dns(true);
+
+    if let Some(identity) = maybe_identity {
+        builder = builder.identity(Identity::from_pem(&identity).unwrap());
+    }
+
+    let resp = builder.build().unwrap().get(url).send().await?;
 
     if resp.status().is_success() {
         let value: GetValue = resp.json().await?;
@@ -111,6 +123,7 @@ pub async fn save_assistant_key<T: Serialize>(
     key: &str,
     value: &T,
     ttl: Duration,
+    maybe_identity: Option<Vec<u8>>,
 ) -> Result<(), AssistantError> {
     let mut url = assistant_url.clone();
     if url.scheme() == "wss" {
@@ -121,14 +134,26 @@ pub async fn save_assistant_key<T: Serialize>(
 
     url.path_segments_mut()
         .unwrap()
-        .push("api")
+        .push("int_api")
         .push("v1")
         .push("keys")
         .push(key);
 
     let payload = serde_json::to_string(value)?;
 
-    let resp = reqwest::Client::new()
+    let mut builder = reqwest::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .use_rustls_tls()
+        .trust_dns(true);
+
+    if let Some(identity) = maybe_identity {
+        builder = builder.identity(Identity::from_pem(&identity).unwrap());
+    }
+
+    let resp = builder
+        .build()
+        .unwrap()
         .post(url)
         .json(&SetValue { payload, ttl })
         .send()

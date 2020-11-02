@@ -1,4 +1,5 @@
 use exogress_server_common::assistant::UpstreamReport;
+use reqwest::Identity;
 use std::time::Duration;
 use url::Url;
 
@@ -30,15 +31,20 @@ pub enum Error {
 }
 
 impl Client {
-    pub fn new(base_url: Url) -> Self {
+    pub fn new(base_url: Url, maybe_identity: Option<Vec<u8>>) -> Self {
+        let mut reqwest = reqwest::ClientBuilder::new()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .use_rustls_tls()
+            .trust_dns(true);
+
+        if let Some(identity) = maybe_identity {
+            reqwest =
+                reqwest.identity(Identity::from_pem(identity.as_ref()).expect("Bad int api cert"));
+        }
+
         Client {
-            reqwest: reqwest::ClientBuilder::new()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(10))
-                .use_rustls_tls()
-                .trust_dns(true)
-                .build()
-                .unwrap(),
+            reqwest: reqwest.build().unwrap(),
             base_url,
         }
     }
@@ -47,8 +53,7 @@ impl Client {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .unwrap()
-            .push("int")
-            .push("api")
+            .push("int_api")
             .push("v1")
             .push("healths");
 

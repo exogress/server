@@ -44,6 +44,7 @@ use exogress_common_utils::termination::stop_signal_listener;
 use exogress_server_common::assistant::{
     HealthReport, RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage,
 };
+use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
@@ -68,15 +69,6 @@ mod webapp;
 
 fn main() {
     let spawn_args = App::new("spawn")
-        .arg(
-            Arg::with_name("assistant_base_url")
-                .long("assistant-base-url")
-                .value_name("URL")
-                .required(true)
-                .help("Assistant base URL")
-                .default_value("ws://localhost:3214")
-                .takes_value(true),
-        )
         .arg(
             Arg::with_name("public_base_url")
                 .long("public-base-url")
@@ -209,14 +201,6 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("int_api_base_url")
-                .long("int-api-base-url")
-                .value_name("URL")
-                .default_value("http://localhost:2999")
-                .help("Set private signaler base URL")
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("cache_ttl_secs")
                 .long("cache-ttl")
                 .value_name("SECONDS")
@@ -257,12 +241,15 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_server_common::clap::webapp::add_args(
+    let spawn_args = exogress_server_common::clap::int_api::add_args(
         exogress_common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
                 exogress_common_utils::clap::log::add_args(spawn_args),
             ),
         ),
+        true,
+        true,
+        true,
     );
 
     let args = App::new("Exogress Gateway")
@@ -284,10 +271,19 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
+    let IntApiBaseUrls {
+        assistant_url: assistant_base_url,
+        signaler_url: signaler_base_url,
+        webapp_url: webapp_base_url,
+        int_api_client_cert,
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, true, true);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "gw");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
+
+    let assistant_base_url = assistant_base_url.expect("no assistant_base_url");
+    let signaler_base_url = signaler_base_url.expect("no signaler_base_url");
+    let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
 
     let mut rt = Builder::new()
         .threaded_scheduler()
@@ -304,12 +300,6 @@ fn main() {
         .unwrap()
         .parse()
         .expect("bad URL format");
-
-    let assistant_base_url: Url = matches
-        .value_of("assistant_base_url")
-        .unwrap()
-        .parse()
-        .expect("bad assistant URL format");
 
     let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
     let google_oauth2_client_secret = matches
@@ -344,12 +334,6 @@ fn main() {
     )
     .expect("error in webroot");
     info!("Use certbot webroot at {}", webroot.display());
-
-    let int_api_base_url: Url = matches
-        .value_of("int_api_base_url")
-        .expect("no int_api_base_url")
-        .parse()
-        .expect("bad int_api_base_url");
 
     let listen_http_acme_challenge_addr = matches
         .value_of("listen_http_acme_challenge")
@@ -522,13 +506,18 @@ fn main() {
             listen_https_addr, external_https_port
         );
 
-        let client_tunnels = ClientTunnels::new(int_api_base_url);
+        let client_tunnels = ClientTunnels::new(signaler_base_url, int_api_client_cert.clone());
 
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
         let (health_state_change_tx, health_state_change_rx) = mpsc::channel(256);
 
-        let api_client = Client::new(cache_ttl, health_state_change_tx, webapp_base_url);
+        let api_client = Client::new(
+            cache_ttl,
+            health_state_change_tx,
+            webapp_base_url,
+            int_api_client_cert.clone(),
+        );
 
         tokio::spawn(tunnels_acceptor(
             listen_tunnel_addr,
@@ -688,6 +677,7 @@ fn main() {
             &client_tunnels,
             tls_gw_common.clone(),
             statistics_rx,
+            int_api_client_cert.clone(),
             &api_client,
             resolver.clone(),
             &app_stop_handle,
@@ -708,6 +698,7 @@ fn main() {
             google_oauth2_client_secret,
             public_base_url.clone(),
             assistant_base_url.clone(),
+            int_api_client_cert.clone(),
         );
 
         let github_oauth2_client = GithubOauth2Client::new(
@@ -716,24 +707,8 @@ fn main() {
             github_oauth2_client_secret,
             public_base_url.clone(),
             assistant_base_url.clone(),
+            int_api_client_cert.clone(),
         );
-
-        // std::thread::spawn(move || loop {
-        //     std::thread::sleep(Duration::from_secs(10));
-        //     let deadlocks = parking_lot::deadlock::check_deadlock();
-        //     if deadlocks.is_empty() {
-        //         continue;
-        //     }
-        //
-        //     println!("{} deadlocks detected", deadlocks.len());
-        //     for (i, threads) in deadlocks.iter().enumerate() {
-        //         println!("Deadlock #{}", i);
-        //         for t in threads {
-        //             println!("Thread Id {:#?}", t.thread_id());
-        //             println!("{:#?}", t.backtrace());
-        //         }
-        //     }
-        // });
 
         let server = http_serve::handle::server(
             client_tunnels,
@@ -751,6 +726,7 @@ fn main() {
             github_oauth2_client,
             assistant_base_url,
             &account_rules_counters,
+            int_api_client_cert,
             https_counters_tx,
             dbip,
             resolver,

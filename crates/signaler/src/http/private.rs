@@ -15,7 +15,7 @@ pub async fn server(
     info!("Will spawn private HTTP server on {}", listen_addr);
 
     let tunnels_api = warp::path!(
-        "api"
+        "int_api"
             / "v1"
             / "accounts"
             / AccountName

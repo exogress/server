@@ -60,6 +60,7 @@ pub struct GoogleOauth2Client {
     assistant_base_url: Url,
     creds: GoogleClientCreds,
     ttl: Duration,
+    maybe_identity: Option<Vec<u8>>,
 }
 
 impl GoogleOauth2Client {
@@ -69,6 +70,7 @@ impl GoogleOauth2Client {
         client_secret: String,
         public_base_url: Url,
         assistant_base_url: Url,
+        maybe_identity: Option<Vec<u8>>,
     ) -> Self {
         let mut redirect_url = public_base_url;
 
@@ -87,6 +89,7 @@ impl GoogleOauth2Client {
                 redirect_url: redirect_url.to_string(),
             },
             ttl,
+            maybe_identity,
         }
     }
 
@@ -124,6 +127,7 @@ impl GoogleOauth2Client {
                 },
             },
             self.ttl,
+            self.maybe_identity.clone(),
         )
         .await?;
 
@@ -143,6 +147,7 @@ impl GoogleOauth2Client {
         let oauth2_flow_data = retrieve_assistant_key::<Oauth2FlowData>(
             &self.assistant_base_url,
             received_state.secret(),
+            self.maybe_identity.clone(),
         )
         .await?;
 

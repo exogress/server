@@ -12,6 +12,7 @@ use crate::http::GatewayCommonTlsConfig;
 use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
 use exogress_common_utils::termination::stop_signal_listener;
+use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use redis::Client;
 use std::net::SocketAddr;
@@ -78,12 +79,15 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_server_common::clap::webapp::add_args(
+    let spawn_args = exogress_server_common::clap::int_api::add_args(
         exogress_common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
                 exogress_common_utils::clap::log::add_args(spawn_args),
             ),
         ),
+        true,
+        false,
+        false,
     );
 
     let args = App::new("Exogress Assistant Server")
@@ -106,13 +110,20 @@ fn main() {
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
 
-    let webapp_base_url = exogress_server_common::clap::webapp::extract_matches(&matches);
+    let IntApiBaseUrls {
+        webapp_url: webapp_base_url,
+        int_api_client_cert,
+        ..
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
+
+    let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
+
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     exogress_common_utils::clap::log::handle(&matches, "assistant");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
 
     info!("Use Webapp url at {}", webapp_base_url);
-    let webapp_client = crate::webapp::Client::new(webapp_base_url);
+    let webapp_client = crate::webapp::Client::new(webapp_base_url, int_api_client_cert);
 
     let clickhouse_url = matches
         .value_of("clickhouse_url")

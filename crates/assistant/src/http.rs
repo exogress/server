@@ -2,8 +2,8 @@ use crate::clickhouse::Clickhouse;
 use crate::termination::StopReason;
 use crate::webapp::UpstreamReportWithGwInfo;
 use exogress_server_common::assistant::{
-    GatewayConfigMessage, GetValue, HealthReport, Notification, SetValue, StatisticsReport,
-    WsFromGwMessage, WsToGwMessage,
+    GatewayConfigMessage, GetValue, HealthReport, Notification, SetValue, WsFromGwMessage,
+    WsToGwMessage,
 };
 use futures::{FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
@@ -17,10 +17,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::time::{delay_for, Duration};
 use tracing_futures::Instrument;
-use warp::ws::Message;
 use warp::Filter;
-
-// TODO: add pings
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayCommonTlsConfig {
@@ -61,7 +58,7 @@ pub async fn server(
 ) {
     info!("Will spawn HTTP server on {}", listen_addr);
 
-    let notifications = warp::path!("api" / "v1" / "gateways" / String / "notifications")
+    let notifications = warp::path!("int_api" / "v1" / "gateways" / String / "notifications")
         .and(warp::filters::query::query::<HashMap<String, String>>())
         .and(warp::filters::ws::ws())
         .map({
@@ -284,7 +281,7 @@ pub async fn server(
             }
         });
 
-    let save_kv = warp::path!("api" / "v1" / "keys" / String)
+    let save_kv = warp::path!("int_api" / "v1" / "keys" / String)
         .and(warp::filters::method::post())
         .and(warp::filters::body::json::<SetValue>())
         .and_then({
@@ -321,7 +318,7 @@ pub async fn server(
             }
         });
 
-    let get_kv = warp::path!("api" / "v1" / "keys" / String)
+    let get_kv = warp::path!("int_api" / "v1" / "keys" / String)
         .and(warp::filters::method::get())
         .and_then({
             shadow_clone!(redis);

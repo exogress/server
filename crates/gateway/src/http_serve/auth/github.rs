@@ -56,6 +56,7 @@ pub struct GithubOauth2Client {
     assistant_base_url: Url,
     creds: GithubClientCreds,
     ttl: Duration,
+    maybe_identity: Option<Vec<u8>>,
 }
 
 impl GithubOauth2Client {
@@ -65,6 +66,7 @@ impl GithubOauth2Client {
         client_secret: String,
         public_base_url: Url,
         assistant_base_url: Url,
+        maybe_identity: Option<Vec<u8>>,
     ) -> Self {
         let mut redirect_url = public_base_url;
 
@@ -83,6 +85,7 @@ impl GithubOauth2Client {
                 redirect_url: redirect_url.to_string(),
             },
             ttl,
+            maybe_identity,
         }
     }
 
@@ -113,6 +116,7 @@ impl GithubOauth2Client {
                 },
             },
             self.ttl,
+            self.maybe_identity.clone(),
         )
         .await?;
 
@@ -132,6 +136,7 @@ impl GithubOauth2Client {
         let oauth2_flow_data = retrieve_assistant_key::<Oauth2FlowData>(
             &self.assistant_base_url,
             received_state.secret(),
+            self.maybe_identity.clone(),
         )
         .await?;
 

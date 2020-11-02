@@ -1,9 +1,10 @@
 //! Presence API
 use exogress_config_core::ClientConfig;
 use exogress_entities::{AccountName, InstanceId, ProjectName};
-use reqwest::{Method, StatusCode, Url};
+use reqwest::{Identity, Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Nothing {}
@@ -45,18 +46,27 @@ pub enum Error {
 }
 
 impl Client {
-    pub fn new(mut webapp_base_url: Url, name: String) -> Self {
+    pub fn new(mut webapp_base_url: Url, name: String, maybe_identity: Option<Vec<u8>>) -> Self {
         {
             let mut segments = webapp_base_url.path_segments_mut().unwrap();
-            segments.push("int");
-            segments.push("api");
+            segments.push("int_api");
             segments.push("v1");
             segments.push("signalers");
             segments.push(name.as_str());
         }
 
+        let mut builder = reqwest::ClientBuilder::new()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .use_rustls_tls()
+            .trust_dns(true);
+
+        if let Some(identity) = maybe_identity {
+            builder = builder.identity(Identity::from_pem(&identity).unwrap());
+        }
+
         Client {
-            client: reqwest::Client::default(),
+            client: builder.build().unwrap(),
             base_url: webapp_base_url,
             name,
         }

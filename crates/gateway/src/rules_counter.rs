@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use exogress_entities::{AccountName, AccountUniqueId};
+use exogress_entities::AccountUniqueId;
 use hashbrown::HashMap;
 use parking_lot::RwLock;
 use std::mem;

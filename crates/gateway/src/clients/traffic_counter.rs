@@ -2,7 +2,7 @@
 use bytes::{Buf, BufMut};
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
-use exogress_entities::{AccountName, AccountUniqueId};
+use exogress_entities::AccountUniqueId;
 use futures::ready;
 use parking_lot::Mutex;
 use std::convert::TryInto;

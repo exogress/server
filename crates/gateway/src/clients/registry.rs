@@ -60,19 +60,21 @@ pub struct ClientTunnelsInner {
 #[derive(Clone)]
 pub struct ClientTunnels {
     pub inner: Arc<Mutex<ClientTunnelsInner>>,
-    pub int_base_url: Url,
+    pub signaler_base_url: Url,
+    pub maybe_identity: Option<Vec<u8>>,
 }
 
 const WAIT_TIME: Duration = Duration::from_secs(10);
 
 impl ClientTunnels {
-    pub fn new(int_base_url: Url) -> Self {
+    pub fn new(signaler_base_url: Url, maybe_identity: Option<Vec<u8>>) -> Self {
         ClientTunnels {
             inner: Arc::new(Mutex::new(ClientTunnelsInner {
                 rng: SmallRng::from_entropy(),
                 by_config: Default::default(),
             })),
-            int_base_url,
+            signaler_base_url,
+            maybe_identity,
         }
     }
 
@@ -93,6 +95,8 @@ impl ClientTunnels {
         instance_id: InstanceId,
         individual_hostname: String,
     ) -> Option<ConnectedTunnel> {
+        let maybe_identity = self.maybe_identity.clone();
+
         let (maybe_reset_event, should_request) = {
             let mut locked = self.inner.lock();
             let maybe_clients = locked.by_config.get(&config_id);
@@ -118,9 +122,10 @@ impl ClientTunnels {
 
         if should_request {
             match request_connection(
-                self.int_base_url.clone(),
+                self.signaler_base_url.clone(),
                 individual_hostname,
                 config_id.clone(),
+                maybe_identity,
             )
             .await
             {

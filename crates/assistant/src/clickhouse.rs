@@ -1,7 +1,7 @@
 use chrono::{DateTime, TimeZone, Timelike, Utc};
 use clickhouse_rs::errors::Error;
 use clickhouse_rs::Block;
-use exogress_server_common::assistant::{RulesRecord, StatisticsReport, TrafficRecord};
+use exogress_server_common::assistant::StatisticsReport;
 
 #[derive(Clone)]
 pub struct Clickhouse {
