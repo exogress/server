@@ -1028,7 +1028,7 @@ mod test {
 //     "revisions": [
 //         {
 //             "revision": 12345,
-//             "version": "0.0.1",
+//             "version": "1.0.0",
 //             "handlers": [
 //                 {
 //                     "definition": {
