@@ -17,7 +17,7 @@ tokio = { version = "0.2", features = ["rt-threaded", "macros", "signal", "fs", 
 futures = "0.3"
 futures-util = { version = "0.3", features = ["io"] }
 chrono = "0.4.11"
-hyper = "0.13.6"
+hyper = "0.13.9"
 http = "0.2.1"
 reqwest = { version = "0.10.6", features = ["gzip", "brotli", "trust-dns", "native-tls", "stream", "rustls-tls"] }
 bytes = "0.5"

@@ -167,27 +167,36 @@ pub async fn server(
                 .or_else(|_| futures::future::ready(Ok::<(_,), Rejection>(("".to_string(),)))),
         )
         .and(filters::host::optional())
-        .map(
-            move |path: warp::filters::path::FullPath, query: String, host: Option<Authority>| {
-                let mut path_and_query = path.as_str().to_string();
+        .and_then(
+            move |path: warp::filters::path::FullPath,
+                  query: String,
+                  maybe_host: Option<Authority>| {
+                async move {
+                    if let Some(host) = maybe_host {
+                        let mut path_and_query = path.as_str().to_string();
 
-                if !query.is_empty() {
-                    path_and_query.push_str("?");
-                    path_and_query.push_str(&query);
+                        if !query.is_empty() {
+                            path_and_query.push_str("?");
+                            path_and_query.push_str(&query);
+                        }
+
+                        let redirect_to_uri = Uri::builder()
+                            .scheme("https")
+                            .authority(host.as_str())
+                            .path_and_query(path_and_query.as_str())
+                            .build()
+                            .unwrap();
+
+                        let mut redirect_to =
+                            Url::parse(redirect_to_uri.to_string().as_str()).unwrap();
+
+                        redirect_to.set_port(Some(external_https_port)).unwrap();
+
+                        Ok(warp::redirect(redirect_to.as_str().parse::<Uri>().unwrap()))
+                    } else {
+                        Err(warp::reject::not_found())
+                    }
                 }
-
-                let redirect_to_uri = Uri::builder()
-                    .scheme("https")
-                    .authority(host.unwrap().as_str())
-                    .path_and_query(path_and_query.as_str())
-                    .build()
-                    .unwrap();
-
-                let mut redirect_to = Url::parse(redirect_to_uri.to_string().as_str()).unwrap();
-
-                redirect_to.set_port(Some(external_https_port)).unwrap();
-
-                warp::redirect(redirect_to.as_str().parse::<Uri>().unwrap())
             },
         );
 
@@ -233,34 +242,37 @@ pub async fn server(
         .and_then({
             shadow_clone!(webapp_client);
 
-            move |token: String, host: Option<Authority>| {
+            move |token: String, maybe_host: Option<Authority>| {
                 shadow_clone!(webapp_client);
 
                 async move {
-                    let hostname = host.expect("no host in request");
-                    let filename = format!(".well-known/acme-challenge/{}", token);
+                    if let Some(hostname) = maybe_host {
+                        let filename = format!(".well-known/acme-challenge/{}", token);
 
-                    info!(
-                        "ACME HTTP challenge verification request: {} on {}",
-                        hostname, filename
-                    );
+                        info!(
+                            "ACME HTTP challenge verification request: {} on {}",
+                            hostname, filename
+                        );
 
-                    let res = webapp_client
-                        .acme_http_challenge_verification(hostname.as_str(), filename.as_str())
-                        .await;
+                        let res = webapp_client
+                            .acme_http_challenge_verification(hostname.as_str(), filename.as_str())
+                            .await;
 
-                    match res {
-                        Ok(info) => {
-                            info!("validation request succeeded for host {}", hostname);
-                            Ok(Response::builder()
-                                .header(CONTENT_TYPE, info.content_type.as_str())
-                                .body(info.file_content)
-                                .unwrap())
+                        match res {
+                            Ok(info) => {
+                                info!("validation request succeeded for host {}", hostname);
+                                Ok(Response::builder()
+                                    .header(CONTENT_TYPE, info.content_type.as_str())
+                                    .body(info.file_content)
+                                    .unwrap())
+                            }
+                            Err(e) => {
+                                warn!("error in ACME verification: {}", e);
+                                Err(warp::reject::not_found())
+                            }
                         }
-                        Err(e) => {
-                            warn!("error in ACME verification: {}", e);
-                            Err(warp::reject::not_found())
-                        }
+                    } else {
+                        Err(warp::reject::not_found())
                     }
                 }
             }
