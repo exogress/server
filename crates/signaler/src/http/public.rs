@@ -12,7 +12,7 @@ use exogress_signaling::{
 use warp::Filter;
 
 use crate::presence;
-use crate::presence::Error;
+use crate::presence::{Error, InstanceRegistered};
 use crate::termination::StopReason;
 use exogress_common_utils::backoff::Backoff;
 use shadow_clone::shadow_clone;
@@ -80,7 +80,7 @@ pub async fn server(
                             }),
                             mut websocket,
                         ))) => {
-                            let instance_id = match presence_client
+                            let InstanceRegistered { instance_id, access_key_id, account_unique_id} = match presence_client
                                 .set_online(
                                     &authorization,
                                     &channel_connect_params.project,
@@ -149,7 +149,7 @@ pub async fn server(
                                             .unwrap(),
                                         ))
                                         .await;
-                                    response.instance_id
+                                    response
                                 }
                             };
 
@@ -160,7 +160,7 @@ pub async fn server(
                                 shadow_clone!(authorization);
 
                                 async move {
-                                    let mut pubsub =
+                                    let mut messages_pubsub =
                                         redis.get_tokio_connection_tokio().await?.into_pubsub();
                                     let redis_subscription = format!(
                                         "signaler.{}.{}.{}",
@@ -169,8 +169,15 @@ pub async fn server(
                                         config.name
                                     );
                                     info!("subscribe to {}", redis_subscription);
-                                    pubsub.subscribe(redis_subscription).await?;
-                                    let mut from_redis_messages = pubsub.on_message();
+                                    messages_pubsub.subscribe(redis_subscription).await?;
+
+                                    let mut termination_pubsub =
+                                        redis.get_tokio_connection_tokio().await?.into_pubsub();
+                                    termination_pubsub.subscribe(format!("revoke_access_token.{}", access_key_id)).await?;
+                                    termination_pubsub.subscribe(format!("project_deleted.{}.{}", account_unique_id, channel_connect_params.project)).await?;
+
+                                    let mut from_redis_termination_notifications = termination_pubsub.on_message();
+                                    let mut from_redis_messages = messages_pubsub.on_message();
 
                                     let (mut tx, mut rx) = websocket.split();
 
@@ -200,6 +207,18 @@ pub async fn server(
                                                 to_ws_tx
                                                     .send(warp::filters::ws::Message::text(payload))
                                                     .await?;
+                                            }
+
+                                            Ok::<_, anyhow::Error>(())
+                                        }
+                                    }
+                                    .fuse();
+
+                                    let listen_for_termination_requests = {
+                                        async move {
+                                            if let Some(msg) = from_redis_termination_notifications.next().await {
+                                                let payload: String = msg.get_payload()?;
+                                                info!("Terminate by request. Payload = {}", payload);
                                             }
 
                                             Ok::<_, anyhow::Error>(())
@@ -280,6 +299,7 @@ pub async fn server(
                                     .fuse();
 
                                     pin_mut!(forward_from_redis_to_ws_channel);
+                                    pin_mut!(listen_for_termination_requests);
                                     pin_mut!(process_incoming);
                                     pin_mut!(accept_pings);
                                     pin_mut!(send_pings);
@@ -293,6 +313,9 @@ pub async fn server(
                                             r?;
                                         }
                                         r = forward_from_redis_to_ws_channel => {
+                                            r?;
+                                        }
+                                        r = listen_for_termination_requests => {
                                             r?;
                                         }
                                         r = send_pings => {

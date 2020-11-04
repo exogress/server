@@ -1,6 +1,6 @@
 //! Presence API
 use exogress_config_core::ClientConfig;
-use exogress_entities::{AccountName, InstanceId, ProjectName};
+use exogress_entities::{AccessKeyId, AccountName, AccountUniqueId, InstanceId, ProjectName};
 use reqwest::{Identity, Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -12,6 +12,8 @@ pub struct Nothing {}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstanceRegistered {
     pub(crate) instance_id: InstanceId,
+    pub(crate) account_unique_id: AccountUniqueId,
+    pub(crate) access_key_id: AccessKeyId,
 }
 
 #[derive(Clone, Debug)]
