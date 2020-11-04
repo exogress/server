@@ -6,7 +6,9 @@ use tokio::time::Duration;
 
 use exogress_config_core::ClientConfig;
 use exogress_entities::{AccountName, ProjectName};
-use exogress_signaling::SignalerHandshakeResponse;
+use exogress_signaling::{
+    InstanceConfigMessage, SignalerHandshakeResponse, WsInstanceToCloudMessage,
+};
 use warp::Filter;
 
 use crate::presence;
@@ -52,7 +54,9 @@ pub async fn server(
                             match msg {
                                 Some(Ok(m)) if m.is_text() => {
                                     return Ok((
-                                        serde_json::from_str::<ClientConfig>(m.to_str().unwrap())?,
+                                        serde_json::from_str::<WsInstanceToCloudMessage>(
+                                            m.to_str().unwrap(),
+                                        )?,
                                         websocket,
                                     ));
                                 }
@@ -70,7 +74,12 @@ pub async fn server(
                     };
 
                     match tokio::time::timeout(CONFIG_WAIT_TIMEOUT, wait_first).await {
-                        Ok(Ok((config, mut websocket))) => {
+                        Ok(Ok((
+                            WsInstanceToCloudMessage::InstanceConfig(InstanceConfigMessage {
+                                config,
+                            }),
+                            mut websocket,
+                        ))) => {
                             let instance_id = match presence_client
                                 .set_online(
                                     &authorization,
@@ -209,9 +218,11 @@ pub async fn server(
                                             while let Some(msg_res) = rx.next().await {
                                                 match msg_res? {
                                                     msg if msg.is_text() => {
-                                                        let config =
-                                                            serde_json::from_str::<ClientConfig>(
-                                                                msg.to_str().unwrap(),
+                                                        let WsInstanceToCloudMessage::InstanceConfig(InstanceConfigMessage { config }) =
+                                                            serde_json::from_str::<
+                                                                WsInstanceToCloudMessage,
+                                                            >(
+                                                                msg.to_str().unwrap()
                                                             )?;
                                                         presence_client
                                                             .update_presence(
