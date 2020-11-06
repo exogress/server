@@ -12,16 +12,19 @@ use crate::http::GatewayCommonTlsConfig;
 use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
 use exogress_common_utils::termination::stop_signal_listener;
+use exogress_entities::Ulid;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use redis::Client;
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
+use std::time::Duration;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 
 mod clickhouse;
 mod http;
+mod presence;
 mod termination;
 mod webapp;
 
@@ -123,7 +126,8 @@ fn main() {
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
 
     info!("Use Webapp url at {}", webapp_base_url);
-    let webapp_client = crate::webapp::Client::new(webapp_base_url, int_api_client_cert);
+    let webapp_client =
+        crate::webapp::Client::new(webapp_base_url.clone(), int_api_client_cert.clone());
 
     let clickhouse_url = matches
         .value_of("clickhouse_url")
@@ -164,8 +168,44 @@ fn main() {
         .build()
         .unwrap();
 
+    let assistant_id: String = Ulid::new().to_string().into();
+
     let maybe_panic = rt.block_on({
+        shadow_clone!(webapp_base_url);
+        shadow_clone!(assistant_id);
+        shadow_clone!(int_api_client_cert);
+
         AssertUnwindSafe(async move {
+            info!("Register assistant");
+            let presence_client = presence::Client::new(
+                webapp_base_url.clone(),
+                assistant_id.clone(),
+                int_api_client_cert.clone(),
+            );
+
+            presence_client
+                .register_assistant()
+                .await
+                .expect("Could not register assistant");
+            info!("Done");
+
+            let periodic_send_alive = {
+                let presence_client = presence_client.clone();
+
+                #[allow(unreachable_code)]
+                async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(60));
+
+                    loop {
+                        interval.tick().await;
+                        presence_client.assistant_alive().await?;
+                    }
+
+                    Ok::<(), anyhow::Error>(())
+                }
+            }
+            .fuse();
+
             tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
             let redis_client = Client::open(redis_addr.as_str()).unwrap();
@@ -175,7 +215,7 @@ fn main() {
 
             info!("Listening  HTTP on {}", listen_http_addr);
 
-            http::server(
+            let http = http::server(
                 listen_http_addr,
                 GatewayCommonTlsConfig {
                     hostname: gw_hostname,
@@ -184,10 +224,20 @@ fn main() {
                 },
                 redis_client,
                 webapp_client,
+                presence_client,
                 clickhouse_client,
+                app_stop_handle,
                 app_stop_wait,
-            )
-            .await;
+            );
+
+            tokio::select! {
+                r = http => {
+                    warn!("http server stopped: {:?}", r);
+                },
+                r = periodic_send_alive => {
+                    warn!("assistant alive sender stopped: {:?}", r);
+                },
+            }
 
             info!("Stop");
         })
@@ -197,4 +247,13 @@ fn main() {
     if let Err(_e) = maybe_panic {
         error!("stop on panic");
     }
+
+    info!("unregistering assistant");
+    rt.block_on(async move {
+        presence::Client::new(webapp_base_url, assistant_id, int_api_client_cert)
+            .unregister_assistant()
+            .await
+    })
+    .expect("Could not unregister signaler");
+    info!("done");
 }

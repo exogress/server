@@ -1,6 +1,7 @@
 use crate::clickhouse::Clickhouse;
 use crate::termination::StopReason;
 use crate::webapp::UpstreamReportWithGwInfo;
+use exogress_common_utils::backoff::Backoff;
 use exogress_server_common::assistant::{
     GatewayConfigMessage, GetValue, HealthReport, Notification, SetValue, WsFromGwMessage,
     WsToGwMessage,
@@ -12,7 +13,7 @@ use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use stop_handle::StopWait;
+use stop_handle::{StopHandle, StopWait};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::time::{delay_for, Duration};
@@ -53,7 +54,9 @@ pub async fn server(
     common_gw_tls_config: GatewayCommonTlsConfig,
     redis: redis::Client,
     webapp_client: crate::webapp::Client,
+    presence_client: crate::presence::Client,
     clickhouse_client: Clickhouse,
+    stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<StopReason>,
 ) {
     info!("Will spawn HTTP server on {}", listen_addr);
@@ -65,214 +68,244 @@ pub async fn server(
             shadow_clone!(redis);
             shadow_clone!(clickhouse_client);
             shadow_clone!(webapp_client);
+            shadow_clone!(presence_client);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
                 shadow_clone!(mut redis);
                 shadow_clone!(common_gw_tls_config);
                 shadow_clone!(clickhouse_client);
                 shadow_clone!(webapp_client);
+                shadow_clone!(presence_client);
+                shadow_clone!(stop_handle);
 
                 let gw_location = query.get("location").unwrap().clone();
 
                 ws.on_upgrade(move |websocket| {
                     {
                         shadow_clone!(gw_hostname);
+                        shadow_clone!(stop_handle);
 
                         async move {
-                            let (mut ws_tx, mut ws_rx) = websocket.split();
-                            let (mut ch_ws_tx, mut ch_ws_rx) = mpsc::channel(16);
-                            let (mut pong_tx, pong_rx) = mpsc::channel(16);
+                            match presence_client.set_online(&gw_hostname).await {
+                                Ok(_) => {
+                                    info!("set gw presence successfully");
+                                    let (mut ws_tx, mut ws_rx) = websocket.split();
+                                    let (mut ch_ws_tx, mut ch_ws_rx) = mpsc::channel(16);
+                                    let (mut pong_tx, pong_rx) = mpsc::channel(16);
 
-                            let forward_to_ws = async move {
-                                while let Some(msg) = ch_ws_rx.next().await {
-                                    ws_tx.send(msg).await?;
-                                }
-
-                                Ok::<_, anyhow::Error>(())
-                            };
-
-                            #[allow(unreachable_code)]
-                            let ensure_pong_received = async move {
-                                let mut timeout_stream = tokio::stream::StreamExt::timeout(pong_rx,Duration::from_secs(30));
-                                while let Some(r) = timeout_stream.next().await {
-                                    r?;
-                                }
-
-                                Ok::<_, anyhow::Error>(())
-                            };
-
-                            let statistics_saver = {
-                                shadow_clone!(gw_hostname);
-                                shadow_clone!(mut ch_ws_tx);
-
-                                async move {
-                                    while let Some(Ok(msg)) = ws_rx.next().await {
-                                        shadow_clone!(gw_hostname);
-
-                                        if msg.is_text() {
-                                            let txt = msg.to_str().unwrap();
-                                            let msg = serde_json::from_str::<WsFromGwMessage>(txt).expect("FIXME");
-                                            info!("received GW: {:?}", msg);
-                                            match msg {
-                                                WsFromGwMessage::Statistics { report  } => {
-                                                    clickhouse_client.register_statistics_report(report, &gw_hostname, &gw_location).await?;
-                                                }
-                                                WsFromGwMessage::Health { report: HealthReport::UpstreamsHealth { records } } => {
-                                                    info!("records = {:?}", records);
-                                                    let full_recs = records
-                                                        .into_iter()
-                                                        .map(|r| {
-                                                            UpstreamReportWithGwInfo {
-                                                                gw_hostname: gw_hostname.clone(),
-                                                                gw_location: gw_location.clone(),
-                                                                inner: r
-                                                            }
-                                                        })
-                                                        .collect();
-                                                    webapp_client
-                                                        .report_health(full_recs)
-                                                        .await
-                                                        .expect("FIXME");
-                                                }
-                                                _ => {},
-                                            }
-                                        } else if msg.is_ping() {
-                                            // pong is sent automatically
-                                        } else if msg.is_pong() {
-                                            pong_tx.send(()).await?;
-                                        } else {
-                                            info!("unexpected message received. exiting: {:?}", msg);
-                                            break;
+                                    let forward_to_ws = async move {
+                                        while let Some(msg) = ch_ws_rx.next().await {
+                                            ws_tx.send(msg).await?;
                                         }
-                                    }
 
-                                    Ok::<_, anyhow::Error>(())
-                                }
-                            };
+                                        Ok::<_, anyhow::Error>(())
+                                    };
 
-                            let notifier = async move {
-                                let outgoing_msg = serde_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
+                                    #[allow(unreachable_code)]
+                                        let ensure_pong_received = async move {
+                                        let mut timeout_stream = tokio::stream::StreamExt::timeout(pong_rx, Duration::from_secs(30));
+                                        while let Some(r) = timeout_stream.next().await {
+                                            r?;
+                                        }
 
-                                tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::text(outgoing_msg))).await??;
+                                        Ok::<_, anyhow::Error>(())
+                                    };
 
-                                match redis.get_async_connection().await {
-                                    Ok(conn) => {
-                                        let mut pubsub = conn.into_pubsub();
+                                    let statistics_saver = {
+                                        shadow_clone!(gw_hostname);
+                                        shadow_clone!(mut ch_ws_tx);
 
-                                        match pubsub.subscribe("invalidations").await {
-                                            Ok(_) => {
-                                                info!("subscribed to invalidations");
-                                                let mut messages = pubsub.into_on_message();
+                                        async move {
+                                            while let Some(Ok(msg)) = ws_rx.next().await {
+                                                shadow_clone!(gw_hostname);
 
-                                                let forward_from_redis = {
-                                                    shadow_clone!(mut ch_ws_tx);
+                                                if msg.is_text() {
+                                                    let txt = msg.to_str().unwrap();
+                                                    let msg = serde_json::from_str::<WsFromGwMessage>(txt).expect("FIXME");
+                                                    info!("received GW: {:?}", msg);
+                                                    match msg {
+                                                        WsFromGwMessage::Statistics { report } => {
+                                                            clickhouse_client.register_statistics_report(report, &gw_hostname, &gw_location).await?;
+                                                        }
+                                                        WsFromGwMessage::Health { report: HealthReport::UpstreamsHealth { records } } => {
+                                                            info!("records = {:?}", records);
+                                                            let full_recs = records
+                                                                .into_iter()
+                                                                .map(|r| {
+                                                                    UpstreamReportWithGwInfo {
+                                                                        gw_hostname: gw_hostname.clone(),
+                                                                        gw_location: gw_location.clone(),
+                                                                        inner: r,
+                                                                    }
+                                                                })
+                                                                .collect();
+                                                            webapp_client
+                                                                .report_health(full_recs)
+                                                                .await
+                                                                .expect("FIXME");
+                                                        }
+                                                        _ => {},
+                                                    }
+                                                } else if msg.is_ping() {
+                                                    // pong is sent automatically
+                                                } else if msg.is_pong() {
+                                                    pong_tx.send(()).await?;
+                                                } else {
+                                                    info!("unexpected message received. exiting: {:?}", msg);
+                                                    break;
+                                                }
+                                            }
 
-                                                    async move {
-                                                        while let Some(msg) = messages.next().await {
-                                                            match msg.get_payload::<String>() {
-                                                                Ok(p) => {
-                                                                    info!("redis -> assistant: {:?}", p);
-                                                                    match serde_json::from_str::<Notification>(&p) {
-                                                                        Ok(notification) => {
-                                                                            let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
-                                                                                .expect("could not serialize");
-                                                                            let r = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
-                                                                                .send(warp::filters::ws::Message::text(
-                                                                                    outgoing_msg,
-                                                                                ))).await;
-                                                                            match r {
-                                                                                Err(_) => {
-                                                                                    error!(
-                                                                                        "timeout sending to websocket",
-                                                                                    );
+                                            Ok::<_, anyhow::Error>(())
+                                        }
+                                    };
+
+                                    let notifier = async move {
+                                        let outgoing_msg = serde_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
+
+                                        tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::text(outgoing_msg))).await??;
+
+                                        match redis.get_async_connection().await {
+                                            Ok(conn) => {
+                                                let mut pubsub = conn.into_pubsub();
+
+                                                match pubsub.subscribe("invalidations").await {
+                                                    Ok(_) => {
+                                                        info!("subscribed to invalidations");
+                                                        let mut messages = pubsub.into_on_message();
+
+                                                        let forward_from_redis = {
+                                                            shadow_clone!(mut ch_ws_tx);
+
+                                                            async move {
+                                                                while let Some(msg) = messages.next().await {
+                                                                    match msg.get_payload::<String>() {
+                                                                        Ok(p) => {
+                                                                            info!("redis -> assistant: {:?}", p);
+                                                                            match serde_json::from_str::<Notification>(&p) {
+                                                                                Ok(notification) => {
+                                                                                    let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
+                                                                                        .expect("could not serialize");
+                                                                                    let r = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
+                                                                                        .send(warp::filters::ws::Message::text(
+                                                                                            outgoing_msg,
+                                                                                        ))).await;
+                                                                                    match r {
+                                                                                        Err(_) => {
+                                                                                            error!(
+                                                                                                "timeout sending to websocket",
+                                                                                            );
+                                                                                            return;
+                                                                                        }
+                                                                                        Ok(Err(e)) => {
+                                                                                            error!(
+                                                                                                "error sending to websocket: {}",
+                                                                                                e
+                                                                                            );
+                                                                                            return;
+                                                                                        }
+                                                                                        Ok(Ok(_)) => {}
+                                                                                    }
+                                                                                }
+                                                                                Err(e) => {
+                                                                                    error!("notification format error: {}", e);
                                                                                     return;
                                                                                 }
-                                                                                Ok(Err(e)) => {
-                                                                                    error!(
-                                                                                        "error sending to websocket: {}",
-                                                                                        e
-                                                                                    );
-                                                                                    return;
-                                                                                }
-                                                                                Ok(Ok(_)) => {}
                                                                             }
                                                                         }
                                                                         Err(e) => {
-                                                                            error!("notification format error: {}", e);
-                                                                            return;
+                                                                            error!(
+                                                                                "error getting redis payload: {}",
+                                                                                e
+                                                                            );
+                                                                            break;
                                                                         }
                                                                     }
                                                                 }
-                                                                Err(e) => {
-                                                                    error!(
-                                                                        "error getting redis payload: {}",
-                                                                        e
-                                                                    );
-                                                                    break;
-                                                                }
                                                             }
-                                                        }
+                                                        };
+
+                                                        #[allow(unreachable_code)]
+                                                            let periodically_send_ping = {
+                                                            shadow_clone!(mut ch_ws_tx);
+
+                                                            async move {
+                                                                loop {
+                                                                    delay_for(Duration::from_secs(15)).await;
+
+                                                                    tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
+                                                                        .send(warp::filters::ws::Message::ping("")))
+                                                                        .await??;
+                                                                }
+
+                                                                Ok::<_, anyhow::Error>(())
+                                                            }
+                                                        };
+
+                                                        tokio::select! {
+                                                        r = forward_from_redis => {
+                                                            info!("forward_from_redis closed: {:?}", r);
+                                                        },
+                                                        r = periodically_send_ping => {
+                                                            info!("periodically_send_ping closed: {:?}", r);
+                                                        },
                                                     }
-                                                };
 
-                                                #[allow(unreachable_code)]
-                                                let periodically_send_ping = {
-                                                    shadow_clone!(mut ch_ws_tx);
-
-                                                    async move {
-                                                        loop {
-                                                            delay_for(Duration::from_secs(15)).await;
-
-                                                            tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
-                                                                .send(warp::filters::ws::Message::ping("")))
-                                                                .await??;
-                                                        }
-
-                                                        Ok::<_, anyhow::Error>(())
+                                                        info!("WS forwarder closed");
                                                     }
-                                                };
-
-                                                tokio::select! {
-                                                    r = forward_from_redis => {
-                                                        info!("forward_from_redis closed: {:?}", r);
-                                                    },
-                                                    r = periodically_send_ping => {
-                                                        info!("periodically_send_ping closed: {:?}", r);
-                                                    },
+                                                    Err(e) => {
+                                                        error!("couldn't subscribe to invalidations: {}", e)
+                                                    }
                                                 }
-
-                                                info!("WS forwarder closed");
                                             }
                                             Err(e) => {
-                                                error!("couldn't subscribe to invalidations: {}", e)
+                                                error!("redis server connection  error: {}", e);
                                             }
                                         }
+
+                                        let res = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::close()) ).await;
+                                        info!("Send close message result = {:?}", res);
+
+                                        Ok::<_, anyhow::Error>(())
+                                    };
+
+                                    tokio::select! {
+                                        r = notifier => {
+                                            warn!("WS connection closed: {:?}", r);
+                                        },
+                                        r = statistics_saver => {
+                                            warn!("WS statistics_saver closed: {:?}", r);
+                                        },
+                                        r = forward_to_ws => {
+                                            warn!("WS forward_to_ws stopped: {:?}", r);
+                                        },
+                                        r = ensure_pong_received => {
+                                            warn!("WS ensure_pong_received stopped: {:?}", r);
+                                        },
+                                    };
+
+                                    let mut set_offline_backoff =
+                                        Backoff::new(Duration::from_millis(100), Duration::from_secs(1));
+
+                                    for _ in 0..10 {
+                                        if let Err(e) = presence_client
+                                            .set_offline(&gw_hostname)
+                                            .await
+                                        {
+                                            error!("could not unset presence: {}", e);
+                                        } else {
+                                            info!("unset gw presence successfully");
+                                            return;
+                                        }
+                                        set_offline_backoff.next().await;
                                     }
-                                    Err(e) => {
-                                        error!("redis server connection  error: {}", e);
-                                    }
+
+                                    stop_handle.stop(StopReason::SetOfflineError);
                                 }
-
-                                let res = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::close()), ).await;
-                                info!("Send close message result = {:?}", res);
-
-                                Ok::<_, anyhow::Error>(())
-                            };
-
-                            tokio::select! {
-                                r = notifier => {
-                                    warn!("WS connection closed: {:?}", r);
-                                },
-                                r = statistics_saver => {
-                                    warn!("WS statistics_saver closed: {:?}", r);
-                                },
-                                r = forward_to_ws => {
-                                    warn!("WS forward_to_ws stopped: {:?}", r);
-                                },
-                                r = ensure_pong_received => {
-                                    warn!("WS ensure_pong_received stopped: {:?}", r);
-                                },
-                            };
+                                Err(e) => {
+                                    warn!("failed to set gateway presence: {:?}", e);
+                                }
+                            }
 
                             info!("ws connection closed");
                         }
