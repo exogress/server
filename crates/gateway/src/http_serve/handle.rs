@@ -14,7 +14,7 @@ use http::header::{
     COOKIE, HOST, LOCATION, SET_COOKIE, UPGRADE,
 };
 use http::status::StatusCode;
-use http::{Response, Uri};
+use http::{HeaderMap, Response, Uri};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::Body;
 use memmap::Mmap;
@@ -535,8 +535,16 @@ pub async fn server(
         }
     });
 
+    let mut common_reply_headers = HeaderMap::new();
+    common_reply_headers.insert("server", HeaderValue::from_static("exogress"));
+
     let acme_http_server = tokio::spawn(
-        warp::serve(own_acme.with(warp::trace::request())).bind(listen_http_acme_challenge_addr),
+        warp::serve(
+            own_acme
+                .with(warp::trace::request())
+                .with(warp::reply::with::headers(common_reply_headers.clone())),
+        )
+        .bind(listen_http_acme_challenge_addr),
     );
 
     let http_server = tokio::spawn(
@@ -544,6 +552,7 @@ pub async fn server(
             deligated_acme
                 .or(health)
                 .or(redirect_http_server)
+                .with(warp::reply::with::headers(common_reply_headers.clone()))
                 .with(warp::trace::request()),
         )
         .serve_incoming_with_graceful_shutdown2(incoming_http_connections_rx, {
@@ -1331,6 +1340,7 @@ pub async fn server(
             health
                 .or(oauth2_callback)
                 .or(server)
+                .with(warp::reply::with::headers(common_reply_headers))
                 .with(warp::trace::request()),
         )
         .serve_incoming_with_graceful_shutdown2(incoming_https_connections_rx, {
