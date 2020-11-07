@@ -87,7 +87,7 @@ pub async fn retrieve_assistant_key<T: DeserializeOwned>(
     let mut url = assistant_url.clone();
     if url.scheme() == "wss" {
         url.set_scheme("https").unwrap();
-    } else {
+    } else if url.scheme() == "ws" {
         url.set_scheme("http").unwrap();
     };
 
@@ -130,7 +130,7 @@ pub async fn save_assistant_key<T: Serialize>(
     let mut url = assistant_url.clone();
     if url.scheme() == "wss" {
         url.set_scheme("https").unwrap();
-    } else {
+    } else if url.scheme() == "ws" {
         url.set_scheme("http").unwrap();
     };
 
