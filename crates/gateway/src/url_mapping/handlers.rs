@@ -68,8 +68,6 @@ impl HandlersProcessor {
             .map(|(s, _)| s)
             .collect();
 
-        info!("handlers = {:?}", inner);
-
         HandlersProcessor { handlers: inner }
     }
 
