@@ -108,7 +108,9 @@ pub async fn retrieve_assistant_key<T: DeserializeOwned>(
         builder = builder.identity(Identity::from_pem(&identity).unwrap());
     }
 
+    info!("request url {}", url);
     let resp = builder.build().unwrap().get(url).send().await?;
+    info!("request status {:?}", resp.status());
 
     if resp.status().is_success() {
         let value: GetValue = resp.json().await?;
@@ -151,6 +153,8 @@ pub async fn save_assistant_key<T: Serialize>(
         builder = builder.identity(Identity::from_pem(&identity).unwrap());
     }
 
+    info!("request url {}", url);
+
     let resp = builder
         .build()
         .unwrap()
@@ -158,6 +162,7 @@ pub async fn save_assistant_key<T: Serialize>(
         .json(&SetValue { payload, ttl })
         .send()
         .await?;
+    info!("request status {:?}", resp.status());
 
     if resp.status().is_success() {
         Ok(())
