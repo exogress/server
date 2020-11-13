@@ -24,10 +24,10 @@ tracing-subscriber = "0.2"
 tracing-futures = "0.2.4"
 hashbrown = { version = "0.8", features = ["serde"] }
 chrono = { version = "0.4.11", features = ["serde"] }
-clickhouse-rs = { git = "https://github.com/suharev7/clickhouse-rs.git", branch = "async-await" }
-chrono-tz = "0.5.3"
 reqwest = { version = "0.10.6", features = ["gzip", "brotli", "trust-dns", "stream", "rustls-tls"] }
 url = "2.1.1"
+mongodb = "1.1.1"
+bson = "1.1.0"
 
 exogress-server-common = { path = "../common" }
 exogress-common-utils = { path = "../../deps/exogress/crates/common-utils" }

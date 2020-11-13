@@ -1,4 +1,4 @@
-use crate::clickhouse::Clickhouse;
+use crate::reporting::MongoDbClient;
 use crate::termination::StopReason;
 use crate::webapp::UpstreamReportWithGwInfo;
 use exogress_common_utils::backoff::Backoff;
@@ -55,7 +55,7 @@ pub async fn server(
     redis: redis::Client,
     webapp_client: crate::webapp::Client,
     presence_client: crate::presence::Client,
-    clickhouse_client: Clickhouse,
+    clickhouse_client: MongoDbClient,
     stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<StopReason>,
 ) {

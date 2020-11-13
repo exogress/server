@@ -7,8 +7,8 @@ extern crate tracing;
 #[macro_use]
 extern crate serde;
 
-use crate::clickhouse::Clickhouse;
 use crate::http::GatewayCommonTlsConfig;
+use crate::reporting::MongoDbClient;
 use crate::termination::StopReason;
 use clap::{crate_version, App, Arg};
 use exogress_common_utils::termination::stop_signal_listener;
@@ -22,9 +22,9 @@ use std::time::Duration;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 
-mod clickhouse;
 mod http;
 mod presence;
+mod reporting;
 mod termination;
 mod webapp;
 
@@ -64,12 +64,21 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("clickhouse_url")
-                .long("clickhouse-url")
+            Arg::with_name("mongodb_url")
+                .long("mongodb-url")
                 .value_name("URL")
-                .default_value("tcp://localhost:9000/exogress_counters")
+                .default_value("mongodb://localhost:27017")
                 .required(true)
-                .help("Set clickhouse URL")
+                .help("Set mongodb URL")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("mongodb_database")
+                .long("mongodb-database")
+                .value_name("STRING")
+                .default_value("webapp_development")
+                .required(true)
+                .help("Set mongodb database name")
                 .takes_value(true),
         )
         .arg(
@@ -129,9 +138,13 @@ fn main() {
     let webapp_client =
         crate::webapp::Client::new(webapp_base_url.clone(), int_api_client_cert.clone());
 
-    let clickhouse_url = matches
-        .value_of("clickhouse_url")
-        .expect("no --clickhouse-url provided")
+    let mongodb_url = matches
+        .value_of("mongodb_url")
+        .expect("no --mongodb-url provided")
+        .to_string();
+    let mongodb_db = matches
+        .value_of("mongodb_database")
+        .expect("no --mongodb-database provided")
         .to_string();
 
     let gw_tls_key_path: String = matches
@@ -209,9 +222,10 @@ fn main() {
             tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
             let redis_client = Client::open(redis_addr.as_str()).unwrap();
-            let clickhouse_client = Clickhouse::new(&clickhouse_url)
+
+            let mongodb_client = MongoDbClient::new(mongodb_url.as_ref(), mongodb_db.as_ref())
                 .await
-                .expect("clickhouse init error");
+                .expect("mongo db connection error");
 
             info!("Listening  HTTP on {}", listen_http_addr);
 
@@ -225,7 +239,7 @@ fn main() {
                 redis_client,
                 webapp_client,
                 presence_client,
-                clickhouse_client,
+                mongodb_client,
                 app_stop_handle,
                 app_stop_wait,
             );
