@@ -35,6 +35,7 @@ use url::Url;
 use crate::clients::{tunnels_acceptor, ClientTunnels};
 
 use crate::clients::traffic_counter::OneOfTrafficStatistics;
+use crate::http_serve::acme::acme_server;
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::stop_reasons::StopReason;
@@ -241,6 +242,24 @@ fn main() {
                 .takes_value(true),
         );
 
+    let init_individual_certs_args = App::new("init-individual-certs")
+        .arg(
+            Arg::with_name("listen_http_acme_challenge")
+                .long("listen-http-acme-challenge")
+                .value_name("SOCKET_ADDR")
+                .default_value("0.0.0.0:80")
+                .required(true)
+                .help("Set HTTP listen address for ACME challenge")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("webroot")
+                .long("webroot")
+                .value_name("PATH")
+                .help("Set webroot path for certbot interaction")
+                .takes_value(true),
+        );
+
     let spawn_args = exogress_server_common::clap::int_api::add_args(
         exogress_common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
@@ -256,7 +275,8 @@ fn main() {
         .version(crate_version!())
         .author("Exogress Team <team@exogress.com>")
         .about("Load-balancing cloud gateway")
-        .subcommand(spawn_args);
+        .subcommand(spawn_args)
+        .subcommand(init_individual_certs_args);
 
     let mut args = exogress_common_utils::clap::autocompletion::add_args(args);
 
@@ -266,6 +286,38 @@ fn main() {
         &matches,
         "exogress-gateway",
     );
+
+    if let Some(matches) = matches.subcommand_matches("init-individual-certs") {
+        let listen_http_acme_challenge_addr = matches
+            .value_of("listen_http_acme_challenge")
+            .map(|r| {
+                r.parse::<SocketAddr>()
+                    .expect("Failed to parse listen HTTP address (ip:port) for ACME challenge")
+            })
+            .unwrap();
+
+        let webroot: PathBuf = fs::canonicalize(
+            matches
+                .value_of("webroot")
+                .expect("no webroot defined")
+                .to_string(),
+        )
+        .expect("error in webroot");
+
+        info!("Use certbot webroot at {}", webroot.display());
+
+        let mut rt = Builder::new()
+            .threaded_scheduler()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(acme_server(webroot, listen_http_acme_challenge_addr))
+            .expect("acme server error");
+
+        // exit
+        return;
+    }
 
     let matches = matches
         .subcommand_matches("spawn")
@@ -714,14 +766,12 @@ fn main() {
             client_tunnels,
             listen_http_addr,
             listen_https_addr,
-            listen_http_acme_challenge_addr,
             external_https_port,
             api_client,
             app_stop_wait,
             tls_gw_common,
             public_base_url,
             individual_hostname,
-            webroot,
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
@@ -732,6 +782,8 @@ fn main() {
             resolver,
         );
 
+        let acme_server = acme_server(webroot, listen_http_acme_challenge_addr);
+
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::spawn(dump_traffic_statistics) => {},
@@ -740,7 +792,10 @@ fn main() {
             }
         });
 
-        server.await;
+        tokio::select! {
+            r = server => {},
+            r = acme_server => r?,
+        }
 
         Ok::<(), anyhow::Error>(())
     })

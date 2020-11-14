@@ -1,3 +1,4 @@
+pub mod acme;
 pub mod auth;
 mod compression;
 mod director;

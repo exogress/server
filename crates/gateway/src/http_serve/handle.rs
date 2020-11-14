@@ -140,14 +140,12 @@ pub async fn server(
     tunnels: ClientTunnels,
     listen_http_addr: SocketAddr,
     listen_https_addr: SocketAddr,
-    listen_http_acme_challenge_addr: SocketAddr,
     external_https_port: u16,
     webapp_client: Client,
     app_stop_wait: AppStopWait,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
     public_base_url: Url,
     individual_hostname: String,
-    webroot: PathBuf,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
@@ -199,43 +197,6 @@ pub async fn server(
                 }
             },
         );
-
-    let own_acme = warp::path!(".well-known" / "acme-challenge" / String).and_then({
-        shadow_clone!(webroot);
-
-        move |token: String| {
-            shadow_clone!(webroot);
-
-            async move {
-                let filename = format!(".well-known/acme-challenge/{}", token);
-
-                let read_local_file = async {
-                    let full_path = webroot.clone().join(&filename);
-
-                    info!("check ACME challenges in {}", full_path.display());
-                    let mut file = File::open(full_path).await?;
-                    let mut content = String::new();
-                    file.read_to_string(&mut content).await?;
-
-                    Ok::<_, io::Error>(content)
-                };
-
-                match read_local_file.await {
-                    Ok(content) => {
-                        info!("validation request successfully served from local filder");
-                        Ok(Response::builder()
-                            .header(CONTENT_TYPE, "text/plain")
-                            .body(content)
-                            .unwrap())
-                    }
-                    Err(_) => {
-                        info!("validation request successfully served from local filder");
-                        Err(warp::reject::not_found())
-                    }
-                }
-            }
-        }
-    });
 
     let deligated_acme = warp::path!(".well-known" / "acme-challenge" / String)
         .and(filters::host::optional())
@@ -537,15 +498,6 @@ pub async fn server(
 
     let mut common_reply_headers = HeaderMap::new();
     common_reply_headers.insert("server", HeaderValue::from_static("exogress"));
-
-    let acme_http_server = tokio::spawn(
-        warp::serve(
-            own_acme
-                .with(warp::trace::request())
-                .with(warp::reply::with::headers(common_reply_headers.clone())),
-        )
-        .bind(listen_http_acme_challenge_addr),
-    );
 
     let http_server = tokio::spawn(
         warp::serve(
@@ -1360,9 +1312,6 @@ pub async fn server(
         },
         r = https_server => {
             info!("https_server stopped: {:?}", r);
-        },
-        r = acme_http_server => {
-            info!("acme_http_server stopped: {:?}", r);
         },
         r = http_acceptor => {
             info!("http_acceptor stopped: {:?}", r);
