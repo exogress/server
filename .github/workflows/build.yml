@@ -62,38 +62,38 @@ jobs:
 
     - name: Set image postfix
       run: echo "::set-env name=IMAGE_POSTFIX::-develop"
-      if: env.BRANCH_NAME == 'github-actions'
+      if: env.BRANCH_NAME == 'refs-pull-1-merge'
 
     - name: Login to quay.io
       uses: docker/login-action@v1
-      if: env.BRANCH_NAME == 'github-actions' || env.BRANCH_NAME == 'master'
+      if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
       with:
         registry: quay.io
         username: exogress+publisher
         password: ${{ secrets.QUAY_PASSWORD }}
 
     - name: Build
-      if: env.BRANCH_NAME == 'github-actions' || env.BRANCH_NAME == 'master'
+      if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
       run:
         docker build --pull --target=builder -t ${IMAGE}:${TAG} .
 
     - name: Build signaler
-      if: env.BRANCH_NAME == 'github-actions' || env.BRANCH_NAME == 'master'
+      if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
       run:
         docker build --pull --target=signaler -t ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${TAG} .
 
     - name: Build director
-      if: env.BRANCH_NAME == 'github-actions' || env.BRANCH_NAME == 'master'
+      if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
       run:
         docker build --pull --target=director -t ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} .
 
     - name: Build gateway
-      if: env.BRANCH_NAME == 'github-actions' || env.BRANCH_NAME == 'master'
+      if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
       run:
         docker build --pull --target=gateway -t ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} .
 
     - name: Build assistant
-      if: env.BRANCH_NAME == 'github-actions' || env.BRANCH_NAME == 'master'
+      if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
       run:
         docker build --pull --target=assistant -t ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} .
 
