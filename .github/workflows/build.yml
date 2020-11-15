@@ -34,14 +34,12 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          target
+          crates/target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Run cargo test
-      uses: actions-rs/cargo@v1
-      with:
-        command: test
-      working-directory: crates
+      run: cargo test
+      working-directory: ./crates
 
 #  build-images:
 #    name: Build
