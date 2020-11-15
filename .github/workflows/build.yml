@@ -51,6 +51,14 @@ jobs:
       with:
         submodules: true
 
+    - name: Login to quay.io
+      uses: docker/login-action@v1
+      with:
+        registry: quay.io
+        username: exogress+publisher
+        password: ${{ secrets.QUAY_PASSWORD }}
+
+
     - name: Build
       run:
         docker build --pull --target=builder -t ${IMAGE}:${TAG} .
