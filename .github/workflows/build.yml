@@ -41,25 +41,34 @@ jobs:
       run: cargo test
       working-directory: ./crates
 
-#  build-images:
-#    name: Build
-#    runs-on: ubuntu-latest
-#
-#    steps:
-#    - name: Checkout
-#      uses: actions/checkout@v2
-#      with:
-#        submodules: true
-#
-#    - name: Run cargo test
-#      uses: actions-rs/cargo@v1
-#      with:
-#        command: test
-#
-#    - name: Build
-#      run:
-#        docker build --pull --target=builder -t ${IMAGE}:${TAG} .
-#
-#    - name: Flush the disk cache for macOS
-#      if: matrix.os == 'macos-latest'
-#      run: sudo /usr/sbin/purge
+  build-images:
+    name: Build Images
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        submodules: true
+
+    - name: Build
+      run:
+        docker build --pull --target=builder -t ${IMAGE}:${TAG} .
+
+    - name: Build signaler
+      run:
+        docker build --pull --target=signaler -t ${IMAGE_SIGNALER}:${TAG} .
+
+    - name: Build director
+      run:
+        docker build --pull --target=director -t ${IMAGE_DIRECTOR}:${TAG} .
+
+    - name: Build gateway
+      run:
+        docker build --pull --target=gateway -t ${IMAGE_GATEWAY}:${TAG} .
+
+    - name: Build assistant
+      run:
+        docker build --pull --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} .
+
+
