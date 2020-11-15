@@ -19,8 +19,8 @@ env:
   TAG: dev
 
 jobs:
-  build-images:
-    name: Build
+  test:
+    name: Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -29,11 +29,39 @@ jobs:
       with:
         submodules: true
 
+  - uses: actions/cache@v2
+    with:
+      path: |
+        ~/.cargo/registry
+        ~/.cargo/git
+        target
+      key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
     - name: Run cargo test
       uses: actions-rs/cargo@v1
       with:
         command: test
+      working-directory: crates
 
-    - name: Build
-      run:
-        docker build --pull --target=builder -t ${IMAGE}:${TAG} .
+#  build-images:
+#    name: Build
+#    runs-on: ubuntu-latest
+#
+#    steps:
+#    - name: Checkout
+#      uses: actions/checkout@v2
+#      with:
+#        submodules: true
+#
+#    - name: Run cargo test
+#      uses: actions-rs/cargo@v1
+#      with:
+#        command: test
+#
+#    - name: Build
+#      run:
+#        docker build --pull --target=builder -t ${IMAGE}:${TAG} .
+#
+#    - name: Flush the disk cache for macOS
+#      if: matrix.os == 'macos-latest'
+#      run: sudo /usr/sbin/purge
