@@ -61,7 +61,7 @@ jobs:
       run: echo ${{ env.BRANCH_NAME }}
 
     - name: Set image postfix
-      run: echo "::set-env name=IMAGE_POSTFIX::-develop"
+      run: echo "IMAGE_POSTFIX=-develop" >> $GITHUB_ENV
       if: env.BRANCH_NAME == 'refs-pull-1-merge'
 
     - name: Login to quay.io
