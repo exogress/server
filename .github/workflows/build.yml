@@ -12,10 +12,11 @@ on:
 
 env:
   IMAGE: servers
-  IMAGE_SIGNALER: signaler
-  IMAGE_GATEWAY: gateway
-  IMAGE_ASSISTANT: assistant
-  IMAGE_DIRECTOR: director
+  IMAGE_SIGNALER: quay.io/exogress/signaler
+  IMAGE_GATEWAY: quay.io/exogress/gateway
+  IMAGE_ASSISTANT: quay.io/exogress/assistant
+  IMAGE_DIRECTOR: quay.io/exogress/director
+  IMAGE_POSTFIX: ""
   TAG: dev
 
 jobs:
@@ -46,37 +47,49 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Extract Branch Name
+      run: echo "BRANCH=$(echo ${GITHUB_REF##*/})" >> $GITHUB_ENV
+
+    - name: Set image postfix
+      run: echo "::set-env name=IMAGE_POSTFIX::-develop"
+      if: env.BRANCH == 'develop'
+
     - name: Checkout
       uses: actions/checkout@v2
+      if: env.BRANCH == 'develop' || env.BRANCH == 'master'
       with:
         submodules: true
 
     - name: Login to quay.io
       uses: docker/login-action@v1
+      if: env.BRANCH == 'develop' || env.BRANCH == 'master'
       with:
         registry: quay.io
         username: exogress+publisher
         password: ${{ secrets.QUAY_PASSWORD }}
 
-
     - name: Build
+      if: env.BRANCH == 'develop' || env.BRANCH == 'master'
       run:
         docker build --pull --target=builder -t ${IMAGE}:${TAG} .
 
     - name: Build signaler
+      if: env.BRANCH == 'develop' || env.BRANCH == 'master'
       run:
-        docker build --pull --target=signaler -t ${IMAGE_SIGNALER}:${TAG} .
+        docker build --pull --target=signaler -t ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${TAG} .
 
     - name: Build director
+      if: env.BRANCH == 'develop' || env.BRANCH == 'master'
       run:
-        docker build --pull --target=director -t ${IMAGE_DIRECTOR}:${TAG} .
+        docker build --pull --target=director -t ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} .
 
     - name: Build gateway
+      if: env.BRANCH == 'develop' || env.BRANCH == 'master'
       run:
-        docker build --pull --target=gateway -t ${IMAGE_GATEWAY}:${TAG} .
+        docker build --pull --target=gateway -t ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} .
 
     - name: Build assistant
+      if: env.BRANCH == 'develop' || env.BRANCH == 'master'
       run:
-        docker build --pull --target=assistant -t ${IMAGE_ASSISTANT}:${TAG} .
-
+        docker build --pull --target=assistant -t ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} .
 
