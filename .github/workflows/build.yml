@@ -59,18 +59,18 @@ jobs:
 
       - name: Set image postfix
         run: echo "IMAGE_POSTFIX=-develop" >> $GITHUB_ENV
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
 
       - name: Login to quay.io
         uses: docker/login-action@v1
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         with:
           registry: quay.io
           username: exogress+publisher
           password: ${{ secrets.QUAY_PASSWORD }}
 
       - uses: actions/cache@v2
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         with:
           path: |
             ~/.cargo/registry
@@ -79,52 +79,52 @@ jobs:
           key: ${{ runner.os }}-cargo-toml
 
 #      - name: Install toml
-#        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+#        if: env.BRANCH_NAME == 'develop'
 #        run: cargo install toml-cli
 #
 #      - name: Set assistant version
 #        run: echo "ASSISTANT_VERSION=$(toml get crates/assistant/Cargo.toml package.version)" >> $GITHUB_ENV
-#        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+#        if: env.BRANCH_NAME == 'develop'
 #
 #      - name: Set signaler version
 #        run: echo "SIGNALER_VERSION=$(toml get crates/signaler/Cargo.toml package.version)" >> $GITHUB_ENV
-#        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+#        if: env.BRANCH_NAME == 'develop'
 #
 #      - name: Set gateway version
 #        run: echo "GATEWAY_VERSION=$(toml get crates/gateway/Cargo.toml package.version)" >> $GITHUB_ENV
-#        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+#        if: env.BRANCH_NAME == 'develop'
 #
 #      - name: Set director version
 #        run: echo "DIRECTOR_VERSION=$(toml get crates/director/Cargo.toml package.version)" >> $GITHUB_ENV
-#        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+#        if: env.BRANCH_NAME == 'develop'
 
       - name: Build base
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run:
           docker build --pull --target=builder -t ${IMAGE}:${TAG} .
 
       - name: Build signaler
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run:
           docker build --pull --target=signaler -t ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${TAG} .
 
       - name: Build director
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run:
           docker build --pull --target=director -t ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} .
 
       - name: Build gateway
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run:
           docker build --pull --target=gateway -t ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} .
 
       - name: Build assistant
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run:
           docker build --pull --target=assistant -t ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} .
 
       - name: Tag and push signaler
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${GITHUB_SHA}
@@ -132,7 +132,7 @@ jobs:
           docker push ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
       - name: Tag and push  director
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${GITHUB_SHA}
@@ -140,7 +140,7 @@ jobs:
           docker push ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
       - name: Tag and push  gateway
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${GITHUB_SHA}
@@ -148,7 +148,7 @@ jobs:
           docker push ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
       - name: Tag and push  assistant
-        if: env.BRANCH_NAME == 'refs-pull-1-merge'
+        if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${GITHUB_SHA}
