@@ -157,5 +157,5 @@ jobs:
           docker tag ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${GITHUB_SHA}
           docker push ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:latest
-          docker upush ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${GITHUB_SHA}
+          docker push ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
