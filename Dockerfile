@@ -15,8 +15,6 @@ ENV SCCACHE_GCS_KEY_PATH=/gcs.json
 COPY . /code
 WORKDIR /code/crates
 
-RUN cargo test && sccache --show-stats
-
 RUN cargo build --release && sccache --show-stats
 
 FROM debian:buster as base
