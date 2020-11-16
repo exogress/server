@@ -102,7 +102,7 @@ jobs:
         run: echo "DIRECTOR_VERSION=$(toml get crates/director/Cargo.toml package.version)" >> $GITHUB_ENV
         if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
 
-      - name: Build
+      - name: Build base
         if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
         run:
           docker build --pull --target=builder -t ${IMAGE}:${TAG} .
@@ -129,7 +129,7 @@ jobs:
 
       - name: Tag and push signaler
         if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
-        run:
+        run: |
           docker tag ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${GITHUB_SHA}
           docker push ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:latest
@@ -137,7 +137,7 @@ jobs:
 
       - name: Tag and push  director
         if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
-        run:
+        run: |
           docker tag ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${GITHUB_SHA}
           docker push ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:latest
@@ -145,7 +145,7 @@ jobs:
 
       - name: Tag and push  gateway
         if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
-        run:
+        run: |
           docker tag ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${GITHUB_SHA}
           docker push ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:latest
@@ -153,7 +153,7 @@ jobs:
 
       - name: Tag and push  assistant
         if: env.BRANCH_NAME == 'refs-pull-1-merge' || env.BRANCH_NAME == 'master'
-        run:
+        run: |
           docker tag ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:latest
           docker tag ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${GITHUB_SHA}
           docker push ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:latest
