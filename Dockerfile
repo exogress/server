@@ -15,8 +15,6 @@ ENV SCCACHE_GCS_KEY_PATH=/gcs.json
 COPY . /code
 WORKDIR /code/crates
 
-RUN cargo test && sccache --show-stats
-
 RUN cargo build --release && sccache --show-stats
 
 FROM debian:buster as base
@@ -27,13 +25,6 @@ COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin
 RUN exogress-signaler autocompletion bash > /etc/profile.d/exogress-signaler.sh && \
     echo "source /etc/profile.d/exogress-signaler.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-signaler"]
-
-FROM base as gateway
-COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
-COPY --from=r.lancastr.net/dbip:latest /dbip.mmdb /
-RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
-    echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
-ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
 
 FROM base as assistant
 COPY --from=builder /code/crates/target/release/exogress-assistant /usr/local/bin/
@@ -46,3 +37,10 @@ COPY --from=builder /code/crates/target/release/exogress-director /usr/local/bin
 RUN exogress-director autocompletion bash > /etc/profile.d/exogress-director.sh && \
     echo "source /etc/profile.d/exogress-director.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-director"]
+
+FROM base as gateway
+COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
+COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
+RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
+    echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
