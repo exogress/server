@@ -879,6 +879,7 @@ pub async fn server(
                 let remote_addr = remote_addr.unwrap().ip();
                 let local_addr = local_addr.unwrap().ip();
 
+
                 if let Some(dbip) = dbip {
                     let resolved = dbip.lookup::<LocationAndIsp>(remote_addr);
                     info!("GEO IP: {:?}", resolved);
@@ -889,6 +890,8 @@ pub async fn server(
                     let account_name = mapping_action.handler.account_name.clone();
                     let project_name = mapping_action.handler.project_name.clone();
                     // let url = mapping_action.handler.url.clone();
+
+                    account_rules_counters.register_request(&account_unique_id);
 
                     let mut req = match ws_or_body {
                         warp::Either::A((ws, )) => {
@@ -959,8 +962,7 @@ pub async fn server(
                         'actions: for action in matching_actions {
                             // TODO: handle modifications
 
-                            info!("action = {:?}", action);
-                            account_rules_counters.register(&account_unique_id);
+                            account_rules_counters.register_rule(&account_unique_id);
 
                             match action {
                                 Action::Respond { static_response_name } => {

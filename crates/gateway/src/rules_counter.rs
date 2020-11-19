@@ -31,7 +31,7 @@ impl AccountRulesCounters {
         Self::default()
     }
 
-    pub fn register(&self, account: &AccountUniqueId) {
+    pub fn register_rule(&self, account: &AccountUniqueId) {
         self.inner
             .write()
             .entry(account.clone())
@@ -41,6 +41,18 @@ impl AccountRulesCounters {
                 from: Utc::now(),
             })
             .rules_processed += 1;
+    }
+
+    pub fn register_request(&self, account: &AccountUniqueId) {
+        self.inner
+            .write()
+            .entry(account.clone())
+            .or_insert_with(|| Counter {
+                rules_processed: 0,
+                requests_processed: 0,
+                from: Utc::now(),
+            })
+            .requests_processed += 1;
     }
 
     pub fn flush(&self) -> Option<Vec<RecordedRulesStatistics>> {

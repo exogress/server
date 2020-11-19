@@ -114,6 +114,7 @@ pub async fn server(
                                     let statistics_saver = {
                                         shadow_clone!(gw_hostname);
                                         shadow_clone!(mut ch_ws_tx);
+                                        shadow_clone!(stop_handle);
 
                                         async move {
                                             while let Some(Ok(msg)) = ws_rx.next().await {
@@ -139,10 +140,12 @@ pub async fn server(
                                                                     }
                                                                 })
                                                                 .collect();
-                                                            webapp_client
+                                                            if let Err(e) = webapp_client
                                                                 .report_health(full_recs)
-                                                                .await
-                                                                .expect("FIXME");
+                                                                .await {
+                                                                error!("failed to report health: {:?}", e);
+                                                                stop_handle.stop(StopReason::HealthReportError);
+                                                            }
                                                         }
                                                         _ => {},
                                                     }
