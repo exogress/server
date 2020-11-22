@@ -10,7 +10,10 @@ pub enum UnhealthyReason {
     #[serde(rename = "unreachable")]
     Unreachable,
     #[serde(rename = "bad_status")]
-    BadStatus(#[serde(with = "http_serde::status_code")] StatusCode),
+    BadStatus {
+        #[serde(with = "http_serde::status_code")]
+        status_code: StatusCode,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]

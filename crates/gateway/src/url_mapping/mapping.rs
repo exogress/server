@@ -681,7 +681,7 @@ impl Mapping {
                                                             .set_health(instance_id, upstream,
                                                                 HealthState::Unhealthy {
                                                                     probe: probe.clone(),
-                                                                    reason: UnhealthyReason::BadStatus(resp.status()),
+                                                                    reason: UnhealthyReason::BadStatus { status_code: resp.status() },
                                                                 }
                                                             )
                                                             .await
