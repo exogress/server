@@ -9,6 +9,7 @@ use crate::url_mapping::rate_limiter::RateLimiters;
 use crate::url_mapping::registry::Configs;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use exogress_common_utils::jwt::{jwt_token, JwtError};
 use exogress_config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
 use exogress_entities::{
@@ -18,12 +19,9 @@ use exogress_server_common::assistant::UpstreamReport;
 use exogress_server_common::url_prefix::UrlPrefix;
 use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
-use hashbrown::hash_map::Entry;
-use hashbrown::HashMap;
 use http::StatusCode;
 use itertools::Itertools;
 use lru_time_cache::LruCache;
-use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
 use reqwest::Identity;
 use smallvec::SmallVec;
@@ -33,7 +31,7 @@ use url::Url;
 #[derive(Clone)]
 pub struct Client {
     reqwest: reqwest::Client,
-    retrieve_configs: Arc<Mutex<HashMap<String, Arc<ManualResetEvent>>>>,
+    retrieve_configs: Arc<DashMap<String, Arc<ManualResetEvent>>>,
     certificates: Arc<parking_lot::Mutex<LruCache<String, Option<CertificateResponse>>>>,
     configs: Configs,
     base_url: Url,
@@ -259,7 +257,6 @@ impl Client {
         // take lock and deal with in_flight queries
         let in_flight_request = self
             .retrieve_configs
-            .lock()
             .entry(host.clone().into())
             .or_insert_with({
                 shadow_clone!(url_for_rewriting);
@@ -527,13 +524,12 @@ impl Client {
 
         in_flight_request.wait().await;
 
+        if let dashmap::mapref::entry::Entry::Occupied(entry) =
+            self.retrieve_configs.entry(host.into())
         {
-            let mut cfg = self.retrieve_configs.lock();
-            if let Entry::Occupied(entry) = cfg.entry(host.into()) {
-                if Arc::ptr_eq(entry.get(), &in_flight_request) {
-                    // we are now sure that it's the same request
-                    entry.remove_entry();
-                }
+            if Arc::ptr_eq(entry.get(), &in_flight_request) {
+                // we are now sure that it's the same request
+                entry.remove_entry();
             }
         }
 

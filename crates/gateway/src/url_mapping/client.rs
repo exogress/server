@@ -19,7 +19,7 @@ use crate::url_mapping::mapping::{
 use crate::url_mapping::registry::Mappings;
 
 struct Inner {
-    in_flight: Mutex<HashMap<String, Arc<ManualResetEvent>>,
+    in_flight: DashMap<String, Arc<ManualResetEvent>,
     int_api_access_secret: String,
 }
 
