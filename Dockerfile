@@ -2,7 +2,8 @@ FROM rust:1.48 as builder
 
 RUN rustup component add clippy rustfmt
 RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
-    build-essential clang cmake build-essential
+    build-essential clang cmake build-essential && \
+    apt-get upgrade -y
 
 ADD ci/gcs.json /gcs.json
 ADD ci/sccache /usr/local/bin/sccache
@@ -18,7 +19,10 @@ WORKDIR /code/crates
 RUN cargo build --release && sccache --show-stats
 
 FROM debian:buster as base
-RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
+
+RUN apt-get update && \
+    apt-get install -y libssl1.1 libsasl2-dev ca-certificates && \
+    apt-get upgrade -y
 
 FROM base as signaler
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
