@@ -24,7 +24,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use stop_handle::stop_handle;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{rustls, TlsAcceptor};
 use tokio_tungstenite::tungstenite;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
@@ -73,7 +73,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::time::{delay_for, timeout};
-use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
+use tokio_rustls::rustls::{NoClientAuth, ServerConfig, StoresServerSessions};
 use typed_headers::{Accept, ContentCoding, ContentEncoding, HeaderMapExt};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -337,7 +337,6 @@ pub async fn server(
                             };
 
                             header.truncate(header_bytes_read);
-                            info!("SNI received");
 
                             Ok::<_, anyhow::Error>((
                                 crate::chain::chain(Cursor::new(header), conn),
@@ -420,7 +419,10 @@ pub async fn server(
 
                         let mut config = ServerConfig::new(NoClientAuth::new());
 
-                        // config.session_storage = Arc::new(NoServerSessionStorage {});
+                        // FIXME: set session memory cache
+                        // TODO: migrate to shared session memory cache
+                        config.set_persistence(rustls::ServerSessionMemoryCache::new(1024));
+                        config.ticketer = rustls::Ticketer::new();
 
                         let cert_vec = cert.as_bytes().to_vec();
                         let key_vec = pkey.as_bytes().to_vec();
