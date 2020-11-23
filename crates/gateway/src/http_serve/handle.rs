@@ -423,6 +423,7 @@ pub async fn server(
                         // TODO: migrate to shared session memory cache
                         config.set_persistence(rustls::ServerSessionMemoryCache::new(1024));
                         config.ticketer = rustls::Ticketer::new();
+                        config.ignore_client_order = true;
 
                         let cert_vec = cert.as_bytes().to_vec();
                         let key_vec = pkey.as_bytes().to_vec();
