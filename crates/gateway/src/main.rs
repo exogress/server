@@ -19,6 +19,7 @@ use async_compression::futures::write::GzipDecoder;
 use clap::{crate_version, App, Arg};
 use futures::io::BufWriter;
 use futures_util::io::AsyncWriteExt;
+use mimalloc::MiMalloc;
 use rules_counter::AccountRulesCounters;
 use std::fs;
 use std::net::SocketAddr;
@@ -67,6 +68,9 @@ mod statistics;
 mod stop_reasons;
 mod url_mapping;
 mod webapp;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
     let spawn_args = App::new("spawn")
