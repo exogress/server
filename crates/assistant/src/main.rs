@@ -21,7 +21,6 @@ use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
 mod http;
@@ -144,11 +143,7 @@ fn main() {
         .unwrap();
 
     let resolver = rt
-        .block_on(TokioAsyncResolver::new(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-            rt.handle().clone(),
-        ))
+        .block_on(TokioAsyncResolver::from_system_conf(rt.handle().clone()))
         .unwrap();
 
     let logger_bg = rt
