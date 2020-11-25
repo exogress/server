@@ -70,7 +70,7 @@ fn main() {
     let spawn_args = exogress_server_common::clap::int_api::add_args(
         exogress_common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
-                exogress_common_utils::clap::log::add_args(spawn_args),
+                exogress_server_common::clap::log::add_args(spawn_args),
             ),
         ),
         true,
