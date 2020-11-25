@@ -25,6 +25,8 @@ use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use tokio::runtime::Builder;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use trust_dns_resolver::TokioAsyncResolver;
 
 mod http;
 mod presence;
@@ -101,12 +103,42 @@ fn main() {
 
     let IntApiBaseUrls {
         webapp_url: webapp_base_url,
-        int_api_client_cert,
+        int_client_cert,
         ..
     } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
-    exogress_common_utils::clap::log::handle(&matches, "signaler");
+
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
+    let mut rt = Builder::new()
+        .threaded_scheduler()
+        .enable_all()
+        .core_threads(num_threads)
+        .thread_name("signaler-reactor")
+        .build()
+        .unwrap();
+
+    let resolver = rt
+        .block_on(TokioAsyncResolver::new(
+            ResolverConfig::default(),
+            ResolverOpts::default(),
+            rt.handle().clone(),
+        ))
+        .unwrap();
+
+    let logger_bg = rt
+        .block_on({
+            shadow_clone!(int_client_cert);
+
+            exogress_server_common::clap::log::handle(
+                matches.clone(),
+                "signaker",
+                resolver.clone(),
+                None,
+            )
+        })
+        .expect("error initializing logger");
+
+    rt.spawn(logger_bg);
 
     let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
 
@@ -131,24 +163,16 @@ fn main() {
         })
         .unwrap();
 
-    let mut rt = Builder::new()
-        .threaded_scheduler()
-        .enable_all()
-        .core_threads(num_threads)
-        .thread_name("signaler-reactor")
-        .build()
-        .unwrap();
-
     let signaler_id: String = Ulid::new().to_string().into();
 
     let maybe_panic = rt.block_on({
         shadow_clone!(webapp_base_url);
-        shadow_clone!(int_api_client_cert);
+        shadow_clone!(int_client_cert);
         shadow_clone!(signaler_id);
 
         AssertUnwindSafe(async move {
             let presence_client =
-                presence::Client::new(webapp_base_url, signaler_id, int_api_client_cert);
+                presence::Client::new(webapp_base_url, signaler_id, int_client_cert);
 
             tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
@@ -230,7 +254,7 @@ fn main() {
     }
 
     rt.block_on(async move {
-        presence::Client::new(webapp_base_url, signaler_id, int_api_client_cert)
+        presence::Client::new(webapp_base_url, signaler_id, int_client_cert)
             .unregister_signaler()
             .await
     })

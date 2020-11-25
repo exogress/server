@@ -28,6 +28,7 @@ reqwest = { version = "0.10.6", features = ["gzip", "brotli", "trust-dns", "stre
 url = "2.1.1"
 mongodb = "1.1.1"
 bson = "1.1.0"
+trust-dns-resolver = "0.19.5"
 
 exogress-server-common = { path = "../common" }
 exogress-common-utils = { path = "../../deps/exogress/crates/common-utils" }

@@ -50,8 +50,10 @@ use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
-use tokio::runtime::{Builder, Handle};
+use std::io::{Cursor, Seek, SeekFrom};
+use tokio::runtime::Builder;
 use tokio::time::delay_for;
+use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -226,7 +228,6 @@ fn main() {
                 .value_name("URL")
                 .help("ISP DBIP Download URL")
                 .takes_value(true)
-                .default_value("https://repos.lancastr.net/dbip-mirror/stable/files/dbip-location-isp/latest/dbip-location-isp.gz"),
         )
         .arg(
             Arg::with_name("dbip_download_dir")
@@ -267,7 +268,7 @@ fn main() {
     let spawn_args = exogress_server_common::clap::int_api::add_args(
         exogress_common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
-                exogress_common_utils::clap::log::add_args(spawn_args),
+                exogress_server_common::clap::log::add_args(spawn_args),
             ),
         ),
         true,
@@ -331,10 +332,9 @@ fn main() {
         assistant_url: assistant_base_url,
         signaler_url: signaler_base_url,
         webapp_url: webapp_base_url,
-        int_api_client_cert,
+        int_client_cert,
     } = exogress_server_common::clap::int_api::extract_matches(&matches, true, true, true);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
-    exogress_common_utils::clap::log::handle(&matches, "gw");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
 
     let assistant_base_url = assistant_base_url.expect("no assistant_base_url");
@@ -348,6 +348,29 @@ fn main() {
         .thread_name("gateway-reactor")
         .build()
         .unwrap();
+
+    let resolver = rt
+        .block_on(TokioAsyncResolver::new(
+            ResolverConfig::default(),
+            ResolverOpts::default(),
+            rt.handle().clone(),
+        ))
+        .unwrap();
+
+    let logger_bg = rt
+        .block_on({
+            shadow_clone!(int_client_cert);
+
+            exogress_server_common::clap::log::handle(
+                matches.clone(),
+                "gw",
+                resolver.clone(),
+                int_client_cert,
+            )
+        })
+        .expect("error initializing logger");
+
+    rt.spawn(logger_bg);
 
     let (app_stop_handle, app_stop_wait) = stop_handle();
 
@@ -562,7 +585,7 @@ fn main() {
             listen_https_addr, external_https_port
         );
 
-        let client_tunnels = ClientTunnels::new(signaler_base_url, int_api_client_cert.clone());
+        let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
@@ -572,7 +595,7 @@ fn main() {
             cache_ttl,
             health_state_change_tx,
             webapp_base_url,
-            int_api_client_cert.clone(),
+            int_client_cert.clone(),
         );
 
         tokio::spawn(tunnels_acceptor(
@@ -715,14 +738,6 @@ fn main() {
             }
         };
 
-        let resolver = TokioAsyncResolver::new(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-            Handle::current(),
-        )
-        .await
-        .unwrap();
-
         let tls_gw_common = Arc::new(RwLock::new(None));
 
         let consumer = AssistantClient::new(
@@ -733,7 +748,7 @@ fn main() {
             &client_tunnels,
             tls_gw_common.clone(),
             statistics_rx,
-            int_api_client_cert.clone(),
+            int_client_cert.clone(),
             &api_client,
             resolver.clone(),
             &app_stop_handle,
@@ -754,7 +769,7 @@ fn main() {
             google_oauth2_client_secret,
             public_base_url.clone(),
             assistant_base_url.clone(),
-            int_api_client_cert.clone(),
+            int_client_cert.clone(),
         );
 
         let github_oauth2_client = GithubOauth2Client::new(
@@ -763,7 +778,7 @@ fn main() {
             github_oauth2_client_secret,
             public_base_url.clone(),
             assistant_base_url.clone(),
-            int_api_client_cert.clone(),
+            int_client_cert.clone(),
         );
 
         let server = http_serve::handle::server(
@@ -780,7 +795,7 @@ fn main() {
             github_oauth2_client,
             assistant_base_url,
             &account_rules_counters,
-            int_api_client_cert,
+            int_client_cert,
             https_counters_tx,
             dbip,
             resolver,

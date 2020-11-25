@@ -16,6 +16,13 @@ serde_json = "1.0.48"
 chrono-tz = "0.5.3"
 http-serde = "1.0.1"
 http = "0.2.1"
+tracing-gelf = { path = "../../deps/tracing-gelf", features = ["tokio-rustls"] }
+trust-dns-resolver = { version = "0.19.5" }
+tokio-rustls = "0.14.1"
+rustls-native-certs = "0.4.0"
+anyhow = "1.0.34"
+tracing-subscriber = "0.2.11"
+futures = "0.3"
 
 exogress-entities = { path = "../../deps/exogress/crates/entities" }
 exogress-config-core = { path = "../../deps/exogress/crates/config-core", version = "0.1" }

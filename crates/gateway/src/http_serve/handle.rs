@@ -71,7 +71,7 @@ use std::io::{BufReader, Cursor};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::time::{delay_for, timeout};
-use tokio_rustls::rustls::{NoClientAuth, ServerConfig, StoresServerSessions};
+use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
 use typed_headers::{Accept, ContentCoding, ContentEncoding, HeaderMapExt};
 
 #[derive(Debug, Serialize, Deserialize)]

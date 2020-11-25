@@ -15,10 +15,13 @@ mod termination;
 use crate::termination::StopReason;
 use clap::{App, Arg};
 use exogress_common_utils::termination::stop_signal_listener;
+use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use forwarder::{ForwarderBuilder, ForwardingRules};
 use std::net::IpAddr;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use trust_dns_resolver::TokioAsyncResolver;
 
 fn main() {
     let spawn_args = App::new("spawn")
@@ -68,10 +71,15 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_common_utils::clap::threads::add_args(
-        exogress_server_common::clap::sentry::add_args(exogress_common_utils::clap::log::add_args(
-            spawn_args,
-        )),
+    let spawn_args = exogress_server_common::clap::int_api::add_args(
+        exogress_common_utils::clap::threads::add_args(
+            exogress_server_common::clap::sentry::add_args(
+                exogress_server_common::clap::log::add_args(spawn_args),
+            ),
+        ),
+        false,
+        false,
+        false,
     );
 
     let args = App::new("Exogress Directory Balancer")
@@ -95,8 +103,10 @@ fn main() {
         .expect("Unknown subcommand");
 
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
-    exogress_common_utils::clap::log::handle(&matches, "director");
     let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
+    let IntApiBaseUrls {
+        int_client_cert, ..
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, false, false, false);
 
     let mut rt = Builder::new()
         .threaded_scheduler()
@@ -105,6 +115,27 @@ fn main() {
         .thread_name("director-reactor")
         .build()
         .unwrap();
+
+    let resolver = rt
+        .block_on(TokioAsyncResolver::new(
+            ResolverConfig::default(),
+            ResolverOpts::default(),
+            rt.handle().clone(),
+        ))
+        .unwrap();
+
+    let logger_bg =  = rt
+        .block_on({
+            exogress_server_common::clap::log::handle(
+                matches.clone(),
+                "director",
+                resolver,
+                int_client_cert,
+            )
+        })
+        .expect("could not initialize logger");
+
+    rt.spawn(logger_bg);
 
     let rules = ForwardingRules::default();
 

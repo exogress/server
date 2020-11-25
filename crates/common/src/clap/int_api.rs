@@ -9,8 +9,8 @@ pub fn add_args<'a>(
 ) -> clap::App<'a, 'a> {
     let mut v = vec![];
     let mut app = app.arg(
-        Arg::with_name("int_api_client_cert")
-            .long("int-api-client-cert")
+        Arg::with_name("int_client_cert")
+            .long("int-client-cert")
             .value_name("FILE")
             .required(false)
             .help("Internal API client certificate")
@@ -53,21 +53,25 @@ pub fn add_args<'a>(
         );
     }
 
-    app.arg(
-        Arg::with_name("int_base_url")
-            .long("int-base-url")
-            .value_name("URL")
-            .required_unless_all(v.as_ref())
-            .help("Set Int API Base URL")
-            .takes_value(true),
-    )
+    if use_webapp || use_signaler || use_assistant {
+        app = app.arg(
+            Arg::with_name("int_base_url")
+                .long("int-base-url")
+                .value_name("URL")
+                .required_unless_all(v.as_ref())
+                .help("Set Int API Base URL")
+                .takes_value(true),
+        )
+    }
+
+    app
 }
 
 pub struct IntApiBaseUrls {
     pub assistant_url: Option<Url>,
     pub signaler_url: Option<Url>,
     pub webapp_url: Option<Url>,
-    pub int_api_client_cert: Option<Vec<u8>>,
+    pub int_client_cert: Option<Vec<u8>>,
 }
 
 pub fn extract_matches(
@@ -126,14 +130,14 @@ pub fn extract_matches(
         None
     };
 
-    let int_api_client_cert = matches
-        .value_of("int_api_client_cert")
+    let int_client_cert = matches
+        .value_of("int_client_cert")
         .map(|path| std::fs::read(path).expect("cannot read int api client cert"));
 
     IntApiBaseUrls {
         assistant_url,
         signaler_url,
         webapp_url,
-        int_api_client_cert,
+        int_client_cert,
     }
 }

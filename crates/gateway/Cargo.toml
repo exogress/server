@@ -75,6 +75,7 @@ pin-utils = "0.1.0"
 object-pool = "0.5.3"
 mimalloc = "0.1.22"
 dashmap = { version = "3.11.10", features = ["hashbrown"] }
+rustls-native-certs = "0.4.0"
 
 exogress-server-common = { path = "../common", version = "0.1" }
 exogress-assistant = { path = "../assistant", version = "0.1" }

@@ -10,3 +10,6 @@
 [submodule "lifecycle-scripts"]
 	path = lifecycle-scripts
 	url = git@github.com:lancastr/lifecycle-scripts.git
+[submodule "deps/tracing-gelf"]
+	path = deps/tracing-gelf
+	url = https://github.com/glebpom/tracing-gelf.git
