@@ -10,10 +10,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{delay_for, timeout};
 use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
-use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
+use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig, Session};
 use tokio_rustls::TlsAcceptor;
 
-use exogress_tunnel::{server_connection, server_framed, TunnelHello, TunnelHelloResponse};
+use exogress_tunnel::{
+    server_connection, server_framed, TunnelHello, TunnelHelloResponse, ALPN_PROTOCOL,
+};
 use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
@@ -73,6 +75,8 @@ pub async fn tunnels_acceptor(
         .set_single_cert(certs, key.get(0).unwrap().clone())
         .expect("error setting certs");
 
+    config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
+
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
     info!("Listening for incoming tunnels on {:?}", addr);
@@ -89,6 +93,17 @@ pub async fn tunnels_acceptor(
 
         tokio::spawn(async move {
             let mut tls_conn = acceptor.accept(tunnel_stream).await?;
+
+            if tls_conn
+                .get_mut()
+                .1
+                .get_alpn_protocol()
+                .map(|p| p != *ALPN_PROTOCOL)
+                .unwrap_or(true)
+            {
+                error!("ALPN mismatch");
+                return Ok(());
+            }
 
             let tunnel_id = TunnelId::new();
 
