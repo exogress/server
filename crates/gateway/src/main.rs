@@ -811,7 +811,7 @@ fn main() {
 
         tokio::select! {
             _r = server => {},
-            _r = acme_server => r?,
+            r = acme_server => r?,
         }
 
         Ok::<(), anyhow::Error>(())
