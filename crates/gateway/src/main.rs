@@ -50,10 +50,8 @@ use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
-use std::io::{Cursor, Seek, SeekFrom};
 use tokio::runtime::Builder;
 use tokio::time::delay_for;
-use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -812,8 +810,8 @@ fn main() {
         });
 
         tokio::select! {
-            r = server => {},
-            r = acme_server => r?,
+            _r = server => {},
+            _r = acme_server => r?,
         }
 
         Ok::<(), anyhow::Error>(())

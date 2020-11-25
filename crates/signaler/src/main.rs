@@ -6,8 +6,6 @@ extern crate shadow_clone;
 extern crate tracing;
 #[macro_use]
 extern crate serde;
-#[macro_use]
-extern crate anyhow;
 
 use std::net::SocketAddr;
 use std::panic;

@@ -124,7 +124,7 @@ fn main() {
         ))
         .unwrap();
 
-    let logger_bg =  = rt
+    let logger_bg = rt
         .block_on({
             exogress_server_common::clap::log::handle(
                 matches.clone(),
