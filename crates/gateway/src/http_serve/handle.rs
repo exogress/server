@@ -352,8 +352,6 @@ pub async fn server(
                             return Err(anyhow!("no hostname in ClientHello"));
                         };
 
-                        info!("SNI hostname = {}", hostname);
-
                         let (cert, pkey, maybe_account_unique_id) = if public_base_url
                             .host()
                             .unwrap()

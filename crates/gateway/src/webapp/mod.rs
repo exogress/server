@@ -29,10 +29,17 @@ use std::sync::Arc;
 use url::Url;
 
 #[derive(Clone)]
+pub enum CertificateRetrievalState {
+    NotExist,
+    Found(CertificateResponse),
+    InFlight(Arc<ManualResetEvent>),
+}
+
+#[derive(Clone)]
 pub struct Client {
     reqwest: reqwest::Client,
     retrieve_configs: Arc<DashMap<String, Arc<ManualResetEvent>>>,
-    certificates: Arc<parking_lot::Mutex<LruCache<String, Option<CertificateResponse>>>>,
+    certificates: Arc<parking_lot::Mutex<LruCache<String, CertificateRetrievalState>>>,
     configs: Configs,
     base_url: Url,
     health_state_change_tx: mpsc::Sender<UpstreamReport>,
@@ -555,21 +562,56 @@ impl Client {
     ) -> Result<Option<CertificateResponse>, Error> {
         let cached_cert = self.certificates.lock().get(&domain).cloned();
 
-        if let Some(certs) = cached_cert {
-            info!("serve cert from cache");
-            Ok(certs)
-        } else {
-            match self.retrieve_certificate(&domain).await {
-                Ok(certs) => {
-                    self.certificates.lock().insert(domain, Some(certs.clone()));
-                    Ok(Some(certs))
-                }
-                Err(e) => {
-                    warn!("error retrieving certificate for {}: {}", domain, e);
-                    self.certificates.lock().insert(domain, None);
-                    Ok(None)
-                }
+        let reset_event = match cached_cert {
+            Some(CertificateRetrievalState::Found(resp)) => {
+                return Ok(Some(resp));
             }
+            Some(CertificateRetrievalState::NotExist) => {
+                return Ok(None);
+            }
+            Some(CertificateRetrievalState::InFlight(evt)) => evt,
+            None => {
+                let evt = Arc::new(ManualResetEvent::new(false));
+
+                self.certificates.lock().insert(
+                    domain.clone(),
+                    CertificateRetrievalState::InFlight(evt.clone()),
+                );
+
+                tokio::spawn({
+                    shadow_clone!(evt);
+                    let certificates = self.certificates.clone();
+                    let client = self.clone();
+                    let domain = domain.clone();
+
+                    async move {
+                        match client.retrieve_certificate(&domain).await {
+                            Ok(certs) => {
+                                certificates.lock().insert(
+                                    domain,
+                                    CertificateRetrievalState::Found(certs.clone()),
+                                );
+                            }
+                            Err(e) => {
+                                certificates
+                                    .lock()
+                                    .insert(domain, CertificateRetrievalState::NotExist);
+                            }
+                        }
+
+                        evt.set();
+                    }
+                });
+
+                evt
+            }
+        };
+
+        reset_event.wait().await;
+
+        match self.certificates.lock().get(&domain).cloned() {
+            Some(CertificateRetrievalState::Found(resp)) => Ok(Some(resp)),
+            _ => Ok(None),
         }
     }
 
