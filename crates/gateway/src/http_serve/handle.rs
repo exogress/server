@@ -419,7 +419,7 @@ pub async fn server(
 
                         // FIXME: set session memory cache
                         // TODO: migrate to shared session memory cache
-                        config.set_persistence(rustls::ServerSessionMemoryCache::new(1024));
+                        // config.set_persistence(rustls::ServerSessionMemoryCache::new(1024));
                         config.ticketer = rustls::Ticketer::new();
                         config.ignore_client_order = true;
 
