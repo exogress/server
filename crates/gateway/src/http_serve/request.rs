@@ -1,4 +1,5 @@
 use core::mem;
+use futures::stream::Peekable;
 use futures::StreamExt;
 use hyper::body::HttpBody;
 use hyper::Body;
@@ -14,12 +15,14 @@ pub enum RequestBody {
 
 impl RequestBody {
     pub(crate) async fn new_http(body: Body) -> Self {
-        let mut body = body.peekable();
+        // TODO: the initial idea was to make POST requests with empty body potentially retyable
+        // unfortunately, peek doesn't work as expected, and after calling peek and into_inner,
+        // the peeked message is lost
 
-        if body.get_ref().is_end_stream() || Pin::new(&mut body).peek().await.is_none() {
+        if body.is_end_stream() {
             RequestBody::EmptyHttp
         } else {
-            RequestBody::Http(body.into_inner())
+            RequestBody::Http(body)
         }
     }
 
