@@ -76,7 +76,7 @@ impl StaticResponseExt for StaticResponse {
                         .typed_insert::<ContentType>(&ContentType(resp_content_type.clone()));
 
                     let body = match &resp.engine {
-                        None => resp.content.clone(),
+                        None => resp.content.to_string(),
 
                         Some(TemplateEngine::Handlebars) => {
                             let handlebars = Handlebars::new();

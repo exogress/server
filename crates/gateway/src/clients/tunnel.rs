@@ -1,3 +1,4 @@
+use futures::pin_mut;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::net::SocketAddr;
@@ -6,17 +7,20 @@ use std::time::Duration;
 
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
+use hyper::header::{HeaderValue, UPGRADE};
+use hyper::service::{make_service_fn, service_fn};
+use hyper::upgrade::Upgraded;
+use hyper::{Body, Client, Request, Response, Server, StatusCode, Version};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{delay_for, timeout};
 use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig, Session};
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use exogress_tunnel::{
     server_connection, server_framed, TunnelHello, TunnelHelloResponse, ALPN_PROTOCOL,
 };
-use hyper::Body;
 
 use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
 use crate::clients::traffic_counter::{
@@ -25,8 +29,13 @@ use crate::clients::traffic_counter::{
 use crate::webapp;
 use exogress_entities::{ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
-use futures::SinkExt;
+use futures::future::ok;
+use futures::{SinkExt, Stream, StreamExt, TryStreamExt};
+use hyper::server::accept::Accept;
 use std::convert::TryInto;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::future;
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))
@@ -58,6 +67,28 @@ fn load_keys(path: &str) -> io::Result<Vec<PrivateKey>> {
 
 pub const MAX_ALLOWED_TUNNELS: usize = 8;
 
+struct HyperAcceptor<F>
+where
+    F: Stream<Item = Result<TlsStream<TcpStream>, io::Error>> + Unpin + Send,
+{
+    acceptor: F,
+}
+
+impl<F> hyper::server::accept::Accept for HyperAcceptor<F>
+where
+    F: Stream<Item = Result<TlsStream<TcpStream>, io::Error>> + Unpin + Send,
+{
+    type Conn = TlsStream<TcpStream>;
+    type Error = io::Error;
+
+    fn poll_accept(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+    ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
+        Pin::new(&mut self.acceptor).poll_next(cx)
+    }
+}
+
 pub async fn tunnels_acceptor(
     addr: SocketAddr,
     tls_cert_path: String,
@@ -75,224 +106,308 @@ pub async fn tunnels_acceptor(
         .set_single_cert(certs, key.get(0).unwrap().clone())
         .expect("error setting certs");
 
-    config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
+    let mut alpn = vec![ALPN_PROTOCOL.to_vec()];
+    alpn.push(AsRef::<[u8]>::as_ref("http/1.1").to_vec());
 
-    let acceptor = TlsAcceptor::from(Arc::new(config));
+    config.alpn_protocols = alpn;
 
+    let tls_acceptor = TlsAcceptor::from(Arc::new(config));
     info!("Listening for incoming tunnels on {:?}", addr);
     let mut listener = TcpListener::bind(addr).await?;
 
-    loop {
-        let (tunnel_stream, _peer_addr) = listener.accept().await?;
-        tunnel_stream.set_nodelay(true)?;
+    let incoming_tls_stream = listener
+        .incoming()
+        .and_then(move |s| {
+            shadow_clone!(tls_acceptor);
 
-        shadow_clone!(tunnels);
-        shadow_clone!(acceptor);
-        shadow_clone!(webapp);
-        shadow_clone!(mut tunnel_counters_tx);
+            async move {
+                s.set_nodelay(true)?;
 
-        tokio::spawn(async move {
-            let mut tls_conn = acceptor.accept(tunnel_stream).await?;
-
-            if tls_conn
-                .get_mut()
-                .1
-                .get_alpn_protocol()
-                .map(|p| p != *ALPN_PROTOCOL)
-                .unwrap_or(true)
-            {
-                error!("ALPN mismatch");
-                return Ok(());
-            }
-
-            let tunnel_id = TunnelId::new();
-
-            let accept_tunnel = async {
-                let len = tls_conn.read_u16().await?;
-                let mut payload = vec![0u8; len.into()];
-                tls_conn.read_exact(&mut payload).await?;
-                let tunnel_hello = bincode::deserialize::<TunnelHello>(&payload)?;
-
-                let account_unique_id = webapp
-                    .authorize_tunnel(
-                        &tunnel_hello.project_name,
-                        &tunnel_hello.instance_id,
-                        &tunnel_hello.access_key_id,
-                        &tunnel_hello.secret_access_key,
+                let mut tls_conn = tls_acceptor.accept(s).await.map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("error accepting TLS connection: {}", e),
                     )
-                    .await?
-                    .account_unique_id;
+                })?;
 
-                info!("Accepted tunnel from instance {}", tunnel_hello.instance_id);
+                if tls_conn
+                    .get_mut()
+                    .1
+                    .get_alpn_protocol()
+                    .map(|p| {
+                        // info!("provided ALPN: {}", std::str::from_utf8(p).unwrap());
+                        p != *ALPN_PROTOCOL
+                    })
+                    // ALPN not provides should lead to Error as well
+                    .unwrap_or(true)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("ALPN mismatch"),
+                    ));
+                }
 
-                let resp = TunnelHelloResponse::Ok { tunnel_id };
+                Ok(tls_conn)
+            }
+        })
+        .filter(|s| core::future::ready(s.is_ok()));
 
-                let resp_bytes = bincode::serialize(&resp)?;
-                tls_conn
-                    .write_u16(resp_bytes.len().try_into().unwrap())
-                    .await?;
-                tls_conn.write_all(&resp_bytes).await?;
+    let make_service = make_service_fn(move |_| {
+        shadow_clone!(tunnels);
+        shadow_clone!(webapp);
+        shadow_clone!(tunnel_counters_tx);
 
-                Ok::<_, anyhow::Error>((tunnel_hello, account_unique_id))
-            };
+        async move {
+            Ok::<_, hyper::Error>(service_fn({
+                move |req: Request<Body>| {
+                    shadow_clone!(tunnels);
+                    shadow_clone!(webapp);
+                    shadow_clone!(mut tunnel_counters_tx);
 
-            let (tunnel_hello, account_unique_id) =
-                match timeout(Duration::from_secs(5), accept_tunnel).await {
-                    Ok(Ok((tunnel_hello, account_unique_id))) => {
-                        // warn!(
-                        //     "accepted new TLS tunnel with tunnel_hello {:?}",
-                        //     tunnel_hello
-                        // );
+                    async move {
+                        if req.version() != Version::HTTP_11 {
+                            bail!("not HTTP/1.1, abort connection");
+                        }
 
-                        (tunnel_hello, account_unique_id)
-                    }
-                    Ok(Err(e)) => {
-                        warn!("error on TLS tunnel: {}. Closing connection", e);
-                        return Err(e.into());
-                    }
-                    Err(tokio::time::Elapsed { .. }) => {
-                        warn!("no initial connection data received. Closing connection");
-                        return Err(anyhow::Error::msg("timeout on handshake"));
-                    }
-                };
+                        let mut res = Response::new(Body::empty());
 
-            let counters = TrafficCounters::new(account_unique_id.clone());
-            let metered = TrafficCountedStream::new(tls_conn, counters.clone());
+                        tokio::spawn(async move {
+                            let mut upgraded = match req.into_body().on_upgrade().await {
+                                Ok(upgraded) => upgraded,
+                                Err(e) => {
+                                    bail!("upgrade error: {}", e);
+                                }
+                            };
 
-            let (stop_tx, stop_rx) = oneshot::channel();
-            let (bg, connector) = server_connection(server_framed(metered));
+                            let tunnel_id = TunnelId::new();
 
-            let instance_id = tunnel_hello.instance_id;
+                            let accept_tunnel = async {
+                                let len = upgraded.read_u16().await?;
+                                let mut payload = vec![0u8; len.into()];
+                                upgraded.read_exact(&mut payload).await?;
+                                let tunnel_hello = bincode::deserialize::<TunnelHello>(&payload)?;
 
-            let config_id = ConfigId {
-                config_name: tunnel_hello.config_name,
-                account_name: tunnel_hello.account_name,
-                account_unique_id,
-                project_name: tunnel_hello.project_name,
-            };
+                                let account_unique_id = webapp
+                                    .authorize_tunnel(
+                                        &tunnel_hello.project_name,
+                                        &tunnel_hello.instance_id,
+                                        &tunnel_hello.access_key_id,
+                                        &tunnel_hello.secret_access_key,
+                                    )
+                                    .await?
+                                    .account_unique_id;
 
-            // info!("new instance connected");
+                                info!("Accepted tunnel from instance {}", tunnel_hello.instance_id);
 
-            {
-                let new_connected_tunnel = ConnectedTunnel {
-                    hyper: hyper::Client::builder().build::<_, Body>(connector.clone()),
-                    connector,
-                    config_id: config_id.clone(),
-                    instance_id,
-                };
+                                let resp = TunnelHelloResponse::Ok { tunnel_id };
 
-                let locked = &mut *tunnels.inner.lock();
+                                let resp_bytes = bincode::serialize(&resp)?;
+                                upgraded
+                                    .write_u16(resp_bytes.len().try_into().unwrap())
+                                    .await?;
+                                upgraded.write_all(&resp_bytes).await?;
 
-                match locked.by_config.entry(config_id.clone()) {
-                    Entry::Occupied(mut rec) => {
-                        match rec.get_mut() {
-                            TunnelConnectionState::Requested(reset_event) => {
-                                let mut c = HashMap::new();
-                                let mut tunnels = HashMap::new();
-                                tunnels.insert(tunnel_id, (new_connected_tunnel, Some(stop_tx)));
-                                c.insert(instance_id, tunnels);
-                                reset_event.set();
-                                rec.insert(TunnelConnectionState::Connected(c));
-                            }
-                            TunnelConnectionState::Connected(c) => match c.entry(instance_id) {
-                                Entry::Occupied(mut e) => {
-                                    if e.get().len() >= MAX_ALLOWED_TUNNELS {
-                                        warn!("Client tried to connect more than {} tunnels. Reject connection", MAX_ALLOWED_TUNNELS);
-                                        return Err(anyhow::Error::msg(
-                                            "client tunnels limit reached",
-                                        ));
+                                Ok::<_, anyhow::Error>((tunnel_hello, account_unique_id))
+                            };
+
+                            let (tunnel_hello, account_unique_id) =
+                                match timeout(Duration::from_secs(5), accept_tunnel).await {
+                                    Ok(Ok((tunnel_hello, account_unique_id))) => {
+                                        // warn!(
+                                        //     "accepted new TLS tunnel with tunnel_hello {:?}",
+                                        //     tunnel_hello
+                                        // );
+
+                                        (tunnel_hello, account_unique_id)
                                     }
-                                    e.get_mut()
-                                        .insert(tunnel_id, (new_connected_tunnel, Some(stop_tx)));
+                                    Ok(Err(e)) => {
+                                        warn!("error on TLS tunnel: {}. Closing connection", e);
+                                        return Err(e.into());
+                                    }
+                                    Err(tokio::time::Elapsed { .. }) => {
+                                        warn!(
+                                        "no initial connection data received. Closing connection"
+                                    );
+                                        return Err(anyhow::Error::msg("timeout on handshake"));
+                                    }
+                                };
+
+                            let counters = TrafficCounters::new(account_unique_id.clone());
+                            let metered = TrafficCountedStream::new(upgraded, counters.clone());
+
+                            let (stop_tx, stop_rx) = oneshot::channel();
+                            let (bg, connector) = server_connection(server_framed(metered));
+
+                            let instance_id = tunnel_hello.instance_id;
+
+                            let config_id = ConfigId {
+                                config_name: tunnel_hello.config_name,
+                                account_name: tunnel_hello.account_name,
+                                account_unique_id,
+                                project_name: tunnel_hello.project_name,
+                            };
+
+                            // info!("new instance connected");
+
+                            {
+                                let new_connected_tunnel = ConnectedTunnel {
+                                    hyper: hyper::Client::builder()
+                                        .build::<_, Body>(connector.clone()),
+                                    connector,
+                                    config_id: config_id.clone(),
+                                    instance_id,
+                                };
+
+                                let locked = &mut *tunnels.inner.lock();
+
+                                match locked.by_config.entry(config_id.clone()) {
+                                    Entry::Occupied(mut rec) => {
+                                        match rec.get_mut() {
+                                            TunnelConnectionState::Requested(reset_event) => {
+                                                let mut c = HashMap::new();
+                                                let mut tunnels = HashMap::new();
+                                                tunnels.insert(
+                                                    tunnel_id,
+                                                    (new_connected_tunnel, Some(stop_tx)),
+                                                );
+                                                c.insert(instance_id, tunnels);
+                                                reset_event.set();
+                                                rec.insert(TunnelConnectionState::Connected(c));
+                                            }
+                                            TunnelConnectionState::Connected(c) => {
+                                                match c.entry(instance_id) {
+                                                    Entry::Occupied(mut e) => {
+                                                        if e.get().len() >= MAX_ALLOWED_TUNNELS {
+                                                            warn!("Client tried to connect more than {} tunnels. Reject connection", MAX_ALLOWED_TUNNELS);
+                                                            return Err(anyhow::Error::msg(
+                                                                "client tunnels limit reached",
+                                                            ));
+                                                        }
+                                                        e.get_mut().insert(
+                                                            tunnel_id,
+                                                            (new_connected_tunnel, Some(stop_tx)),
+                                                        );
+                                                    }
+                                                    Entry::Vacant(e) => {
+                                                        let mut tunnels = HashMap::new();
+                                                        tunnels.insert(
+                                                            tunnel_id,
+                                                            (new_connected_tunnel, Some(stop_tx)),
+                                                        );
+                                                        e.insert(tunnels);
+                                                    }
+                                                }
+                                            }
+                                        };
+                                    }
+                                    Entry::Vacant(rec) => {
+                                        let mut c = HashMap::new();
+                                        let mut tunnels = HashMap::new();
+                                        tunnels.insert(
+                                            tunnel_id,
+                                            (new_connected_tunnel, Some(stop_tx)),
+                                        );
+                                        c.insert(instance_id, tunnels);
+                                        rec.insert(TunnelConnectionState::Connected(c));
+                                    }
                                 }
-                                Entry::Vacant(e) => {
-                                    let mut tunnels = HashMap::new();
-                                    tunnels
-                                        .insert(tunnel_id, (new_connected_tunnel, Some(stop_tx)));
-                                    e.insert(tunnels);
-                                }
-                            },
-                        };
-                    }
-                    Entry::Vacant(rec) => {
-                        let mut c = HashMap::new();
-                        let mut tunnels = HashMap::new();
-                        tunnels.insert(tunnel_id, (new_connected_tunnel, Some(stop_tx)));
-                        c.insert(instance_id, tunnels);
-                        rec.insert(TunnelConnectionState::Connected(c));
-                    }
-                }
-            }
-
-            crate::statistics::TUNNELS_GAUGE.inc();
-
-            #[allow(unreachable_code)]
-            let flush_counters = async move {
-                loop {
-                    delay_for(Duration::from_secs(60)).await;
-                    match counters.flush() {
-                        Ok(Some(stats)) => {
-                            tunnel_counters_tx.send(stats).await?;
-                        }
-                        Err(()) => {
-                            break;
-                        }
-                        Ok(None) => {}
-                    }
-                }
-
-                Ok::<_, anyhow::Error>(())
-            };
-
-            tokio::spawn(flush_counters);
-
-            tokio::select! {
-                res = bg => {
-                    match res {
-                        Ok(()) => {
-                            info!("instance connection closed successfully");
-                        }
-                        Err(e) => {
-                            info!("instance connection closed with error {:?}", e);
-                        }
-                    }
-                },
-                _ = stop_rx => {
-                    info!("tunnel terminated by request");
-                },
-            }
-            crate::statistics::TUNNELS_GAUGE.dec();
-
-            if let Entry::Occupied(mut client) =
-                tunnels.inner.lock().by_config.entry(config_id.clone())
-            {
-                let should_delete_client = match client.get_mut() {
-                    TunnelConnectionState::Connected(conns) => {
-                        if let Entry::Occupied(mut tunnels_entry) = conns.entry(instance_id) {
-                            tunnels_entry.get_mut().remove(&tunnel_id);
-                            if tunnels_entry.get().is_empty() {
-                                tunnels_entry.remove_entry();
                             }
-                        } else {
-                            unreachable!("should never happen")
-                        };
 
-                        conns.is_empty()
-                    }
-                    _ => {
-                        warn!("Not delete tunnel since it's not in connected state");
-                        false
-                    }
-                };
+                            crate::statistics::TUNNELS_GAUGE.inc();
 
-                if should_delete_client {
-                    client.remove_entry();
+                            #[allow(unreachable_code)]
+                            let flush_counters = async move {
+                                loop {
+                                    delay_for(Duration::from_secs(60)).await;
+                                    match counters.flush() {
+                                        Ok(Some(stats)) => {
+                                            tunnel_counters_tx.send(stats).await?;
+                                        }
+                                        Err(()) => {
+                                            break;
+                                        }
+                                        Ok(None) => {}
+                                    }
+                                }
+
+                                Ok::<_, anyhow::Error>(())
+                            };
+
+                            tokio::spawn(flush_counters);
+
+                            tokio::select! {
+                                res = bg => {
+                                    match res {
+                                        Ok(()) => {
+                                            info!("instance connection closed successfully");
+                                        }
+                                        Err(e) => {
+                                            info!("instance connection closed with error {:?}", e);
+                                        }
+                                    }
+                                },
+                                _ = stop_rx => {
+                                    info!("tunnel terminated by request");
+                                },
+                            }
+                            crate::statistics::TUNNELS_GAUGE.dec();
+
+                            if let Entry::Occupied(mut client) =
+                                tunnels.inner.lock().by_config.entry(config_id.clone())
+                            {
+                                let should_delete_client = match client.get_mut() {
+                                    TunnelConnectionState::Connected(conns) => {
+                                        if let Entry::Occupied(mut tunnels_entry) =
+                                            conns.entry(instance_id)
+                                        {
+                                            tunnels_entry.get_mut().remove(&tunnel_id);
+                                            if tunnels_entry.get().is_empty() {
+                                                tunnels_entry.remove_entry();
+                                            }
+                                        } else {
+                                            unreachable!("should never happen")
+                                        };
+
+                                        conns.is_empty()
+                                    }
+                                    _ => {
+                                        warn!(
+                                            "Not delete tunnel since it's not in connected state"
+                                        );
+                                        false
+                                    }
+                                };
+
+                                if should_delete_client {
+                                    client.remove_entry();
+                                }
+                            } else {
+                                error!("should never happen. could not find client config")
+                            }
+
+                            Ok::<_, anyhow::Error>(())
+                        });
+
+                        *res.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                        res.headers_mut()
+                            .insert(UPGRADE, HeaderValue::from_static("exotun"));
+                        Ok(res)
+                    }
                 }
-            } else {
-                error!("should never happen. could not find client config")
-            }
+            }))
+        }
+    });
 
-            Ok(())
-        });
-    }
+    pin_mut!(incoming_tls_stream);
+
+    Server::builder(HyperAcceptor {
+        acceptor: incoming_tls_stream,
+    })
+    .http1_only(true)
+    .http2_only(false)
+    .serve(make_service)
+    .await
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("hyper error: {}", e)))?;
+
+    Ok(())
 }

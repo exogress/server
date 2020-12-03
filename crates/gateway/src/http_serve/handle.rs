@@ -65,6 +65,7 @@ use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use rand::distributions::Alphanumeric;
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
+use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::io;
 use std::io::{BufReader, Cursor};
@@ -878,7 +879,6 @@ pub async fn server(
                 let remote_addr = remote_addr.unwrap().ip();
                 let local_addr = local_addr.unwrap().ip();
 
-
                 if let Some(dbip) = dbip {
                     let resolved = dbip.lookup::<LocationAndIsp>(remote_addr);
                     info!("GEO IP: {:?}", resolved);
@@ -964,7 +964,7 @@ pub async fn server(
                             account_rules_counters.register_rule(&account_unique_id);
 
                             match action {
-                                Action::Respond { static_response_name } => {
+                                Action::Respond { static_response_name, .. } => {
                                     if let Some(static_response) = mapping_action
                                         .static_responses
                                         .get(static_response_name) {
@@ -981,8 +981,8 @@ pub async fn server(
                                                     exception_name: "static-response-error".parse().unwrap(),
                                                     delayed_for,
                                                     data: btreemap! {
-                                                        "static-response".to_string() => static_response_name.to_string(),
-                                                        "error".to_string() => e.to_string(),
+                                                        "static-response".into() => static_response_name.to_string().into(),
+                                                        "error".into() => e.to_string().into(),
                                                     }
                                                 }));
                                             }
@@ -992,7 +992,7 @@ pub async fn server(
                                             exception_name: "static-response-not-found".parse().unwrap(),
                                             delayed_for,
                                             data: btreemap! {
-                                                "static-response".to_string() => static_response_name.to_string(),
+                                                "static-response".into() => static_response_name.to_string().into(),
                                             }
                                         }));
                                     }
@@ -2128,7 +2128,7 @@ impl Reject for BadGateway {}
 struct Exception {
     pub exception_name: ExceptionName,
     pub delayed_for: Option<Duration>,
-    pub data: BTreeMap<String, String>,
+    pub data: BTreeMap<SmolStr, SmolStr>,
 }
 
 impl Reject for Exception {}

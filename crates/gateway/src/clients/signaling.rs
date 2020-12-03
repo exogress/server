@@ -2,6 +2,7 @@ use crate::clients::tunnel::MAX_ALLOWED_TUNNELS;
 use exogress_entities::ConfigId;
 use exogress_signaling::TunnelRequest;
 use reqwest::Identity;
+use smol_str::SmolStr;
 use std::time::Duration;
 use url::Url;
 
@@ -19,7 +20,7 @@ pub enum Error {
 
 pub async fn request_connection(
     mut int_base_url: Url,
-    hostname: String,
+    hostname: SmolStr,
     config_id: ConfigId,
     maybe_identity: Option<Vec<u8>>,
 ) -> Result<(), Error> {

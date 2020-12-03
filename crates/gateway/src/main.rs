@@ -596,14 +596,19 @@ fn main() {
             int_client_cert.clone(),
         );
 
-        tokio::spawn(tunnels_acceptor(
+        let acceptor = tunnels_acceptor(
             listen_tunnel_addr,
             individual_tls_cert_path.into(),
             individual_tls_key_path.into(),
             client_tunnels.clone(),
             api_client.clone(),
             tunnel_counters_tx,
-        ));
+        );
+
+        tokio::spawn(async {
+            let res = acceptor.await;
+            warn!("tunnels acceptor stopped: {:?}", res);
+        });
 
         let (mut statistics_tx, statistics_rx) = mpsc::channel::<WsFromGwMessage>(16);
 

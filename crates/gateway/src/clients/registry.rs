@@ -12,6 +12,7 @@ use crate::clients::signaling::request_connection;
 use exogress_entities::{ConfigId, InstanceId, TunnelId};
 use futures::channel::oneshot;
 use rand::prelude::*;
+use smol_str::SmolStr;
 use url::Url;
 
 #[derive(Clone, Debug)]
@@ -87,13 +88,13 @@ impl ClientTunnels {
     }
 
     /// Return active client tunnel if exists.
-    /// Otherwise, request new tunnel through signalling channel and
+    /// Otherwise, request a new tunnel through signalling channel and
     /// wait for the actual connection
     pub async fn retrieve_client_tunnel(
         &self,
         config_id: ConfigId,
         instance_id: InstanceId,
-        individual_hostname: String,
+        individual_hostname: SmolStr,
     ) -> Option<ConnectedTunnel> {
         let maybe_identity = self.maybe_identity.clone();
 

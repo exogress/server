@@ -878,13 +878,13 @@ mod test {
             status_code: http::StatusCode::OK,
             body: vec![
                 ResponseBody {
-                    content_type: "text/html".to_string(),
-                    content: "<html><body><h1>plain resp</h1></body>/html>".to_string(),
+                    content_type: "text/html".into(),
+                    content: "<html><body><h1>plain resp</h1></body>/html>".into(),
                     engine: None,
                 },
                 ResponseBody {
-                    content_type: "application/json".to_string(),
-                    content: "{\"status\": \"not-found\"}".to_string(),
+                    content_type: "application/json".into(),
+                    content: "{\"status\": \"not-found\"}".into(),
                     engine: None,
                 },
             ],
@@ -939,9 +939,8 @@ mod test {
         let handlebars = StaticResponse::Raw(RawResponse {
             status_code: http::StatusCode::OK,
             body: vec![ResponseBody {
-                content_type: "text/html".to_string(),
-                content: "<html><body><h1>Generated at {{ this.time }}</h1></body>/html>"
-                    .to_string(),
+                content_type: "text/html".into(),
+                content: "<html><body><h1>Generated at {{ this.time }}</h1></body>/html>".into(),
                 engine: Some(TemplateEngine::Handlebars),
             }],
             common: CommonResponse {
