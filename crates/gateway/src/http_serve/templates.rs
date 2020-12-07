@@ -1,19 +1,19 @@
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::url_mapping::mapping::JwtEcdsa;
+use crate::http_serve::auth::JwtEcdsa;
 use cookie::Cookie;
 use exogress_config_core::{Auth, AuthProvider};
 use exogress_entities::HandlerName;
+use exogress_server_common::url_prefix::MountPointBaseUrl;
 use handlebars::Handlebars;
 use http::header::{LOCATION, SET_COOKIE};
+use http::{Response, StatusCode};
 use hyper::Body;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use serde_json::json;
 use std::convert::TryInto;
 use typed_headers::{ContentType, HeaderMapExt};
 use url::Url;
-use warp::http::StatusCode;
-use warp::reply::Response;
 
 const LOGIN_TEMPLATE: &str = include_str!("../../templates/login.html.handlebars");
 
@@ -23,10 +23,15 @@ struct ProviderInfo {
     link: String,
 }
 
-fn render(url: &Url, requested_url: &Url, handler_name: &HandlerName, auth: &Auth) -> String {
+fn render(
+    mount_point_base_url: &MountPointBaseUrl,
+    requested_url: &Url,
+    handler_name: &HandlerName,
+    auth: &Auth,
+) -> String {
     let handlebars = Handlebars::new();
 
-    let mut url = url.clone();
+    let mut url = mount_point_base_url.to_url();
 
     url.path_segments_mut().unwrap().push("_exg").push("auth");
     url.set_query(Some(
@@ -67,22 +72,22 @@ fn render(url: &Url, requested_url: &Url, handler_name: &HandlerName, auth: &Aut
 }
 
 pub async fn respond_with_login(
-    base_url: &Url,
+    res: &mut Response<Body>,
+    base_url: &MountPointBaseUrl,
     maybe_provider: &Option<AuthProvider>,
     requested_url: &Url,
     handler_name: &HandlerName,
     auth: &Auth,
     jwt_ecdsa: &JwtEcdsa,
-    resp: &mut Response,
-    google_oauth2_client: GoogleOauth2Client,
-    github_oauth2_client: GithubOauth2Client,
+    google_oauth2_client: &GoogleOauth2Client,
+    github_oauth2_client: &GithubOauth2Client,
 ) {
     match maybe_provider {
         None => {
-            *resp.status_mut() = StatusCode::OK;
-            resp.headers_mut()
+            *res.status_mut() = StatusCode::OK;
+            res.headers_mut()
                 .typed_insert::<ContentType>(&ContentType(mime::TEXT_HTML_UTF_8));
-            *resp.body_mut() = Body::from(render(base_url, requested_url, handler_name, auth));
+            *res.body_mut() = Body::from(render(base_url, requested_url, handler_name, auth));
         }
         Some(provider) => {
             let redirect_to = match provider {
@@ -113,11 +118,11 @@ pub async fn respond_with_login(
                 .expires(time::OffsetDateTime::unix_epoch())
                 .finish();
 
-            resp.headers_mut()
+            res.headers_mut()
                 .insert(SET_COOKIE, delete_cookie.to_string().try_into().unwrap());
-            resp.headers_mut()
+            res.headers_mut()
                 .insert(LOCATION, redirect_to.try_into().unwrap());
-            *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+            *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
         }
     }
 }

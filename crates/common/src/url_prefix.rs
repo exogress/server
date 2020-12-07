@@ -7,11 +7,11 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, PartialOrd, Ord)]
 #[serde(transparent)]
-pub struct UrlPrefix {
+pub struct MountPointBaseUrl {
     inner: String,
 }
 
-impl fmt::Display for UrlPrefix {
+impl fmt::Display for MountPointBaseUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.inner)
     }
@@ -44,14 +44,15 @@ pub enum UrlPrefixError {
     Malformed,
 }
 
-impl UrlPrefix {
+impl MountPointBaseUrl {
     pub fn to_url(&self) -> Url {
         Url::parse(format!("http://{}", self.inner).as_str()).expect("FIXME")
     }
 
-    pub fn domain_only(&self) -> UrlPrefix {
+    pub fn domain_only(&self) -> MountPointBaseUrl {
         let url = self.to_url();
-        UrlPrefix::from_str(format!("{}/", url.host_str().expect("FIXME")).as_str()).expect("FIXME")
+        MountPointBaseUrl::from_str(format!("{}/", url.host_str().expect("FIXME")).as_str())
+            .expect("FIXME")
     }
 
     pub fn host(&self) -> String {
@@ -64,7 +65,7 @@ impl UrlPrefix {
         url.path().to_string()
     }
 
-    pub fn is_subpath_of_or_equal(&self, other: &UrlPrefix) -> bool {
+    pub fn is_subpath_of_or_equal(&self, other: &MountPointBaseUrl) -> bool {
         if self.inner.len() > other.inner.len() {
             return false;
         }
@@ -88,7 +89,7 @@ impl UrlPrefix {
     }
 }
 
-impl FromStr for UrlPrefix {
+impl FromStr for MountPointBaseUrl {
     type Err = UrlPrefixError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -131,11 +132,11 @@ impl FromStr for UrlPrefix {
             inner = inner.trim_end_matches('/').into();
         }
 
-        Ok(UrlPrefix { inner })
+        Ok(MountPointBaseUrl { inner })
     }
 }
 
-impl UrlPrefix {
+impl MountPointBaseUrl {
     pub fn as_str(&self) -> &str {
         self.inner.as_str()
     }
@@ -144,7 +145,7 @@ impl UrlPrefix {
 struct UrlPrefixVisitor;
 
 impl<'de> Visitor<'de> for UrlPrefixVisitor {
-    type Value = UrlPrefix;
+    type Value = MountPointBaseUrl;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("URL prefix")
@@ -154,15 +155,15 @@ impl<'de> Visitor<'de> for UrlPrefixVisitor {
     where
         E: de::Error,
     {
-        match UrlPrefix::from_str(value) {
+        match MountPointBaseUrl::from_str(value) {
             Ok(segment) => Ok(segment),
             Err(e) => Err(de::Error::custom(e)),
         }
     }
 }
 
-impl<'de> Deserialize<'de> for UrlPrefix {
-    fn deserialize<D>(deserializer: D) -> Result<UrlPrefix, D::Error>
+impl<'de> Deserialize<'de> for MountPointBaseUrl {
+    fn deserialize<D>(deserializer: D) -> Result<MountPointBaseUrl, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -178,49 +179,51 @@ mod test {
 
     #[test]
     fn test_parse() {
-        UrlPrefix::from_str("asd").err().unwrap();
-        UrlPrefix::from_str("link/path").unwrap();
-        UrlPrefix::from_str("link.com/").unwrap();
-        UrlPrefix::from_str("localhost/").unwrap();
-        UrlPrefix::from_str("http://").err().unwrap();
+        MountPointBaseUrl::from_str("asd").err().unwrap();
+        MountPointBaseUrl::from_str("link/path").unwrap();
+        MountPointBaseUrl::from_str("link.com/").unwrap();
+        MountPointBaseUrl::from_str("localhost/").unwrap();
+        MountPointBaseUrl::from_str("http://").err().unwrap();
     }
 
     #[test]
     fn test_deserialize() {
-        serde_json::from_str::<UrlPrefix>("\"asd\"").err().unwrap();
-        serde_json::from_str::<UrlPrefix>("\"link.com/\"").unwrap();
+        serde_json::from_str::<MountPointBaseUrl>("\"asd\"")
+            .err()
+            .unwrap();
+        serde_json::from_str::<MountPointBaseUrl>("\"link.com/\"").unwrap();
     }
 
     #[test]
     fn test_subpath() {
-        assert!(UrlPrefix::from_str("host/")
+        assert!(MountPointBaseUrl::from_str("host/")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/d").unwrap()));
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/d").unwrap()));
 
-        assert!(!UrlPrefix::from_str("host/d")
+        assert!(!MountPointBaseUrl::from_str("host/d")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/").unwrap()));
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/").unwrap()));
 
-        assert!(UrlPrefix::from_str("host/a/b")
+        assert!(MountPointBaseUrl::from_str("host/a/b")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b").unwrap()));
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/a/b").unwrap()));
 
-        assert!(UrlPrefix::from_str("host/a/b/")
+        assert!(MountPointBaseUrl::from_str("host/a/b/")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b").unwrap()));
-        assert!(UrlPrefix::from_str("host/a/b")
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/a/b").unwrap()));
+        assert!(MountPointBaseUrl::from_str("host/a/b")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b/").unwrap()));
-        assert!(UrlPrefix::from_str("host/a/b")
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/a/b/").unwrap()));
+        assert!(MountPointBaseUrl::from_str("host/a/b")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/b/c").unwrap()));
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/a/b/c").unwrap()));
 
-        assert!(!UrlPrefix::from_str("host/a/b")
+        assert!(!MountPointBaseUrl::from_str("host/a/b")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a/bb/c").unwrap()));
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/a/bb/c").unwrap()));
 
-        assert!(!UrlPrefix::from_str("host/a/b")
+        assert!(!MountPointBaseUrl::from_str("host/a/b")
             .unwrap()
-            .is_subpath_of_or_equal(&UrlPrefix::from_str("host/a").unwrap()));
+            .is_subpath_of_or_equal(&MountPointBaseUrl::from_str("host/a").unwrap()));
     }
 }

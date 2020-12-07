@@ -1,12 +1,10 @@
 use std::time::Duration;
 
 use crate::clients::ClientTunnels;
-use crate::url_mapping::handlers::HandlersProcessor;
-use crate::url_mapping::mapping::{
-    HealthStorage, Mapping, MappingAction, Protocol, UrlForRewriting,
-};
-use crate::url_mapping::rate_limiter::RateLimiters;
-use crate::url_mapping::registry::Configs;
+use crate::http_serve::{auth, RequestsProcessor};
+use crate::registry::RequestsProcessorsRegistry;
+use crate::urls::matchable_url::MatchableUrl;
+use crate::urls::Protocol;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -16,7 +14,7 @@ use exogress_entities::{
     AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName,
 };
 use exogress_server_common::assistant::UpstreamReport;
-use exogress_server_common::url_prefix::UrlPrefix;
+use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
 use http::StatusCode;
@@ -25,6 +23,7 @@ use lru_time_cache::LruCache;
 use percent_encoding::NON_ALPHANUMERIC;
 use reqwest::Identity;
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 use std::sync::Arc;
 use url::Url;
 
@@ -40,9 +39,16 @@ pub struct Client {
     reqwest: reqwest::Client,
     retrieve_configs: Arc<DashMap<String, Arc<ManualResetEvent>>>,
     certificates: Arc<parking_lot::Mutex<LruCache<String, CertificateRetrievalState>>>,
-    configs: Configs,
-    base_url: Url,
+    requests_processors_registry: RequestsProcessorsRegistry,
+    webapp_base_url: Url,
     health_state_change_tx: mpsc::Sender<UpstreamReport>,
+
+    google_oauth2_client: auth::google::GoogleOauth2Client,
+    github_oauth2_client: auth::github::GithubOauth2Client,
+    assistant_base_url: Url,
+    maybe_identity: Option<Vec<u8>>,
+
+    public_gw_base_url: Url,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -150,7 +156,7 @@ pub struct JwtEcdsaResponse {
 pub struct ConfigsResponse {
     #[serde(with = "ts_milliseconds")]
     pub generated_at: DateTime<Utc>,
-    pub url_prefix: UrlPrefix,
+    pub url_prefix: MountPointBaseUrl,
     pub account: AccountName,
     pub account_unique_id: AccountUniqueId,
     pub project: ProjectName,
@@ -165,6 +171,10 @@ impl Client {
         ttl: Duration,
         health_state_change_tx: mpsc::Sender<UpstreamReport>,
         base_url: Url,
+        google_oauth2_client: auth::google::GoogleOauth2Client,
+        github_oauth2_client: auth::github::GithubOauth2Client,
+        assistant_base_url: Url,
+        public_gw_base_url: &Url,
         maybe_identity: Option<Vec<u8>>,
     ) -> Self {
         let mut builder = reqwest::ClientBuilder::new()
@@ -173,24 +183,29 @@ impl Client {
             .use_rustls_tls()
             .trust_dns(true);
 
-        if let Some(identity) = maybe_identity {
-            builder = builder.identity(Identity::from_pem(&identity).unwrap());
+        if let Some(identity) = &maybe_identity {
+            builder = builder.identity(Identity::from_pem(identity).unwrap());
         }
 
         Client {
-            configs: Configs::new(ttl),
+            requests_processors_registry: RequestsProcessorsRegistry::new(ttl),
             reqwest: builder.build().unwrap(),
             retrieve_configs: Arc::new(Default::default()),
-            base_url,
+            webapp_base_url: base_url,
             certificates: Arc::new(parking_lot::Mutex::new(
                 LruCache::with_expiry_duration_and_capacity(ttl, 1024),
             )),
             health_state_change_tx,
+            google_oauth2_client,
+            github_oauth2_client,
+            assistant_base_url,
+            maybe_identity,
+            public_gw_base_url: public_gw_base_url.clone(),
         }
     }
 
-    pub fn mappings(&self) -> Configs {
-        self.configs.clone()
+    pub fn mappings(&self) -> RequestsProcessorsRegistry {
+        self.requests_processors_registry.clone()
     }
 
     pub async fn acme_http_challenge_verification(
@@ -198,7 +213,7 @@ impl Client {
         domain: &str,
         path: &str,
     ) -> Result<AcmeHttpChallengeVerificationResponse, Error> {
-        let mut url = self.base_url.clone();
+        let mut url = self.webapp_base_url.clone();
         url.path_segments_mut()
             .unwrap()
             .push("int_api")
@@ -226,27 +241,26 @@ impl Client {
 
     pub async fn resolve_url(
         &self,
-        url_for_rewriting: UrlForRewriting,
-        external_port: u16,
-        proto: Protocol,
+        matchable_url: MatchableUrl,
         tunnels: ClientTunnels,
-        individual_hostname: String,
-    ) -> Result<Option<(MappingAction, RateLimiters, UrlPrefix)>, Error> {
+        individual_hostname: SmolStr,
+    ) -> Result<
+        Option<(
+            Arc<RequestsProcessor>,
+            // RateLimiters,
+            MountPointBaseUrl,
+        )>,
+        Error,
+    > {
         // Try to read from cache
-        if let Some((cached, url_prefix)) = self
-            .configs
-            .resolve(
-                url_for_rewriting.clone(),
-                tunnels.clone(),
-                external_port,
-                proto,
-            )
-            .await
+        if let Some((cached, mount_point_base_path)) =
+            self.requests_processors_registry.resolve(&matchable_url)
+        //, tunnels.clone(), external_port, proto)
         {
             match cached {
-                Some((data, rate_limiters)) => {
+                Some(data) => {
                     // mapping exist
-                    return Ok(Some((data, rate_limiters, url_prefix)));
+                    return Ok(Some((data, mount_point_base_path)));
                 }
                 None => {
                     return Ok(None);
@@ -255,9 +269,9 @@ impl Client {
         }
 
         // no info in cache
-        info!("No data in cache for {}", url_for_rewriting);
+        info!("No data in cache for {}", matchable_url);
 
-        let host = url_for_rewriting.host();
+        let host = matchable_url.host();
 
         let health_state_change_tx = self.health_state_change_tx.clone();
 
@@ -266,12 +280,17 @@ impl Client {
             .retrieve_configs
             .entry(host.clone().into())
             .or_insert_with({
-                shadow_clone!(url_for_rewriting);
-                shadow_clone!(tunnels);
+                shadow_clone!(matchable_url);
 
-                let base_url = self.base_url.clone();
+                let base_url = self.webapp_base_url.clone();
                 let reqwest = self.reqwest.clone();
-                let configs = self.configs.clone();
+                let google_oauth2_client = self.google_oauth2_client.clone();
+                let github_oauth2_client = self.github_oauth2_client.clone();
+                let assistant_base_url = self.assistant_base_url.clone();
+                let maybe_identity = self.maybe_identity.clone();
+                let public_gw_base_url = self.public_gw_base_url.clone();
+
+                let requests_processors_registry = self.requests_processors_registry.clone();
 
                 move || {
                     let ready_event = Arc::new(ManualResetEvent::new(false));
@@ -279,14 +298,18 @@ impl Client {
                     // initiate query
                     tokio::spawn({
                         shadow_clone!(ready_event);
-                        shadow_clone!(tunnels);
                         shadow_clone!(reqwest);
                         shadow_clone!(base_url);
+                        shadow_clone!(google_oauth2_client);
+                        shadow_clone!(github_oauth2_client);
+                        shadow_clone!(assistant_base_url);
+                        shadow_clone!(maybe_identity);
+                        shadow_clone!(public_gw_base_url);
 
                         async move {
                             info!(
                                 "Initiating new request to retrieve mapping for {}",
-                                url_for_rewriting
+                                matchable_url
                             );
 
                             let mut url = base_url.clone();
@@ -300,201 +323,45 @@ impl Client {
                                 format!(
                                     "url={}",
                                     percent_encoding::utf8_percent_encode(
-                                        format!("{}", url_for_rewriting).as_str(),
+                                        format!("{}", matchable_url).as_str(),
                                         NON_ALPHANUMERIC,
                                     )
                                 )
-                                    .as_str(),
+                                .as_str(),
                             ));
 
                             match reqwest.get(url).send().await {
                                 Ok(res) => {
                                     if res.status().is_success() {
                                         match res.json::<ConfigsResponse>().await {
-                                            Ok(config_response) => {
+                                            Ok(configs_response) => {
                                                 info!(
                                                     "Configs retrieved successfully: `{:?}`",
-                                                    config_response
+                                                    configs_response
                                                 );
 
-                                                let project = config_response.project.clone();
-                                                let account = config_response.account.clone();
+                                                let url_prefix =
+                                                    configs_response.url_prefix.clone();
+                                                let generated_at =
+                                                    configs_response.generated_at.clone();
 
-                                                let grouped = config_response
-                                                    .configs
-                                                    .iter()
-                                                    .group_by(|elt| elt.config_name.clone());
+                                                let requests_processor = RequestsProcessor::new(
+                                                    configs_response,
+                                                    google_oauth2_client,
+                                                    github_oauth2_client,
+                                                    assistant_base_url,
+                                                    &public_gw_base_url,
+                                                    tunnels,
+                                                    individual_hostname,
+                                                    maybe_identity,
+                                                )
+                                                .expect("FIXME");
 
-                                                let static_responses = grouped
-                                                    .into_iter()
-                                                    .map(|(config_name, config_entries)| {
-                                                        let config_entry = config_entries
-                                                            .into_iter()
-                                                            .sorted_by(|left, right| {
-                                                                left.revision
-                                                                    .cmp(&right.revision)
-                                                                    .reverse()
-                                                            })
-                                                            .next() // Take last revision only
-                                                            .expect("FIXME");
-
-                                                        let prj_static_responses = config_response
-                                                            .project_config
-                                                            .mount_points
-                                                            .values()
-                                                            .next()
-                                                            .map(|mp| {
-                                                                mp
-                                                                    .static_responses
-                                                                    .iter()
-                                                                    .map({
-                                                                        move |(static_response_name, static_response_data)| {
-                                                                            (
-                                                                                static_response_name.clone(),
-                                                                                static_response_data.clone().into(),
-                                                                                // None,
-                                                                            )
-                                                                        }
-                                                                    })
-                                                            })
-                                                            .into_iter()
-                                                            .flatten();
-
-                                                        config_entry
-                                                            .config
-                                                            .mount_points
-                                                            .values()
-                                                            .next()
-                                                            .map(|mp| {
-                                                                mp.static_responses
-                                                                    .iter()
-                                                                    .map(move |(static_response_name, static_response_data)| {
-                                                                        (
-                                                                            static_response_name.clone(),
-                                                                            static_response_data.clone(),
-                                                                            // Some((
-                                                                            //     config_name.clone(),
-                                                                            //     instances_ids.clone(),
-                                                                            // )),
-                                                                        )
-                                                                    })
-                                                            })
-                                                            .into_iter()
-                                                            .flatten()
-                                                            .chain(prj_static_responses)
-                                                    })
-                                                    .flatten()
-                                                    .collect();
-
-                                                info!("static resps = {:#?}", static_responses);
-
-                                                let grouped = config_response
-                                                    .configs
-                                                    .iter()
-                                                    .group_by(|elt| elt.config_name.clone());
-                                                let handlers = grouped
-                                                    .into_iter()
-                                                    .map(|(config_name, config_entries)| {
-                                                        let config_entry = config_entries
-                                                            .into_iter()
-                                                            .sorted_by(|left, right| {
-                                                                left.revision
-                                                                    .cmp(&right.revision)
-                                                                    .reverse()
-                                                            })
-                                                            .next() // Take last revision only
-                                                            .expect("FIXME");
-
-                                                        let instances_ids =
-                                                            config_entry.instance_ids.clone();
-
-                                                        let prj_handlers = config_response
-                                                            .project_config
-                                                            .mount_points
-                                                            .values()
-                                                            .next()
-                                                            .map(|mp| {
-                                                                mp
-                                                                    .handlers
-                                                                    .iter()
-                                                                    .map({
-                                                                        move |(handler_name, handler)| {
-                                                                            (
-                                                                                handler_name.clone(),
-                                                                                handler.clone().into(),
-                                                                                None,
-                                                                            )
-                                                                        }
-                                                                    })
-                                                            })
-                                                            .into_iter()
-                                                            .flatten();
-
-                                                        config_entry
-                                                            .config
-                                                            .mount_points
-                                                            .values()
-                                                            .next()
-                                                            .map(|mp| {
-                                                                mp.handlers
-                                                                    .iter()
-                                                                    .map(move |(handler_name, handler)| {
-                                                                        (
-                                                                            handler_name.clone(),
-                                                                            handler.clone(),
-                                                                            Some((
-                                                                                config_name.clone(),
-                                                                                instances_ids.clone(),
-                                                                            )),
-                                                                        )
-                                                                    })
-                                                            })
-                                                            .into_iter()
-                                                            .flatten()
-                                                            .chain(prj_handlers)
-                                                    })
-                                                    .flatten()
-                                                    .collect::<Vec<_>>();
-
-                                                let handlers_processor =
-                                                    HandlersProcessor::new(handlers);
-                                                info!("handlers = {:#?}", handlers_processor);
-
-                                                let instances_health = HealthStorage::new(
-                                                    &account,
-                                                    &project,
-                                                    health_state_change_tx
+                                                requests_processors_registry.upsert(
+                                                    &url_prefix,
+                                                    Some(requests_processor),
+                                                    &generated_at,
                                                 );
-
-                                                let mapping = Mapping::new(
-                                                    config_response.clone(),
-                                                    handlers_processor,
-                                                    instances_health,
-                                                    static_responses,
-                                                RateLimiters::new(vec![
-                                                        // RateLimiter::new(
-                                                        //     "free_plan".parse().unwrap(),
-                                                        //     RateLimiterKind::FailResponse,
-                                                        //     governor::Quota::with_period(
-                                                        //         Duration::from_millis(1),
-                                                        //     )
-                                                        //     .unwrap()
-                                                        //     .allow_burst(
-                                                        //         NonZeroU32::new(2500).unwrap(),
-                                                        //     ),
-                                                        // )
-                                                    ]),
-                                                    tunnels.clone(),
-                                                    individual_hostname.clone().into(),
-                                                );
-
-                                                info!("mapping = {:?}", mapping);
-
-                                                configs.upsert(
-                                                    &config_response.url_prefix,
-                                                    Some(mapping),
-                                                    config_response.generated_at,
-                                                ).await;
                                             }
                                             Err(e) => {
                                                 error!(
@@ -504,11 +371,11 @@ impl Client {
                                             }
                                         }
                                     } else if res.status() == StatusCode::NOT_FOUND {
-                                        configs.upsert(
-                                            &url_for_rewriting.to_url_prefix(),
+                                        requests_processors_registry.upsert(
+                                            &matchable_url.to_url_prefix(),
                                             None,
-                                            Utc::now(), //FIXME: return generated_at in 404 resp
-                                        ).await;
+                                            &Utc::now(), //FIXME: return generated_at in 404 resp
+                                        );
                                     } else {
                                         error!(
                                             "Bad status on configs retrieving: {}",
@@ -540,12 +407,10 @@ impl Client {
             }
         }
 
-        if let Some((cached, url_prefix)) = self
-            .configs
-            .resolve(url_for_rewriting, tunnels, external_port, proto)
-            .await
+        if let Some((cached, url_prefix)) =
+            self.requests_processors_registry.resolve(&matchable_url)
         {
-            Ok(cached.map(|(a, b)| (a, b, url_prefix)))
+            Ok(cached.map(|a| (a, url_prefix)))
         } else {
             error!("Still can't resolve after successful reset event happened");
             Err(Error::CouldNotRetrieve)
@@ -616,7 +481,7 @@ impl Client {
     }
 
     async fn retrieve_certificate(&self, domain: &str) -> Result<CertificateResponse, Error> {
-        let mut url = self.base_url.clone();
+        let mut url = self.webapp_base_url.clone();
         url.path_segments_mut()
             .unwrap()
             .push("int_api")
@@ -643,7 +508,7 @@ impl Client {
         access_key_id: &AccessKeyId,
         secret_access_key: &str,
     ) -> Result<AuthorizeTunnelResponse, Error> {
-        let mut url = self.base_url.clone();
+        let mut url = self.webapp_base_url.clone();
         url.path_segments_mut()
             .unwrap()
             .push("int_api")

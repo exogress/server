@@ -54,285 +54,6 @@ pub struct SchemaConfigs {
     instances: SmallVec<[InstanceSchema; 8]>,
 }
 
-/// UrlForRewriting
-/// MatchPattern
-/// RewriteTemplate
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct UrlForRewriting {
-    inner: String,
-    host: String,
-    path: String,
-    username: String,
-    password: Option<String>,
-}
-
-impl UrlForRewriting {
-    pub fn to_url_prefix(&self) -> UrlPrefix {
-        let s = format!("{}{}", self.host, self.path);
-        UrlPrefix::from_str(s.as_ref()).expect("unexpected bad data in UrlForRewriting")
-    }
-}
-
-impl fmt::Display for UrlForRewriting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.inner)
-    }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum UrlForRewritingError {
-    #[error("port should not exist")]
-    PortFound,
-
-    #[error("path should start from '/'")]
-    NoRootPath,
-}
-
-impl UrlForRewriting {
-    #[allow(dead_code)]
-    pub fn from_url(mut url: Url) -> Self {
-        url.set_port(None).unwrap();
-        url.set_scheme("https").unwrap();
-
-        let host = url.host_str().unwrap().into();
-        let path = url.path().into();
-
-        UrlForRewriting {
-            host,
-            password: url.password().map(|s| s.into()),
-            username: url.username().into(),
-            inner: url.to_string().trim_start_matches("https://").into(),
-            path,
-        }
-    }
-
-    pub fn from_components(
-        host_without_port: &str,
-        path: &str,
-        query: &str,
-    ) -> Result<Self, UrlForRewritingError> {
-        if host_without_port.contains(":") {
-            return Err(UrlForRewritingError::PortFound);
-        }
-
-        let host = host_without_port.into();
-
-        let mut s = host_without_port.to_string();
-
-        if !path.starts_with('/') {
-            return Err(UrlForRewritingError::NoRootPath);
-        }
-
-        s.push_str(path);
-
-        if !query.is_empty() {
-            s.push_str("?");
-            s.push_str(query);
-        }
-
-        Ok(UrlForRewriting {
-            inner: s.into(),
-            password: None,
-            username: "".into(),
-            host,
-            path: path.into(),
-        })
-    }
-
-    pub fn matches(self, pattern: MatchPattern) -> Option<Matched> {
-        if self
-            .inner
-            .as_str()
-            .starts_with(pattern.matchable_prefix.as_str())
-        {
-            if pattern.matchable_prefix.len() < self.inner.len() {
-                let pattern_last_idx = pattern.matchable_prefix.len() - 1;
-                let next_idx = pattern.matchable_prefix.len();
-                let pattern_last_char = pattern
-                    .matchable_prefix
-                    .get(pattern_last_idx..=pattern_last_idx)
-                    .unwrap();
-                let next_char = self.inner.get(next_idx..=next_idx).unwrap();
-
-                if pattern_last_char != "/" && next_char != "/" && next_char != "?" {
-                    return None;
-                }
-            }
-            Some(Matched {
-                url: self,
-                pattern,
-                config_name: None,
-            })
-        } else {
-            None
-        }
-    }
-
-    pub fn host(&self) -> String {
-        self.host.clone()
-    }
-}
-
-impl AsRef<[u8]> for UrlForRewriting {
-    fn as_ref(&self) -> &[u8] {
-        self.inner.as_ref()
-    }
-}
-
-#[derive(Debug)]
-pub struct Matched {
-    url: UrlForRewriting,
-    pattern: MatchPattern,
-    config_name: Option<ConfigName>,
-}
-
-impl Matched {
-    pub fn resolve_handler(
-        self,
-        rewrite_to: &ProxyMatchedTo,
-        protocol: Protocol,
-    ) -> Result<ClientHandler, url::ParseError> {
-        let mut rewritten_str = self.url.inner.clone();
-
-        rewritten_str.replace_range(0..self.pattern.matchable_prefix.len() - 1, "localhost");
-
-        let parsable = format!("http://{}", rewritten_str);
-
-        let mut url = Url::parse(&parsable)?;
-
-        let scheme = match (protocol, rewrite_to) {
-            (Protocol::Http, _) => "http",
-            (Protocol::WebSockets, _) => "ws",
-        };
-
-        url.set_scheme(scheme).unwrap();
-
-        url.set_username(self.url.username.as_str()).unwrap();
-        url.set_password(self.url.password.as_deref()).unwrap();
-
-        match rewrite_to {
-            ProxyMatchedTo::Client {
-                handlers_processor,
-                account_name,
-                project_name,
-                account_unique_id,
-            } => Ok(ClientHandler {
-                account_name: account_name.clone(),
-                handlers_processor: handlers_processor.clone(),
-                url,
-                project_name: project_name.clone(),
-                account_unique_id: account_unique_id.clone(),
-            }),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct MatchPattern {
-    matchable_prefix: String,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum MatchPatternError {
-    #[error("URL parse error: `{0}`")]
-    Url(#[from] url::ParseError),
-
-    #[error("URI build error: `{0}`")]
-    Uri(#[from] http::Error),
-
-    #[error("fragment (hash) should not exist")]
-    FragmentFound,
-
-    #[error("query should not exist")]
-    QueryFound,
-
-    #[error("port should not exist")]
-    PortFound,
-
-    #[error("username/password shoud not exist")]
-    AuthFound,
-}
-
-impl MatchPattern {
-    #[allow(dead_code)]
-    pub fn new(host: &str, path: &str) -> Result<MatchPattern, MatchPatternError> {
-        let uri = Uri::builder()
-            .scheme("http")
-            .authority(host)
-            .path_and_query(path)
-            .build()?;
-
-        if uri.path_and_query().unwrap().query().is_some() {
-            return Err(MatchPatternError::QueryFound);
-        }
-        if uri.authority().unwrap().port().is_some() {
-            return Err(MatchPatternError::PortFound);
-        }
-        if uri.authority().unwrap().as_str().contains('@') {
-            return Err(MatchPatternError::AuthFound);
-        }
-
-        Ok(MatchPattern {
-            matchable_prefix: uri.to_string().trim_start_matches("http://").into(),
-        })
-    }
-
-    pub fn generate_url(
-        &self,
-        proto: Protocol,
-        maybe_port: Option<u16>,
-        relative_url: &str,
-    ) -> Url {
-        let scheme = match proto {
-            Protocol::Http => "https",
-            Protocol::WebSockets => "wss",
-        };
-
-        let mut url =
-            Url::parse(format!("{}://{}", scheme, self.matchable_prefix).as_str()).unwrap();
-
-        url.set_port(maybe_port).unwrap();
-
-        url.path_segments_mut().unwrap().extend(
-            relative_url.split('/').filter(|s| !s.is_empty()), //remove first empty
-        );
-
-        url
-    }
-}
-
-impl fmt::Display for MatchPattern {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.matchable_prefix)
-    }
-}
-
-impl FromStr for MatchPattern {
-    type Err = MatchPatternError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let url = Url::parse(format!("http://{}", s).as_str())?;
-
-        if url.fragment().is_some() {
-            return Err(MatchPatternError::FragmentFound);
-        }
-
-        if url.query().is_some() {
-            return Err(MatchPatternError::QueryFound);
-        }
-        if url.port().is_some() {
-            return Err(MatchPatternError::PortFound);
-        }
-        if url.password().is_some() || !url.username().is_empty() {
-            return Err(MatchPatternError::AuthFound);
-        }
-
-        Ok(MatchPattern {
-            matchable_prefix: url.to_string().trim_start_matches("http://").into(),
-        })
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum RewriteMatchedToError {
     #[error("URL parse error: `{0}`")]
@@ -373,162 +94,21 @@ impl ProxyMatchedTo {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Oauth2SsoClient {
-    pub provider: Oauth2Provider,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
-pub enum Oauth2Provider {
-    #[serde(rename = "google")]
-    Google,
-    #[serde(rename = "github")]
-    Github,
-}
-
-impl ToString for Oauth2Provider {
-    fn to_string(&self) -> std::string::String {
-        match self {
-            Oauth2Provider::Google => "google",
-            Oauth2Provider::Github => "github",
-        }
-        .to_string()
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum AuthProviderConfig {
-    Oauth2(Oauth2SsoClient),
-}
-
-impl From<AuthProvider> for AuthProviderConfig {
-    fn from(provider: AuthProvider) -> Self {
-        match provider {
-            AuthProvider::Google => AuthProviderConfig::Oauth2(Oauth2SsoClient {
-                provider: Oauth2Provider::Google,
-            }),
-            AuthProvider::Github => AuthProviderConfig::Oauth2(Oauth2SsoClient {
-                provider: Oauth2Provider::Github,
-            }),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JwtEcdsa {
-    pub private_key: Vec<u8>,
-    pub public_key: Vec<u8>,
-}
-
-#[derive(Debug)]
-pub struct Mapping {
-    match_pattern: MatchPattern,
-    pub generated_at: DateTime<Utc>,
-    pub config_names: SmallVec<[ConfigName; 8]>,
-    handlers_processor: HandlersProcessor,
-    pub account: AccountName,
-    pub account_unique_id: AccountUniqueId,
-    pub project: ProjectName,
-    jwt_ecdsa: JwtEcdsa,
-    rate_limiters: RateLimiters,
-    healthcheck_stop_tx: oneshot::Sender<()>,
-    pub health: HealthStorage,
-    static_responses: BTreeMap<StaticResponseName, StaticResponse>,
-}
-
-#[derive(Clone, Debug)]
-pub struct HealthStorage {
-    inner: Arc<Mutex<HashMap<HealthEndpoint, HealthState>>>,
-    notify_on_change_tx: mpsc::Sender<UpstreamReport>,
-    account_name: AccountName,
-    project_name: ProjectName,
-}
-
-impl HealthStorage {
-    pub fn new(
-        account_name: &AccountName,
-        project_name: &ProjectName,
-        notify_on_change_tx: mpsc::Sender<UpstreamReport>,
-    ) -> Self {
-        HealthStorage {
-            inner: Arc::new(Default::default()),
-            notify_on_change_tx,
-            account_name: account_name.clone(),
-            project_name: project_name.clone(),
-        }
-    }
-}
-
-impl HealthStorage {
-    async fn set_health(
-        &mut self,
-        instance_id: &InstanceId,
-        upstream: &Upstream,
-        state: HealthState,
-    ) -> Result<(), mpsc::SendError> {
-        let endpoint = HealthEndpoint {
-            instance_id: instance_id.clone(),
-            upstream: upstream.clone(),
-        };
-
-        match self.inner.lock().entry(endpoint.clone()) {
-            Entry::Vacant(vacant) => {
-                vacant.insert(state.clone());
-            }
-            Entry::Occupied(mut occupied) => {
-                if occupied.get() == &state {
-                    return Ok(());
-                };
-                occupied.insert(state.clone());
-            }
-        }
-
-        self.notify_on_change_tx
-            .send(UpstreamReport {
-                account_name: self.account_name.clone(),
-                project_name: self.project_name.clone(),
-                health_endpoint: endpoint,
-                health: Some(state),
-                datetime: Utc::now(),
-            })
-            .await?;
-
-        Ok(())
-    }
-
-    pub(crate) fn get_health(
-        &self,
-        instance_id: &InstanceId,
-        upstream: &Upstream,
-    ) -> Option<HealthState> {
-        let endpoint = HealthEndpoint {
-            instance_id: instance_id.clone(),
-            upstream: upstream.clone(),
-        };
-
-        self.inner.lock().get(&endpoint).cloned()
-    }
-
-    pub async fn health_deleted(&self) -> Result<(), mpsc::SendError> {
-        let old = mem::replace(&mut *self.inner.lock(), Default::default());
-
-        let mut notify_on_change_tx = self.notify_on_change_tx.clone();
-
-        for (endpoint, _) in old.into_iter() {
-            notify_on_change_tx
-                .send(UpstreamReport {
-                    account_name: self.account_name.clone(),
-                    project_name: self.project_name.clone(),
-                    health_endpoint: endpoint,
-                    health: None,
-                    datetime: Utc::now(),
-                })
-                .await?;
-        }
-
-        Ok(())
-    }
-}
+// #[derive(Debug)]
+// pub struct Mapping {
+//     match_pattern: MatchPattern,
+//     pub generated_at: DateTime<Utc>,
+//     pub config_names: SmallVec<[ConfigName; 8]>,
+//     handlers_processor: HandlersProcessor,
+//     pub account: AccountName,
+//     pub account_unique_id: AccountUniqueId,
+//     pub project: ProjectName,
+//     jwt_ecdsa: JwtEcdsa,
+//     rate_limiters: RateLimiters,
+//     healthcheck_stop_tx: oneshot::Sender<()>,
+//     pub health: HealthStorage,
+//     static_responses: BTreeMap<StaticResponseName, StaticResponse>,
+// }
 
 impl Mapping {
     pub fn new(
@@ -552,10 +132,7 @@ impl Mapping {
         let project = config_response.project.clone();
         let generated_at = config_response.generated_at.clone();
 
-        let jwt_ecdsa = JwtEcdsa {
-            private_key: config_response.jwt_ecdsa.private_key.clone().into(),
-            public_key: config_response.jwt_ecdsa.public_key.clone().into(),
-        };
+        let jwt_ecdsa = c;
 
         let (healthcheck_stop_tx, healthcheck_stop_rx) = oneshot::channel();
 
@@ -790,14 +367,14 @@ pub struct ClientHandler {
     pub url: Url,
 }
 
-#[derive(Clone, Debug)]
-pub struct MappingAction {
-    pub handler: ClientHandler,
-    pub jwt_ecdsa: JwtEcdsa,
-    pub external_base_url: Url,
-    pub health: HealthStorage,
-    pub static_responses: BTreeMap<StaticResponseName, StaticResponse>,
-}
+// #[derive(Clone, Debug)]
+// pub struct MappingAction {
+//     pub handler: ClientHandler,
+//     pub jwt_ecdsa: JwtEcdsa,
+//     pub external_base_url: Url,
+//     pub health: HealthStorage,
+//     pub static_responses: BTreeMap<StaticResponseName, StaticResponse>,
+// }
 
 #[derive(Debug, Clone)]
 pub struct RenderedResponse {
@@ -810,12 +387,6 @@ impl MappingAction {
     pub fn rewrite_to_url(&self) -> Url {
         self.handler.url.clone()
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Protocol {
-    Http,
-    WebSockets,
 }
 
 impl Mapping {

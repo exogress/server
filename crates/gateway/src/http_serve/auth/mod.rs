@@ -1,6 +1,7 @@
-use crate::url_mapping::mapping::{JwtEcdsa, Oauth2Provider};
+use exogress_config_core::AuthProvider;
 use exogress_entities::HandlerName;
 use exogress_server_common::assistant::{GetValue, SetValue};
+use exogress_server_common::url_prefix::MountPointBaseUrl;
 use http::StatusCode;
 use oauth2::basic::BasicTokenResponse;
 use reqwest::Identity;
@@ -12,10 +13,57 @@ use url::Url;
 pub mod github;
 pub mod google;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Oauth2SsoClient {
+    pub provider: Oauth2Provider,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+pub enum Oauth2Provider {
+    #[serde(rename = "google")]
+    Google,
+    #[serde(rename = "github")]
+    Github,
+}
+
+impl ToString for Oauth2Provider {
+    fn to_string(&self) -> std::string::String {
+        match self {
+            Oauth2Provider::Google => "google",
+            Oauth2Provider::Github => "github",
+        }
+        .to_string()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AuthProviderConfig {
+    Oauth2(Oauth2SsoClient),
+}
+
+impl From<AuthProvider> for AuthProviderConfig {
+    fn from(provider: AuthProvider) -> Self {
+        match provider {
+            AuthProvider::Google => AuthProviderConfig::Oauth2(Oauth2SsoClient {
+                provider: Oauth2Provider::Google,
+            }),
+            AuthProvider::Github => AuthProviderConfig::Oauth2(Oauth2SsoClient {
+                provider: Oauth2Provider::Github,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JwtEcdsa {
+    pub private_key: Vec<u8>,
+    pub public_key: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowData {
     pub requested_url: Url,
-    pub base_url: Url,
+    pub base_url: MountPointBaseUrl,
     pub jwt_ecdsa: JwtEcdsa,
     pub provider: Oauth2Provider,
     pub handler_name: HandlerName,

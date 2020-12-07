@@ -1,8 +1,8 @@
 use futures::{SinkExt, StreamExt};
 
 use crate::clients::ClientTunnels;
+use crate::registry::RequestsProcessorsRegistry;
 use crate::stop_reasons::{AppStopHandle, StopReason};
-use crate::url_mapping::registry::Configs;
 use crate::webapp;
 use exogress_common_utils::ws_client::{connect_ws, Error};
 use exogress_server_common::assistant::{
@@ -27,7 +27,7 @@ pub struct AssistantClient {
     client_tunnels: ClientTunnels,
     stop_handle: AppStopHandle,
     webapp_client: webapp::Client,
-    mappings: Configs,
+    mappings: RequestsProcessorsRegistry,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
     statistics_rx: mpsc::Receiver<WsFromGwMessage>,
 }
@@ -37,7 +37,7 @@ impl AssistantClient {
         assistant_base_url: Url,
         individual_hostname: &str,
         gw_location: &str,
-        mappings: &Configs,
+        mappings: &RequestsProcessorsRegistry,
         client_tunnels: &ClientTunnels,
         tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
         statistics_rx: mpsc::Receiver<WsFromGwMessage>,
@@ -139,9 +139,8 @@ impl AssistantClient {
                                                         mappings
                                                             .remove_by_notification_if_time_applicable(
                                                                 &domain_only,
-                                                                notification.generated_at,
-                                                            )
-                                                            .await;
+                                                                &notification.generated_at,
+                                                            );
 
                                                         let host = url_prefix.host().to_string();
 

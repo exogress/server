@@ -1,5 +1,5 @@
 use crate::health::{HealthEndpoint, HealthState};
-use crate::url_prefix::UrlPrefix;
+use crate::url_prefix::MountPointBaseUrl;
 use chrono::serde::ts_milliseconds;
 use exogress_entities::{AccountName, AccountUniqueId, ConfigId, ProjectName};
 use sentry::types::{DateTime, Utc};
@@ -28,7 +28,7 @@ pub struct GatewayConfigMessage {
 pub enum Action {
     #[serde(rename = "invalidate")]
     Invalidate {
-        url_prefixes: Vec<UrlPrefix>,
+        url_prefixes: Vec<MountPointBaseUrl>,
         config_ids: Vec<ConfigId>,
     },
 }

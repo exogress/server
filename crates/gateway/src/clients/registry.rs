@@ -6,29 +6,110 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 use tokio::time::timeout;
 
-use exogress_tunnel::Connector;
+use exogress_tunnel::{
+    Compression, ConnectTarget, Connector, ConnectorRequest, TunneledConnection,
+};
 
 use crate::clients::signaling::request_connection;
-use exogress_entities::{ConfigId, InstanceId, TunnelId};
-use futures::channel::oneshot;
+use exogress_entities::{ConfigId, InstanceId, TunnelId, Ulid};
+use futures::channel::{mpsc, oneshot};
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use http::Uri;
 use rand::prelude::*;
 use smol_str::SmolStr;
+use std::hash::{Hash, Hasher};
+use std::task;
+use std::task::Poll;
 use url::Url;
+use weighted_rs::{SmoothWeight, Weight};
 
 #[derive(Clone, Debug)]
 pub struct ConnectedTunnel {
     pub connector: Connector,
-    pub hyper: hyper::client::Client<Connector>,
     pub config_id: ConfigId,
     pub instance_id: InstanceId,
 }
 
-#[derive(Debug)]
+#[derive(Clone)]
+pub struct InstanceConnector {
+    inner: Arc<Mutex<SmoothWeight<Connector>>>,
+}
+
+impl InstanceConnector {
+    pub fn new() -> Self {
+        InstanceConnector {
+            inner: Arc::new(Mutex::new(SmoothWeight::<Connector>::new())),
+        }
+    }
+
+    pub fn sync(
+        &self,
+        storage: &HashMap<TunnelId, (ConnectedTunnel, Option<oneshot::Sender<()>>)>,
+    ) {
+        let balancer = &mut *self.inner.lock();
+        balancer.remove_all();
+
+        for (_, (connected_tunnel, _)) in storage {
+            balancer.add(connected_tunnel.connector.clone(), 1);
+        }
+    }
+
+    pub fn next_connection(&self) -> Option<Connector> {
+        self.inner.lock().next()
+    }
+}
+
+#[inline]
+fn extract_connect_target(uri: Uri) -> Result<ConnectTarget, exogress_tunnel::Error> {
+    Ok(uri
+        .host()
+        .ok_or(exogress_tunnel::Error::EmptyHost)?
+        .parse::<ConnectTarget>()?)
+}
+
+impl tower::Service<Uri> for InstanceConnector {
+    type Response = TunneledConnection;
+    type Error = exogress_tunnel::Error;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    // TODO: implement poll_ready?
+    fn poll_ready(&mut self, _cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, dst: Uri) -> Self::Future {
+        let target_result: Result<ConnectTarget, exogress_tunnel::Error> =
+            extract_connect_target(dst);
+        match target_result {
+            Ok(target) => self
+                .inner
+                .lock()
+                .next()
+                .unwrap()
+                .retrieve_connection(target, Compression::Zstd),
+            Err(e) => futures::future::ready(Err(e)).boxed(),
+        }
+    }
+}
+
+pub struct InstanceConnections {
+    pub storage: HashMap<TunnelId, (ConnectedTunnel, Option<oneshot::Sender<()>>)>,
+    pub http_client: hyper::client::Client<InstanceConnector>,
+
+    // Reference the same shared storage which hyper client uses
+    pub instance_connector: InstanceConnector,
+}
+
+impl InstanceConnections {
+    pub fn next_connection(&self) -> Option<Connector> {
+        self.instance_connector.next_connection()
+    }
+}
+
 pub enum TunnelConnectionState {
     Requested(Arc<ManualResetEvent>),
-    Connected(
-        HashMap<InstanceId, HashMap<TunnelId, (ConnectedTunnel, Option<oneshot::Sender<()>>)>>,
-    ),
+    Connected(HashMap<InstanceId, InstanceConnections>),
     // Blocked,
 }
 
@@ -36,14 +117,16 @@ impl TunnelConnectionState {
     pub fn count_tunnels(&self) -> usize {
         match self {
             TunnelConnectionState::Requested(_) => 0,
-            TunnelConnectionState::Connected(s) => s.values().map(|inner| inner.len()).sum(),
+            TunnelConnectionState::Connected(s) => {
+                s.values().map(|inner| inner.storage.len()).sum()
+            }
         }
     }
 
     pub fn close(&mut self) {
         if let TunnelConnectionState::Connected(s) = self {
             for inner in s.values_mut() {
-                for (_, stop_tx) in inner.values_mut() {
+                for (_, stop_tx) in inner.storage.values_mut() {
                     if let Some(stop) = stop_tx.take() {
                         let _ = stop.send(());
                     }
@@ -90,12 +173,12 @@ impl ClientTunnels {
     /// Return active client tunnel if exists.
     /// Otherwise, request a new tunnel through signalling channel and
     /// wait for the actual connection
-    pub async fn retrieve_client_tunnel(
+    pub async fn retrieve_http_connector(
         &self,
-        config_id: ConfigId,
-        instance_id: InstanceId,
+        config_id: &ConfigId,
+        instance_id: &InstanceId,
         individual_hostname: SmolStr,
-    ) -> Option<ConnectedTunnel> {
+    ) -> Option<hyper::client::Client<InstanceConnector>> {
         let maybe_identity = self.maybe_identity.clone();
 
         let (maybe_reset_event, should_request) = {
@@ -152,18 +235,14 @@ impl ClientTunnels {
             let locked = &mut *self.inner.lock();
 
             let by_config_name = &locked.by_config;
-            let rng = &mut locked.rng;
 
             match by_config_name.get(&config_id) {
                 None => {}
                 Some(state) => {
                     if let TunnelConnectionState::Connected(connections) = state {
-                        return connections.get(&instance_id).and_then(|tunnels| {
-                            tunnels
-                                .iter()
-                                .choose(rng)
-                                .map(|(_tunnel_id, (tunnel, _))| tunnel.clone())
-                        });
+                        return connections
+                            .get(&instance_id)
+                            .map(|instance_connections| instance_connections.http_client.clone());
                     }
                 }
             }

@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use crate::http_serve::auth::{
-    retrieve_assistant_key, save_assistant_key, AssistantError, CallbackResult, FlowData,
-    Oauth2FlowError,
+    retrieve_assistant_key, save_assistant_key, AssistantError, CallbackResult, FlowData, JwtEcdsa,
+    Oauth2FlowError, Oauth2Provider,
 };
-use crate::url_mapping::mapping::{JwtEcdsa, Oauth2Provider};
 use exogress_entities::HandlerName;
+use exogress_server_common::url_prefix::MountPointBaseUrl;
 use hashbrown::HashMap;
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
@@ -55,7 +55,7 @@ pub struct Oauth2FlowData {
     data: FlowData,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GoogleOauth2Client {
     assistant_base_url: Url,
     creds: GoogleClientCreds,
@@ -95,7 +95,7 @@ impl GoogleOauth2Client {
 
     pub async fn save_state_and_retrieve_authorization_url(
         &self,
-        base_url: &Url,
+        base_url: &MountPointBaseUrl,
         jwt_ecdsa: &JwtEcdsa,
         requested_url: &Url,
         handler_name: &HandlerName,

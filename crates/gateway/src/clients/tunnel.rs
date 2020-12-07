@@ -22,7 +22,9 @@ use exogress_tunnel::{
     server_connection, server_framed, TunnelHello, TunnelHelloResponse, ALPN_PROTOCOL,
 };
 
-use crate::clients::registry::{ClientTunnels, ConnectedTunnel, TunnelConnectionState};
+use crate::clients::registry::{
+    ClientTunnels, ConnectedTunnel, InstanceConnections, InstanceConnector, TunnelConnectionState,
+};
 use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
@@ -32,10 +34,12 @@ use futures::channel::{mpsc, oneshot};
 use futures::future::ok;
 use futures::{SinkExt, Stream, StreamExt, TryStreamExt};
 use hyper::server::accept::Accept;
+use parking_lot::Mutex;
 use std::convert::TryInto;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::future;
+use weighted_rs::{SmoothWeight, Weight};
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))
@@ -251,9 +255,7 @@ pub async fn tunnels_acceptor(
 
                             {
                                 let new_connected_tunnel = ConnectedTunnel {
-                                    hyper: hyper::Client::builder()
-                                        .build::<_, Body>(connector.clone()),
-                                    connector,
+                                    connector: connector.clone(),
                                     config_id: config_id.clone(),
                                     instance_id,
                                 };
@@ -270,23 +272,45 @@ pub async fn tunnels_acceptor(
                                                     tunnel_id,
                                                     (new_connected_tunnel, Some(stop_tx)),
                                                 );
-                                                c.insert(instance_id, tunnels);
+
+                                                let mut instance_connector =
+                                                    InstanceConnector::new();
+                                                instance_connector.sync(&tunnels);
+
+                                                let instance_conections = InstanceConnections {
+                                                    storage: tunnels,
+                                                    instance_connector: instance_connector.clone(),
+                                                    http_client: hyper::Client::builder()
+                                                        .http2_only(false)
+                                                        .build::<_, Body>(
+                                                            instance_connector.clone(),
+                                                        ),
+                                                };
+
+                                                c.insert(instance_id, instance_conections);
                                                 reset_event.set();
                                                 rec.insert(TunnelConnectionState::Connected(c));
                                             }
                                             TunnelConnectionState::Connected(c) => {
                                                 match c.entry(instance_id) {
                                                     Entry::Occupied(mut e) => {
-                                                        if e.get().len() >= MAX_ALLOWED_TUNNELS {
+                                                        let entry = e.get_mut();
+                                                        if entry.storage.len()
+                                                            >= MAX_ALLOWED_TUNNELS
+                                                        {
                                                             warn!("Client tried to connect more than {} tunnels. Reject connection", MAX_ALLOWED_TUNNELS);
                                                             return Err(anyhow::Error::msg(
                                                                 "client tunnels limit reached",
                                                             ));
                                                         }
-                                                        e.get_mut().insert(
+                                                        let storage = &mut entry.storage;
+
+                                                        storage.insert(
                                                             tunnel_id,
                                                             (new_connected_tunnel, Some(stop_tx)),
                                                         );
+
+                                                        entry.instance_connector.sync(storage);
                                                     }
                                                     Entry::Vacant(e) => {
                                                         let mut tunnels = HashMap::new();
@@ -294,7 +318,24 @@ pub async fn tunnels_acceptor(
                                                             tunnel_id,
                                                             (new_connected_tunnel, Some(stop_tx)),
                                                         );
-                                                        e.insert(tunnels);
+
+                                                        let mut instance_connector =
+                                                            InstanceConnector::new();
+                                                        instance_connector.sync(&tunnels);
+
+                                                        let instance_connections =
+                                                            InstanceConnections {
+                                                                storage: tunnels,
+                                                                http_client:
+                                                                    hyper::Client::builder()
+                                                                        .http2_only(false)
+                                                                        .build::<_, Body>(
+                                                                            instance_connector
+                                                                                .clone(),
+                                                                        ),
+                                                                instance_connector,
+                                                            };
+                                                        e.insert(instance_connections);
                                                     }
                                                 }
                                             }
@@ -307,7 +348,19 @@ pub async fn tunnels_acceptor(
                                             tunnel_id,
                                             (new_connected_tunnel, Some(stop_tx)),
                                         );
-                                        c.insert(instance_id, tunnels);
+
+                                        let mut instance_connector = InstanceConnector::new();
+                                        instance_connector.sync(&tunnels);
+
+                                        let instance_connections = InstanceConnections {
+                                            storage: tunnels,
+                                            http_client: hyper::Client::builder()
+                                                .http2_only(false)
+                                                .build::<_, Body>(instance_connector.clone()),
+                                            instance_connector,
+                                        };
+
+                                        c.insert(instance_id, instance_connections);
                                         rec.insert(TunnelConnectionState::Connected(c));
                                     }
                                 }
@@ -360,8 +413,8 @@ pub async fn tunnels_acceptor(
                                         if let Entry::Occupied(mut tunnels_entry) =
                                             conns.entry(instance_id)
                                         {
-                                            tunnels_entry.get_mut().remove(&tunnel_id);
-                                            if tunnels_entry.get().is_empty() {
+                                            tunnels_entry.get_mut().storage.remove(&tunnel_id);
+                                            if tunnels_entry.get().storage.is_empty() {
                                                 tunnels_entry.remove_entry();
                                             }
                                         } else {

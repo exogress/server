@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use progress_bar::progress_bar::ProgressBar;
 use reqwest::header;
+use smol_str::SmolStr;
 use stop_handle::stop_handle;
 use tempfile::NamedTempFile;
 use url::Url;
@@ -39,8 +40,8 @@ use crate::clients::traffic_counter::OneOfTrafficStatistics;
 use crate::http_serve::acme::acme_server;
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
+use crate::notification_listener::AssistantClient;
 use crate::stop_reasons::StopReason;
-use crate::url_mapping::notification_listener::AssistantClient;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
 use exogress_server_common::assistant::{
@@ -55,18 +56,20 @@ use tokio::time::delay_for;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
-pub(crate) mod clients;
-mod dbip;
-// mod environments;
 mod chain;
+pub(crate) mod clients;
 mod config;
+mod dbip;
 mod http_serve;
 mod int_server;
 mod mime_helpers;
 mod rules_counter;
 mod statistics;
 mod stop_reasons;
-mod url_mapping;
+// mod url_mapping;
+mod notification_listener;
+mod registry;
+mod urls;
 mod webapp;
 
 #[global_allocator]
@@ -378,14 +381,16 @@ fn main() {
         .parse()
         .expect("bad URL format");
 
-    let google_oauth2_client_id = matches.value_of("google_oauth2_client_id").unwrap().into();
-    let google_oauth2_client_secret = matches
+    let google_oauth2_client_id: SmolStr =
+        matches.value_of("google_oauth2_client_id").unwrap().into();
+    let google_oauth2_client_secret: SmolStr = matches
         .value_of("google_oauth2_client_secret")
         .unwrap()
         .into();
 
-    let github_oauth2_client_id = matches.value_of("github_oauth2_client_id").unwrap().into();
-    let github_oauth2_client_secret = matches
+    let github_oauth2_client_id: SmolStr =
+        matches.value_of("github_oauth2_client_id").unwrap().into();
+    let github_oauth2_client_secret: SmolStr = matches
         .value_of("github_oauth2_client_secret")
         .unwrap()
         .into();
@@ -589,10 +594,32 @@ fn main() {
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
         let (health_state_change_tx, health_state_change_rx) = mpsc::channel(256);
 
+        let google_oauth2_client = GoogleOauth2Client::new(
+            Duration::from_secs(60),
+            google_oauth2_client_id.into(),
+            google_oauth2_client_secret.into(),
+            public_base_url.clone(),
+            assistant_base_url.clone(),
+            int_client_cert.clone(),
+        );
+
+        let github_oauth2_client = GithubOauth2Client::new(
+            Duration::from_secs(60),
+            github_oauth2_client_id.into(),
+            github_oauth2_client_secret.into(),
+            public_base_url.clone(),
+            assistant_base_url.clone(),
+            int_client_cert.clone(),
+        );
+
         let api_client = Client::new(
             cache_ttl,
             health_state_change_tx,
             webapp_base_url,
+            google_oauth2_client.clone(),
+            github_oauth2_client.clone(),
+            assistant_base_url.clone(),
+            &public_base_url,
             int_client_cert.clone(),
         );
 
@@ -766,24 +793,6 @@ fn main() {
             app_stop_handle.stop(StopReason::NotificationChannelClosed);
         });
 
-        let google_oauth2_client = GoogleOauth2Client::new(
-            Duration::from_secs(60),
-            google_oauth2_client_id,
-            google_oauth2_client_secret,
-            public_base_url.clone(),
-            assistant_base_url.clone(),
-            int_client_cert.clone(),
-        );
-
-        let github_oauth2_client = GithubOauth2Client::new(
-            Duration::from_secs(60),
-            github_oauth2_client_id,
-            github_oauth2_client_secret,
-            public_base_url.clone(),
-            assistant_base_url.clone(),
-            int_client_cert.clone(),
-        );
-
         let server = http_serve::handle::server(
             client_tunnels,
             listen_http_addr,
@@ -793,7 +802,7 @@ fn main() {
             app_stop_wait,
             tls_gw_common,
             public_base_url,
-            individual_hostname,
+            individual_hostname.into(),
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
