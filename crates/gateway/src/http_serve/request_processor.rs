@@ -9,6 +9,7 @@ use crate::http_serve::health_checks::HealthStorage;
 use crate::http_serve::templates::respond_with_login;
 use crate::mime_helpers::{is_mime_match, ordered_by_quality};
 use crate::webapp::{ConfigData, ConfigsResponse};
+use anyhow::Context;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
@@ -29,8 +30,12 @@ use futures::{SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
-use http::header::{CACHE_CONTROL, COOKIE, LOCATION, SET_COOKIE, TRANSFER_ENCODING};
-use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
+use http::header::{
+    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, COOKIE, HOST, LOCATION, SET_COOKIE,
+    TRANSFER_ENCODING,
+};
+use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
+use hyper::upgrade::Upgraded;
 use hyper::{Body, Error};
 use itertools::Itertools;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
@@ -42,7 +47,9 @@ use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
 use std::io;
+use std::net::SocketAddr;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_either::Either;
 use typed_headers::{Accept, ContentCoding, ContentLength, ContentType, HeaderMapExt};
 use url::{PathSegmentsMut, Url};
@@ -71,13 +78,18 @@ pub enum StepProcessingResult {
 }
 
 impl RequestsProcessor {
-    pub async fn process(&self, req: &mut Request<Body>, res: &mut Response<Body>) {
-        let original_uri = Url::parse(req.uri().to_string().as_str()).unwrap();
-
+    pub async fn process(
+        &self,
+        req: &mut Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &Url,
+        local_addr: &SocketAddr,
+        remote_addr: &SocketAddr,
+    ) {
         for handler in &self.ordered_handlers {
-            let mut replaced_url = original_uri.clone();
+            let mut replaced_url = requested_url.clone();
             {
-                let mut requested_segments = original_uri.path_segments().unwrap();
+                let mut requested_segments = requested_url.path_segments().unwrap();
 
                 let matched_segments_count = handler
                     .base_path
@@ -104,7 +116,11 @@ impl RequestsProcessor {
 
             *req.uri_mut() = replaced_url.as_str().parse().unwrap();
 
-            if handler.handle_request(req, res).await.is_some() {
+            if handler
+                .handle_request(req, res, requested_url, local_addr, remote_addr)
+                .await
+                .is_some()
+            {
                 break;
             };
         }
@@ -153,36 +169,35 @@ impl RequestsProcessor {
             .headers_mut()
             .typed_remove::<typed_headers::ContentLength>();
         let processed_stream = match compression {
-            SupportedContentEncoding::Brotli => {
-                res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(
-                        typed_headers::ContentCoding::BROTLI,
-                    ));
-
-                Either::Left(async_compression::stream::BrotliEncoder::new(
-                    uncompressed_body,
-                ))
-            }
+            // SupportedContentEncoding::Brotli => {
+            //     res.headers_mut()
+            //         .typed_insert(&typed_headers::ContentEncoding::from(
+            //             typed_headers::ContentCoding::BROTLI,
+            //         ));
+            //
+            //     Either::Left(async_compression::stream::BrotliEncoder::new(
+            //         uncompressed_body,
+            //     ))
+            // }
             SupportedContentEncoding::Gzip => {
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(
                         typed_headers::ContentCoding::GZIP,
                     ));
 
-                Either::Right(Either::Left(async_compression::stream::GzipEncoder::new(
-                    uncompressed_body,
-                )))
-            }
-            SupportedContentEncoding::Deflate => {
-                res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(
-                        typed_headers::ContentCoding::DEFLATE,
-                    ));
-
-                Either::Right(Either::Right(
-                    async_compression::stream::DeflateEncoder::new(uncompressed_body),
-                ))
-            }
+                // Either::Right(Either::Left(
+                async_compression::stream::GzipEncoder::new(uncompressed_body)
+                // ))
+            } // SupportedContentEncoding::Deflate => {
+              //     res.headers_mut()
+              //         .typed_insert(&typed_headers::ContentEncoding::from(
+              //             typed_headers::ContentCoding::DEFLATE,
+              //         ));
+              //
+              //     Either::Right(Either::Right(
+              //         async_compression::stream::DeflateEncoder::new(uncompressed_body),
+              //     ))
+              // }
         };
 
         *res.body_mut() = Body::wrap_stream(processed_stream);
@@ -196,21 +211,84 @@ struct ResolvedProxy {
     client_tunnels: ClientTunnels,
     config_id: ConfigId,
     individual_hostname: SmolStr,
+    public_hostname: SmolStr,
 }
 
 impl ResolvedProxy {
     async fn invoke(
         &self,
-        req: &Request<Body>,
+        req: &mut Request<Body>,
         res: &mut Response<Body>,
+        requested_url: &Url,
+        local_addr: &SocketAddr,
+        remote_addr: &SocketAddr,
     ) -> HandlerInvocationResult {
-        let mut proxy_to = Url::parse(req.uri().to_string().as_str()).unwrap();
+        let mut proxy_to = requested_url.clone();
+
         let connect_target = ConnectTarget::Upstream(self.name.clone());
         connect_target.update_url(&mut proxy_to);
+
+        proxy_to.set_port(None).unwrap();
+        if proxy_to.scheme() == "https" {
+            proxy_to.set_scheme("http").unwrap();
+        } else if proxy_to.scheme() == "wss" {
+            proxy_to.set_scheme("ws").unwrap();
+        } else {
+            panic!("FIXME");
+        }
 
         let mut proxy_req = Request::<Body>::new(Body::empty());
         *proxy_req.method_mut() = req.method().clone();
         *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
+
+        for (incoming_header_name, incoming_header_value) in req.headers() {
+            if incoming_header_name == ACCEPT_ENCODING
+                || (incoming_header_name == CONNECTION
+                    && incoming_header_value.to_str().unwrap().to_lowercase() != "upgrade")
+                || incoming_header_name == HOST
+            {
+                continue;
+            }
+
+            proxy_req
+                .headers_mut()
+                .append(incoming_header_name, incoming_header_value.clone());
+        }
+
+        proxy_req
+            .headers_mut()
+            .append("x-forwarded-host", self.public_hostname.parse().unwrap());
+
+        proxy_req
+            .headers_mut()
+            .append("x-forwarded-proto", "https".parse().unwrap());
+
+        //X-Forwarded-Host and X-Forwarded-Proto
+        let mut x_forwarded_for = proxy_req
+            .headers_mut()
+            .remove("x-forwarded-for")
+            .map(|h| h.to_str().unwrap().to_string())
+            .unwrap_or_else(|| remote_addr.ip().to_string());
+
+        x_forwarded_for.push_str(&format!(", {}", local_addr.ip()));
+
+        proxy_req
+            .headers_mut()
+            .insert("x-forwarded-for", x_forwarded_for.parse().unwrap());
+
+        if !proxy_req.headers().contains_key("x-real-ip") {
+            proxy_req
+                .headers_mut()
+                .append("x-real-ip", remote_addr.ip().to_string().parse().unwrap());
+        }
+
+        proxy_req
+            .headers_mut()
+            .append("x-exg", "1".parse().unwrap());
+
+        if req.method() != &Method::GET {
+            *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
+        }
 
         let instance_id = Weight::next(&mut *self.instance_ids.lock()).expect("FIXME");
 
@@ -224,9 +302,74 @@ impl ResolvedProxy {
             .await
             .expect("FIXME");
 
-        let resp = http_client.request(proxy_req).await;
+        let mut proxy_resp = http_client.request(proxy_req).await.expect("FIXME");
 
-        info!("proxy response = {:?}", resp);
+        for (incoming_header_name, incoming_header_value) in proxy_resp.headers() {
+            if incoming_header_name == ACCEPT_ENCODING
+                || (incoming_header_name == CONNECTION
+                    && incoming_header_value.to_str().unwrap().to_lowercase() != "upgrade")
+            {
+                continue;
+            }
+
+            res.headers_mut()
+                .append(incoming_header_name, incoming_header_value.clone());
+        }
+
+        *res.status_mut() = proxy_resp.status();
+
+        if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
+            let req_body = mem::replace(req.body_mut(), Body::empty());
+
+            tokio::spawn(async move {
+                match proxy_resp.into_body().on_upgrade().await {
+                    Ok(mut proxy_upgraded) => {
+                        let mut req_upgraded = req_body.on_upgrade().await.expect("FIXME");
+
+                        let mut buf1 = vec![0u8; 65536];
+                        let mut buf2 = vec![0u8; 65536];
+
+                        loop {
+                            tokio::select! {
+                                bytes_read_result = proxy_upgraded.read(&mut buf1) => {
+                                    let bytes_read = bytes_read_result
+                                        .with_context(|| "error reading from incoming")?;
+                                    if bytes_read == 0 {
+                                        return Ok(());
+                                    } else {
+                                        req_upgraded
+                                            .write_all(&buf1[..bytes_read])
+                                            .await
+                                            .with_context(|| "error writing to forwarded")?;
+                                    }
+                                },
+
+                                bytes_read_result = req_upgraded.read(&mut buf2) => {
+                                    let bytes_read = bytes_read_result
+                                        .with_context(|| "error reading from forwarded")?;
+                                    if bytes_read == 0 {
+                                        return Ok(());
+                                    } else {
+                                        proxy_upgraded
+                                            .write_all(&buf2[..bytes_read])
+                                            .await
+                                            .with_context(|| "error writing to incoming")?;
+                                    }
+                                }
+                            }
+                        }
+
+                        Ok::<_, anyhow::Error>(())
+                    }
+                    Err(_) => {
+                        // raise exception
+                        panic!("FIXME");
+                    }
+                }
+            });
+        } else {
+            *res.body_mut() = proxy_resp.into_body();
+        }
 
         HandlerInvocationResult::Responded
     }
@@ -238,7 +381,12 @@ struct ResolvedStaticDir {
 }
 
 impl ResolvedStaticDir {
-    fn invoke(&self, req: &Request<Body>, res: &mut Response<Body>) -> HandlerInvocationResult {
+    fn invoke(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &Url,
+    ) -> HandlerInvocationResult {
         // ConnectTarget::Internal(self.name.clone())
         HandlerInvocationResult::Responded
     }
@@ -290,10 +438,10 @@ impl ResolvedAuth {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        requested_url: &Url,
     ) -> HandlerInvocationResult {
-        let url = Url::parse(req.uri().to_string().as_str()).unwrap();
-        let path_segments: Vec<_> = url.path_segments().unwrap().collect();
-        let query = url
+        let path_segments: Vec<_> = requested_url.path_segments().unwrap().collect();
+        let query = requested_url
             .query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect::<HashMap<String, String>>();
@@ -627,17 +775,17 @@ lazy_static! {
 
 #[derive(Debug, Clone, Copy)]
 pub enum SupportedContentEncoding {
-    Brotli,
+    // Brotli,
     Gzip,
-    Deflate,
+    // Deflate,
 }
 
 impl SupportedContentEncoding {
     pub fn weight(&self) -> u8 {
         match self {
-            SupportedContentEncoding::Brotli => 200,
+            // SupportedContentEncoding::Brotli => 1,
             SupportedContentEncoding::Gzip => 150,
-            SupportedContentEncoding::Deflate => 10,
+            // SupportedContentEncoding::Deflate => 10,
         }
     }
 }
@@ -647,9 +795,9 @@ impl<'a> TryFrom<&'a ContentCoding> for SupportedContentEncoding {
 
     fn try_from(value: &'a ContentCoding) -> Result<Self, Self::Error> {
         match value {
-            &ContentCoding::BROTLI => Ok(SupportedContentEncoding::Brotli),
+            // &ContentCoding::BROTLI => Ok(SupportedContentEncoding::Brotli),
             &ContentCoding::GZIP | &ContentCoding::STAR => Ok(SupportedContentEncoding::Gzip),
-            &ContentCoding::DEFLATE => Ok(SupportedContentEncoding::Deflate),
+            // &ContentCoding::DEFLATE => Ok(SupportedContentEncoding::Deflate),
             _ => Err(()),
         }
     }
@@ -658,13 +806,22 @@ impl<'a> TryFrom<&'a ContentCoding> for SupportedContentEncoding {
 impl ResolvedHandlerVariant {
     async fn invoke(
         &self,
-        req: &Request<Body>,
+        req: &mut Request<Body>,
         res: &mut Response<Body>,
+        requested_url: &Url,
+        local_addr: &SocketAddr,
+        remote_addr: &SocketAddr,
     ) -> HandlerInvocationResult {
         match self {
-            ResolvedHandlerVariant::Proxy(proxy) => proxy.invoke(req, res).await,
-            ResolvedHandlerVariant::StaticDir(static_dir) => static_dir.invoke(req, res),
-            ResolvedHandlerVariant::Auth(auth) => auth.invoke(req, res).await,
+            ResolvedHandlerVariant::Proxy(proxy) => {
+                proxy
+                    .invoke(req, res, requested_url, local_addr, remote_addr)
+                    .await
+            }
+            ResolvedHandlerVariant::StaticDir(static_dir) => {
+                static_dir.invoke(req, res, requested_url)
+            }
+            ResolvedHandlerVariant::Auth(auth) => auth.invoke(req, res, requested_url).await,
         }
     }
 }
@@ -878,7 +1035,6 @@ impl ResolvedHandler {
 
     /// Find appropriate final action, which should be executed
     fn find_action(&self, url: &Url) -> Option<&ResolvedRuleAction> {
-        info!("find action on {}", url);
         self.resolved_rules
             .iter()
             .filter_map(|resolved_rule| resolved_rule.get_action(url))
@@ -888,14 +1044,24 @@ impl ResolvedHandler {
     }
 
     // Handle whole request
-    async fn handle_request(&self, req: &Request<Body>, res: &mut Response<Body>) -> Option<()> {
+    async fn handle_request(
+        &self,
+        req: &mut Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &Url,
+        local_addr: &SocketAddr,
+        remote_addr: &SocketAddr,
+    ) -> Option<()> {
         let mut url: Url = req.uri().to_string().parse().unwrap();
 
         let action = self.find_action(&url)?;
 
         match action {
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke { catch }) => {
-                let invocation_result = self.resolved_variant.invoke(req, res).await;
+                let invocation_result = self
+                    .resolved_variant
+                    .invoke(req, res, requested_url, local_addr, remote_addr)
+                    .await;
                 match invocation_result {
                     HandlerInvocationResult::Responded => {
                         return Some(());
@@ -1216,6 +1382,7 @@ impl RequestsProcessor {
                                         config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
                                     },
                                     individual_hostname: individual_hostname.clone(),
+                                    public_hostname: mount_point_base_url.host().into(),
                                 })
                             }
                         },

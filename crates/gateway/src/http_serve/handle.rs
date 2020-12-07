@@ -1,6 +1,7 @@
 use crate::config::handler::HandlerExt;
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 use exogress_tunnel::{Compression, Conn, ConnectTarget, Connector};
+use futures::ready;
 use futures::TryFutureExt;
 use futures_util::future::Either;
 use futures_util::sink::SinkExt;
@@ -58,6 +59,7 @@ use futures::channel::mpsc;
 use http::uri::Authority;
 use hyper::service::{make_service_fn, service_fn};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
+use nom::lib::std::mem::MaybeUninit;
 use parking_lot::RwLock;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use rand::distributions::Alphanumeric;
@@ -130,25 +132,115 @@ fn extract_sni_hostname(buf: &[u8]) -> Result<Option<Option<String>>, anyhow::Er
 
 struct HyperAcceptor<F, I>
 where
-    F: Stream<Item = Result<I, io::Error>> + Unpin + Send,
+    F: Stream<Item = Result<(I, SourceInfo), io::Error>> + Unpin + Send,
     I: AsyncRead + AsyncWrite + Send + Unpin,
 {
     acceptor: F,
 }
 
-impl<F, I> hyper::server::accept::Accept for HyperAcceptor<F, I>
+pub struct AcceptedIo<I: AsyncRead + AsyncWrite + Send + Unpin> {
+    inner: I,
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+}
+
+impl<I> AcceptedIo<I>
 where
-    F: Stream<Item = Result<I, io::Error>> + Unpin + Send,
     I: AsyncRead + AsyncWrite + Send + Unpin,
 {
-    type Conn = I;
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
+    }
+}
+
+impl<I> AsyncRead for AcceptedIo<I>
+where
+    I: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
+        self.inner.prepare_uninitialized_buffer(buf)
+    }
+
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+
+    fn poll_read_buf<B: BufMut>(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut B,
+    ) -> Poll<io::Result<usize>>
+    where
+        Self: Sized,
+    {
+        Pin::new(&mut self.inner).poll_read_buf(cx, buf)
+    }
+}
+
+impl<I> AsyncWrite for AcceptedIo<I>
+where
+    I: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_buf<B: Buf>(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut B,
+    ) -> Poll<Result<usize, io::Error>>
+    where
+        Self: Sized,
+    {
+        Pin::new(&mut self.inner).poll_write_buf(cx, buf)
+    }
+}
+
+impl<F, I> hyper::server::accept::Accept for HyperAcceptor<F, I>
+where
+    F: Stream<Item = Result<(I, SourceInfo), io::Error>> + Unpin + Send,
+    I: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    type Conn = AcceptedIo<I>;
     type Error = io::Error;
 
     fn poll_accept(
         mut self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
-        Pin::new(&mut self.acceptor).poll_next(cx)
+        let next_conn = ready!(Pin::new(&mut self.acceptor).poll_next(cx));
+        match next_conn {
+            Some(Ok((conn, source))) => Poll::Ready(Some(Ok(AcceptedIo {
+                inner: conn,
+                local_addr: source.local_addr,
+                remote_addr: source.remote_addr,
+            }))),
+            Some(Err(e)) => Poll::Ready(Some(Err(e))),
+            None => Poll::Ready(None),
+        }
     }
 }
 
@@ -498,7 +590,7 @@ pub async fn server(
 
                         let conn = director::Connection::new(tls_conn, source_info);
                         incoming_https_connections_tx
-                            .send(Ok::<_, io::Error>(conn))
+                            .send(Ok::<_, io::Error>((conn, source_info)))
                             .await?;
 
                         Ok::<_, anyhow::Error>(())
@@ -1174,7 +1266,7 @@ pub async fn server(
     //     }),
     // );
 
-    let make_service = make_service_fn(move |_| {
+    let make_service = make_service_fn::<_, AcceptedIo<_>, _>(move |socket| {
         shadow_clone!(webapp_client);
         shadow_clone!(tunnels);
         shadow_clone!(individual_hostname);
@@ -1183,6 +1275,9 @@ pub async fn server(
         shadow_clone!(github_oauth2_client);
         shadow_clone!(assistant_base_url);
         shadow_clone!(maybe_identity);
+
+        let local_addr = socket.local_addr();
+        let remote_addr = socket.remote_addr();
 
         async move {
             Ok::<_, hyper::Error>(service_fn(move |mut req: Request<Body>| {
@@ -1196,10 +1291,21 @@ pub async fn server(
                 shadow_clone!(maybe_identity);
 
                 async move {
-                    // 1. websockets support
-                    // 2.
+                    info!("req {:?}", req);
+                    let req_uri = req.uri().to_string();
 
-                    let requested_url = Url::parse(req.uri().to_string().as_str()).expect("FIXME");
+                    let requested_url: Url = if req_uri.starts_with("/") {
+                        if let Some(host) = req.headers_mut().remove(HOST) {
+                            format!("https://{}{}", host.to_str().unwrap(), req.uri())
+                        } else {
+                            panic!("fixme")
+                        }
+                    } else {
+                        req_uri
+                    }
+                    .parse()
+                    .expect("FIXME");
+
                     let mut res = Response::new(Body::empty());
 
                     let host_without_port = if let Some(Host::Domain(s)) = requested_url.host() {
@@ -1332,7 +1438,15 @@ pub async fn server(
 
                     match handle_result {
                         Ok(Some((requests_processor, mount_point_base_url))) => {
-                            requests_processor.process(&mut req, &mut res).await;
+                            requests_processor
+                                .process(
+                                    &mut req,
+                                    &mut res,
+                                    &requested_url,
+                                    &local_addr,
+                                    &remote_addr,
+                                )
+                                .await;
                         }
                         Ok(None) => {
                             *res.status_mut() = StatusCode::NOT_FOUND;
