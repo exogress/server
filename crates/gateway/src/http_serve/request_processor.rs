@@ -215,6 +215,8 @@ struct ResolvedProxy {
 }
 
 impl ResolvedProxy {
+    const EXCEPTION_LOOP_DETECTED: ExceptionName = ExceptionName::from_static("loop-detected");
+
     async fn invoke(
         &self,
         req: &mut Request<Body>,
@@ -223,6 +225,13 @@ impl ResolvedProxy {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
     ) -> HandlerInvocationResult {
+        if req.headers().contains_key("x-exg-proxied") {
+            return HandlerInvocationResult::Exception {
+                name: ResolvedProxy::EXCEPTION_LOOP_DETECTED,
+                data: Default::default(),
+            };
+        }
+
         let mut proxy_to = requested_url.clone();
 
         let connect_target = ConnectTarget::Upstream(self.name.clone());
@@ -286,7 +295,9 @@ impl ResolvedProxy {
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
 
-        if req.method() != &Method::GET {
+        if req.method() != &Method::GET
+            && req.headers().get(CONNECTION).map(|h| h.to_str().unwrap()) != Some("upgrade")
+        {
             *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
         }
 
@@ -315,6 +326,9 @@ impl ResolvedProxy {
             res.headers_mut()
                 .append(incoming_header_name, incoming_header_value.clone());
         }
+
+        res.headers_mut()
+            .append("x-exg-proxied", "1".parse().unwrap());
 
         *res.status_mut() = proxy_resp.status();
 
@@ -375,19 +389,128 @@ impl ResolvedProxy {
     }
 }
 
-#[derive(Debug)]
 struct ResolvedStaticDir {
     config: StaticDir,
+    handler_name: HandlerName,
+    instance_ids: Mutex<SmoothWeight<InstanceId>>,
+    client_tunnels: ClientTunnels,
+    config_id: ConfigId,
+    individual_hostname: SmolStr,
+    public_hostname: SmolStr,
 }
 
 impl ResolvedStaticDir {
-    fn invoke(
+    const EXCEPTION_LOOP_DETECTED: ExceptionName = ResolvedProxy::EXCEPTION_LOOP_DETECTED;
+
+    async fn invoke(
         &self,
-        req: &Request<Body>,
+        req: &mut Request<Body>,
         res: &mut Response<Body>,
         requested_url: &Url,
+        local_addr: &SocketAddr,
+        remote_addr: &SocketAddr,
     ) -> HandlerInvocationResult {
-        // ConnectTarget::Internal(self.name.clone())
+        if req.headers().contains_key("x-exg-proxied") {
+            return HandlerInvocationResult::Exception {
+                name: ResolvedProxy::EXCEPTION_LOOP_DETECTED,
+                data: Default::default(),
+            };
+        }
+
+        if req.method() != &Method::GET {
+            return HandlerInvocationResult::ToNextHandler;
+        }
+
+        let mut proxy_to = requested_url.clone();
+
+        let connect_target = ConnectTarget::Internal(self.handler_name.clone());
+        connect_target.update_url(&mut proxy_to);
+
+        proxy_to.set_port(None).unwrap();
+        if proxy_to.scheme() == "https" {
+            proxy_to.set_scheme("http").unwrap();
+        } else {
+            panic!("FIXME");
+        }
+
+        let mut proxy_req = Request::<Body>::new(Body::empty());
+        *proxy_req.method_mut() = req.method().clone();
+        *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
+
+        for (incoming_header_name, incoming_header_value) in req.headers() {
+            if incoming_header_name == ACCEPT_ENCODING
+                || incoming_header_name == CONNECTION
+                || incoming_header_name == HOST
+            {
+                continue;
+            }
+
+            proxy_req
+                .headers_mut()
+                .append(incoming_header_name, incoming_header_value.clone());
+        }
+
+        proxy_req
+            .headers_mut()
+            .append("x-forwarded-host", self.public_hostname.parse().unwrap());
+
+        proxy_req
+            .headers_mut()
+            .append("x-forwarded-proto", "https".parse().unwrap());
+
+        //X-Forwarded-Host and X-Forwarded-Proto
+        let mut x_forwarded_for = proxy_req
+            .headers_mut()
+            .remove("x-forwarded-for")
+            .map(|h| h.to_str().unwrap().to_string())
+            .unwrap_or_else(|| remote_addr.ip().to_string());
+
+        x_forwarded_for.push_str(&format!(", {}", local_addr.ip()));
+
+        proxy_req
+            .headers_mut()
+            .insert("x-forwarded-for", x_forwarded_for.parse().unwrap());
+
+        if !proxy_req.headers().contains_key("x-real-ip") {
+            proxy_req
+                .headers_mut()
+                .append("x-real-ip", remote_addr.ip().to_string().parse().unwrap());
+        }
+
+        proxy_req
+            .headers_mut()
+            .append("x-exg", "1".parse().unwrap());
+
+        *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
+
+        let instance_id = Weight::next(&mut *self.instance_ids.lock()).expect("FIXME");
+
+        let http_client = self
+            .client_tunnels
+            .retrieve_http_connector(
+                &self.config_id,
+                &instance_id,
+                self.individual_hostname.clone(),
+            )
+            .await
+            .expect("FIXME");
+
+        let mut proxy_resp = http_client.request(proxy_req).await.expect("FIXME");
+
+        for (incoming_header_name, incoming_header_value) in proxy_resp.headers() {
+            if incoming_header_name == ACCEPT_ENCODING || incoming_header_name == CONNECTION {
+                continue;
+            }
+
+            res.headers_mut()
+                .append(incoming_header_name, incoming_header_value.clone());
+        }
+
+        res.headers_mut()
+            .append("x-exg-proxied", "1".parse().unwrap());
+        *res.status_mut() = proxy_resp.status();
+        *res.body_mut() = proxy_resp.into_body();
+
         HandlerInvocationResult::Responded
     }
 }
@@ -819,7 +942,9 @@ impl ResolvedHandlerVariant {
                     .await
             }
             ResolvedHandlerVariant::StaticDir(static_dir) => {
-                static_dir.invoke(req, res, requested_url)
+                static_dir
+                    .invoke(req, res, requested_url, local_addr, remote_addr)
+                    .await
             }
             ResolvedHandlerVariant::Auth(auth) => auth.invoke(req, res, requested_url).await,
         }
@@ -1062,15 +1187,20 @@ impl ResolvedHandler {
                     .resolved_variant
                     .invoke(req, res, requested_url, local_addr, remote_addr)
                     .await;
+
+                info!("invocation_result = {:?}", invocation_result);
+
                 match invocation_result {
                     HandlerInvocationResult::Responded => {
+                        // TODO: handle status-code catch block!
                         return Some(());
                     }
                     HandlerInvocationResult::ToNextHandler => {
                         return None;
                     }
                     HandlerInvocationResult::Exception { name, data } => {
-                        self.handle_exception(&name, &data, Some(catch));
+                        let handle_exception = self.handle_exception(&name, &data, Some(catch));
+                        error!("handle_exception = {:?}", handle_exception);
                     }
                 }
             }
@@ -1350,6 +1480,28 @@ impl RequestsProcessor {
                             ClientHandlerVariant::StaticDir(static_dir) => {
                                 ResolvedHandlerVariant::StaticDir(ResolvedStaticDir {
                                     config: static_dir,
+                                    handler_name: handler_name.clone(),
+                                    instance_ids: {
+                                        let mut balancer = SmoothWeight::<InstanceId>::new();
+                                        let instance_ids = instance_ids
+                                            .as_ref()
+                                            .expect("[BUG] try to access instance_ids on project-level config")
+                                            .iter();
+                                        for instance_id in instance_ids {
+                                            balancer.add(instance_id.clone(), 1);
+                                        }
+
+                                        Mutex::new(balancer)
+                                    },
+                                    client_tunnels: client_tunnels.clone(),
+                                    config_id: ConfigId {
+                                        account_name: account_name.clone(),
+                                        account_unique_id: account_unique_id.clone(),
+                                        project_name: project_name.clone(),
+                                        config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
+                                    },
+                                    individual_hostname: individual_hostname.clone(),
+                                    public_hostname: mount_point_base_url.host().into(),
                                 })
                             }
                             ClientHandlerVariant::Proxy(proxy) => {
