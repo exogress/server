@@ -256,14 +256,12 @@ mod test {
     use super::*;
     use exogress_entities::Ulid;
     use std::io::Cursor;
-    use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
 
     #[tokio::test]
     async fn test_counting() {
         let mut buf = vec![0u8; 32768];
-        let mut io = Cursor::new(&mut buf);
+        let io = Cursor::new(&mut buf);
 
         let counters = TrafficCounters::new(Ulid::new().to_string().parse().unwrap());
 
