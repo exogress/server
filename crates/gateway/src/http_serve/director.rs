@@ -7,7 +7,6 @@ use std::pin::Pin;
 use std::task::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::macros::support::Poll;
-use warp::Transport;
 
 /// Director connection
 #[derive(Debug)]
@@ -27,19 +26,6 @@ where
             local_addr: Some(source_info.local_addr),
             remote_addr: Some(source_info.remote_addr),
         }
-    }
-}
-
-impl<I> Transport for Connection<I>
-where
-    I: AsyncRead + AsyncWrite + Unpin,
-{
-    fn remote_addr(&self) -> Option<SocketAddr> {
-        self.remote_addr
-    }
-
-    fn local_addr(&self) -> Option<SocketAddr> {
-        self.local_addr
     }
 }
 

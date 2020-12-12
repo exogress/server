@@ -45,12 +45,6 @@ impl OneOfTrafficStatistics {
             OneOfTrafficStatistics::Tunnel(s) => &s.account_unique_id,
         }
     }
-    pub fn from(&self) -> &DateTime<Utc> {
-        match self {
-            OneOfTrafficStatistics::Https(s) => &s.from,
-            OneOfTrafficStatistics::Tunnel(s) => &s.from,
-        }
-    }
     pub fn to(&self) -> &DateTime<Utc> {
         match self {
             OneOfTrafficStatistics::Https(s) => &s.to,

@@ -1,5 +1,3 @@
-use crate::urls::matched::Matched;
-use crate::urls::MatchPattern;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use std::fmt;
 use std::str::FromStr;
@@ -87,34 +85,34 @@ impl MatchableUrl {
         })
     }
 
-    pub fn matches(self, pattern: MatchPattern) -> Option<Matched> {
-        if self
-            .inner
-            .as_str()
-            .starts_with(pattern.matchable_prefix.as_str())
-        {
-            if pattern.matchable_prefix.len() < self.inner.len() {
-                let pattern_last_idx = pattern.matchable_prefix.len() - 1;
-                let next_idx = pattern.matchable_prefix.len();
-                let pattern_last_char = pattern
-                    .matchable_prefix
-                    .get(pattern_last_idx..=pattern_last_idx)
-                    .unwrap();
-                let next_char = self.inner.get(next_idx..=next_idx).unwrap();
-
-                if pattern_last_char != "/" && next_char != "/" && next_char != "?" {
-                    return None;
-                }
-            }
-            Some(Matched {
-                url: self,
-                pattern,
-                config_name: None,
-            })
-        } else {
-            None
-        }
-    }
+    // pub fn matches(self, pattern: MatchPattern) -> Option<Matched> {
+    //     if self
+    //         .inner
+    //         .as_str()
+    //         .starts_with(pattern.matchable_prefix.as_str())
+    //     {
+    //         if pattern.matchable_prefix.len() < self.inner.len() {
+    //             let pattern_last_idx = pattern.matchable_prefix.len() - 1;
+    //             let next_idx = pattern.matchable_prefix.len();
+    //             let pattern_last_char = pattern
+    //                 .matchable_prefix
+    //                 .get(pattern_last_idx..=pattern_last_idx)
+    //                 .unwrap();
+    //             let next_char = self.inner.get(next_idx..=next_idx).unwrap();
+    //
+    //             if pattern_last_char != "/" && next_char != "/" && next_char != "?" {
+    //                 return None;
+    //             }
+    //         }
+    //         Some(Matched {
+    //             url: self,
+    //             pattern,
+    //             config_name: None,
+    //         })
+    //     } else {
+    //         None
+    //     }
+    // }
 
     pub fn host(&self) -> String {
         self.host.clone()

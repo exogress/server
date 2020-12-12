@@ -1,81 +1,50 @@
-use crate::config::handler::HandlerExt;
-use bytes::{Buf, BufMut, Bytes};
-use exogress_tunnel::{Compression, Conn, ConnectTarget, Connector};
+use bytes::{Buf, BufMut};
 use futures::ready;
 use futures::TryFutureExt;
-use futures_util::future::Either;
 use futures_util::sink::SinkExt;
-use futures_util::stream::{Stream, StreamExt};
-use futures_util::TryStreamExt;
-use globset::Glob;
+use futures_util::stream::Stream;
 use hashbrown::HashMap;
-use http::header::{
-    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
-    COOKIE, HOST, LOCATION, SET_COOKIE, UPGRADE,
-};
+use http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION};
 use http::status::StatusCode;
-use http::{HeaderMap, Request, Response, Uri};
-use hyper::header::{HeaderName, HeaderValue};
+use http::{Request, Response};
 use hyper::Body;
 use memmap::Mmap;
-use reqwest::header::Entry;
-use std::convert::{Infallible, TryInto};
-use std::net::{IpAddr, SocketAddr};
+use std::convert::TryInto;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use stop_handle::stop_handle;
-use tokio_rustls::{rustls, TlsAcceptor, TlsStream};
-use tokio_tungstenite::tungstenite;
-use trust_dns_resolver::TokioAsyncResolver;
+use tokio_rustls::{rustls, TlsAcceptor};
 use url::{Host, Url};
-use warp::reject::Reject;
-use warp::{filters, Filter, Rejection, Reply};
 
-use crate::clients::{ClientTunnels, ConnectedTunnel};
-// use crate::http_serve::auth;
 use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
-use crate::config::static_response::StaticResponseExt;
+use crate::clients::ClientTunnels;
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::auth::{save_assistant_key, AuthFinalizer};
-use crate::http_serve::compression::{maybe_compress_body, SupportedContentEncoding};
-use crate::http_serve::request::RequestBody;
 use crate::http_serve::{auth, director};
-use crate::rules_counter::AccountRulesCounters;
-use crate::stop_reasons::{AppStopWait, StopReason};
+use crate::stop_reasons::AppStopWait;
 use crate::urls::matchable_url::MatchableUrl;
-use crate::urls::Protocol;
 use crate::webapp::Client;
-use chrono::{DateTime, Utc};
-use cookie::Cookie;
-use exogress_config_core::{AclEntry, Action, Auth, AuthProvider, ClientHandlerVariant};
-use exogress_entities::{ConfigId, ExceptionName, HandlerName, RateLimiterName, Ulid};
+use exogress_entities::Ulid;
 use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::director::SourceInfo;
-use exogress_server_common::health::HealthState;
-use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::mpsc;
-use http::uri::Authority;
 use hyper::service::{make_service_fn, service_fn};
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use nom::lib::std::mem::MaybeUninit;
 use parking_lot::RwLock;
-use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use rand::distributions::Alphanumeric;
-use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
 use smol_str::SmolStr;
-use std::collections::BTreeMap;
 use std::io;
 use std::io::{BufReader, Cursor};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::time::{delay_for, timeout};
 use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
-use typed_headers::{Accept, ContentCoding, ContentEncoding, HeaderMapExt};
 
 fn extract_sni_hostname(buf: &[u8]) -> Result<Option<Option<String>>, anyhow::Error> {
     let parse = tls_parser::parse_tls_plaintext(buf);
@@ -229,7 +198,7 @@ where
 
     fn poll_accept(
         mut self: Pin<&mut Self>,
-        cx: &mut Context,
+        cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
         let next_conn = ready!(Pin::new(&mut self.acceptor).poll_next(cx));
         match next_conn {
@@ -257,100 +226,13 @@ pub async fn server(
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
-    account_rules_counters: &AccountRulesCounters,
     maybe_identity: Option<Vec<u8>>,
     https_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
-    resolver: TokioAsyncResolver,
 ) {
     let (https_stop_handle, https_stop_wait) = stop_handle();
 
-    let redirect_http_server = warp::any()
-        .and(filters::path::full())
-        // take query part
-        .and(
-            filters::query::raw()
-                .or_else(|_| futures::future::ready(Ok::<(_,), Rejection>(("".to_string(),)))),
-        )
-        .and(filters::host::optional())
-        .and_then(
-            move |path: warp::filters::path::FullPath,
-                  query: String,
-                  maybe_host: Option<Authority>| {
-                async move {
-                    if let Some(host) = maybe_host {
-                        let mut path_and_query = path.as_str().to_string();
-
-                        if !query.is_empty() {
-                            path_and_query.push_str("?");
-                            path_and_query.push_str(&query);
-                        }
-
-                        let redirect_to_uri = Uri::builder()
-                            .scheme("https")
-                            .authority(host.as_str())
-                            .path_and_query(path_and_query.as_str())
-                            .build()
-                            .unwrap();
-
-                        let mut redirect_to =
-                            Url::parse(redirect_to_uri.to_string().as_str()).unwrap();
-
-                        redirect_to.set_port(Some(external_https_port)).unwrap();
-
-                        Ok(warp::redirect(redirect_to.as_str().parse::<Uri>().unwrap()))
-                    } else {
-                        Err(warp::reject::not_found())
-                    }
-                }
-            },
-        );
-
-    let deligated_acme = warp::path!(".well-known" / "acme-challenge" / String)
-        .and(filters::host::optional())
-        .and_then({
-            shadow_clone!(webapp_client);
-
-            move |token: String, maybe_host: Option<Authority>| {
-                shadow_clone!(webapp_client);
-
-                async move {
-                    if let Some(hostname) = maybe_host {
-                        let filename = format!(".well-known/acme-challenge/{}", token);
-
-                        info!(
-                            "ACME HTTP challenge verification request: {} on {}",
-                            hostname, filename
-                        );
-
-                        let res = webapp_client
-                            .acme_http_challenge_verification(hostname.as_str(), filename.as_str())
-                            .await;
-
-                        match res {
-                            Ok(info) => {
-                                info!("validation request succeeded for host {}", hostname);
-                                Ok(Response::builder()
-                                    .header(CONTENT_TYPE, info.content_type.as_str())
-                                    .body(info.file_content)
-                                    .unwrap())
-                            }
-                            Err(e) => {
-                                warn!("error in ACME verification: {}", e);
-                                Err(warp::reject::not_found())
-                            }
-                        }
-                    } else {
-                        Err(warp::reject::not_found())
-                    }
-                }
-            }
-        });
-
-    let health = warp::path!("_exg" / "health")
-        .and_then(move || async move { Ok::<_, warp::Rejection>("Healthy") });
-
-    let (mut incoming_http_connections_tx, incoming_http_connections_rx) = mpsc::channel(16);
+    let (incoming_http_connections_tx, incoming_http_connections_rx) = mpsc::channel(16);
 
     let http_acceptor = tokio::spawn(
         #[allow(unreachable_code)]
@@ -358,16 +240,25 @@ pub async fn server(
             let mut listener = TcpListener::bind(listen_http_addr).await?;
             loop {
                 let (mut conn, _director_addr) = listener.accept().await?;
-                conn.set_nodelay(true)?;
 
-                let header_len = conn.read_u16().await?;
-                let mut buf = vec![0u8; header_len.try_into().unwrap()];
-                conn.read_exact(&mut buf).await?;
-                let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
-                let conn = director::Connection::new(conn, source_info);
-                incoming_http_connections_tx
-                    .send(Ok::<_, io::Error>(conn))
-                    .await?;
+                tokio::spawn({
+                    shadow_clone!(mut incoming_http_connections_tx);
+
+                    async move {
+                        conn.set_nodelay(true)?;
+
+                        let header_len = conn.read_u16().await?;
+                        let mut buf = vec![0u8; header_len.try_into().unwrap()];
+                        conn.read_exact(&mut buf).await?;
+                        let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
+                        let conn = director::Connection::new(conn, source_info);
+                        incoming_http_connections_tx
+                            .send(Ok::<_, io::Error>((conn, source_info)))
+                            .await?;
+
+                        Ok::<_, anyhow::Error>(())
+                    }
+                });
             }
 
             Ok::<_, anyhow::Error>(())
@@ -390,7 +281,6 @@ pub async fn server(
                 shadow_clone!(mut https_counters_tx);
 
                 let (mut conn, _director_addr) = listener.accept().await?;
-                conn.set_nodelay(true)?;
 
                 let handle_connection = {
                     shadow_clone!(mut incoming_https_connections_tx);
@@ -401,6 +291,7 @@ pub async fn server(
                         shadow_clone!(webapp_client);
 
                         let handshake = async {
+                            conn.set_nodelay(true)?;
                             let header_len = conn.read_u16().await?;
                             let mut buf = vec![0u8; header_len.try_into().unwrap()];
                             conn.read_exact(&mut buf).await?;
@@ -606,665 +497,132 @@ pub async fn server(
         }
     });
 
-    let mut common_reply_headers = HeaderMap::new();
-    common_reply_headers.insert("server", HeaderValue::from_static("exogress"));
+    let http_make_service = make_service_fn::<_, AcceptedIo<_>, _>({
+        shadow_clone!(webapp_client);
 
-    let http_server = tokio::spawn(
-        warp::serve(
-            deligated_acme
-                .or(health)
-                .or(redirect_http_server)
-                .with(warp::reply::with::headers(common_reply_headers.clone()))
-                .with(warp::trace::request()),
-        )
-        .serve_incoming_with_graceful_shutdown2(incoming_http_connections_rx, {
+        move |socket| {
+            shadow_clone!(webapp_client);
+
+            let _local_addr = socket.local_addr();
+            let _remote_addr = socket.remote_addr();
+
             async move {
-                let reason = https_stop_wait.await;
-                info!(
-                    "Triggering graceful shutdown of HTTP by request: {}",
-                    reason
-                );
+                Ok::<_, hyper::Error>(service_fn({
+                    shadow_clone!(webapp_client);
+
+                    move |req: Request<Body>| {
+                        shadow_clone!(webapp_client);
+
+                        async move {
+                            let mut res = Response::new(Body::empty());
+                            res.headers_mut()
+                                .insert("server", "exogress".parse().unwrap());
+
+                            if req.uri().path() == "/_exg/health" {
+                                *res.body_mut() = hyper::Body::from("Healthy");
+                                *res.status_mut() = StatusCode::OK;
+                                return Ok::<_, anyhow::Error>(res);
+                            }
+
+                            let uri = req.uri().to_string();
+                            let host = req.headers().get(HOST);
+
+                            let mut url = match uri.parse::<Url>().or_else(|_| {
+                                if let Some(host) = host {
+                                    Ok(format!("http://{}{}", host.to_str().unwrap(), uri)
+                                        .parse()?)
+                                } else {
+                                    return Err::<_, anyhow::Error>(anyhow!(
+                                        "unable to restore url"
+                                    ));
+                                }
+                            }) {
+                                Ok(url) => url,
+                                Err(e) => {
+                                    error!("failed to build url: {}", e);
+                                    *res.status_mut() = StatusCode::BAD_REQUEST;
+                                    return Ok(res);
+                                }
+                            };
+
+                            {
+                                let mut segments = url.path_segments().unwrap();
+                                if segments.next() == Some(".well-known")
+                                    && segments.next() == Some("acme-challenge")
+                                {
+                                    if let Some(token) = segments.next() {
+                                        let hostname = url.host_str().unwrap();
+
+                                        let filename =
+                                            format!(".well-known/acme-challenge/{}", token);
+
+                                        info!(
+                                            "ACME HTTP challenge verification request: {} on {}",
+                                            hostname, filename
+                                        );
+
+                                        let webapp_result = webapp_client
+                                            .acme_http_challenge_verification(
+                                                hostname,
+                                                filename.as_str(),
+                                            )
+                                            .await;
+
+                                        match webapp_result {
+                                            Ok(info) => {
+                                                info!(
+                                                    "validation request succeeded for host {}",
+                                                    hostname
+                                                );
+                                                res.headers_mut().insert(
+                                                    CONTENT_TYPE,
+                                                    info.content_type.parse().unwrap(),
+                                                );
+                                                *res.body_mut() = Body::from(info.file_content);
+                                                *res.status_mut() = StatusCode::OK;
+
+                                                return Ok(res);
+                                            }
+                                            Err(e) => {
+                                                warn!("error in ACME verification: {}", e);
+                                                *res.status_mut() = StatusCode::NOT_FOUND;
+
+                                                return Ok(res);
+                                            }
+                                        }
+                                    } else {
+                                        *res.status_mut() = StatusCode::NOT_FOUND;
+                                        return Ok(res);
+                                    }
+                                }
+                            }
+
+                            url.set_scheme("https").unwrap();
+                            url.set_port(Some(external_https_port)).unwrap();
+
+                            res.headers_mut()
+                                .insert(LOCATION, url.to_string().parse().unwrap());
+                            *res.status_mut() = StatusCode::PERMANENT_REDIRECT;
+
+                            Ok(res)
+                        }
+                    }
+                }))
             }
-        }),
-    );
+        }
+    });
 
-    let client = reqwest::ClientBuilder::new()
-        .gzip(true)
-        .brotli(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(5)
-        .use_native_tls()
-        .trust_dns(true)
-        .build()
-        .unwrap();
-
-    // let server = warp::any()
-    //     .and(filters::path::full())
-    //     // take query part
-    //     .and(
-    //         filters::query::raw()
-    //             .or_else(|_| futures::future::ready(Ok::<(String, ), Rejection>(("".into(), )))),
-    //     )
-    //     .map(move |path: warp::filters::path::FullPath, query: String| {
-    //         // info!("check injections in path {:?}", path.as_str());
-    //         // let decoded_path = percent_decode_str(path.as_str()).decode_utf8_lossy();
-    //         // let decoded_query = percent_decode_str(query.as_str()).decode_utf8_lossy();
-    //         //
-    //         // if let Some(true) = libinjection::xss(decoded_path.as_ref()) {
-    //         //     warn!("found XSS in path");
-    //         //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-    //         // }
-    //         // if let Some((true, fingerprint)) = libinjection::sqli(decoded_path.as_ref()) {
-    //         //     warn!("found SQL injection in path: {}", fingerprint);
-    //         //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-    //         // }
-    //         // if let Some(true) = libinjection::xss(decoded_query.as_ref()) {
-    //         //     warn!("found XSS in query params");
-    //         //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-    //         // }
-    //         // if let Some((true, fingerprint)) = libinjection::sqli(decoded_query.as_ref()) {
-    //         //     warn!("found SQL injection in query params: {}", fingerprint);
-    //         //     return Err::<_, _>(warp::reject::custom(InjectionFound {}));
-    //         // }
-    //
-    //         (path, query)
-    //     })
-    //     .and(warp::ws().or(filters::body::stream()))
-    //     .and(filters::header::headers_cloned())
-    //     .and(filters::host::optional())
-    //     .and(filters::query::query::<HashMap<String, String>>())
-    //     // find mapping
-    //     .and_then({
-    //         shadow_clone!(webapp_client);
-    //         shadow_clone!(tunnels);
-    //         shadow_clone!(individual_hostname);
-    //
-    //         move |(path, query): (warp::filters::path::FullPath, String),
-    //               ws_or_body,
-    //               headers: http::HeaderMap,
-    //               authority: Option<Authority>,
-    //               params: HashMap<String, String>| {
-    //             shadow_clone!(webapp_client);
-    //             shadow_clone!(individual_hostname);
-    //             shadow_clone!(tunnels);
-    //
-    //             async move {
-    //                 let authority = authority.expect("unknown host");
-    //
-    //                 let host_without_port = authority.host();
-    //
-    //                 let mut requested_url: Url = format!("https://{}{}", authority, path.as_str())
-    //                     .parse()
-    //                     .expect("FIXME: bad URL");
-    //
-    //                 if !query.is_empty() {
-    //                     requested_url.set_query(Some(query.as_str()));
-    //                 }
-    //
-    //                 info!("path = {:?}", path);
-    //
-    //                 let url_for_rewriting = UrlForRewriting::from_components(
-    //                     host_without_port,
-    //                     path.as_str(),
-    //                     query.as_str(),
-    //                 )
-    //                     .unwrap();
-    //
-    //                 let proto = match &ws_or_body {
-    //                     warp::Either::A(_) => Protocol::WebSockets,
-    //                     warp::Either::B(_) => Protocol::Http,
-    //                 };
-    //
-    //                 let handle_result = webapp_client
-    //                     .resolve_url(
-    //                         url_for_rewriting.clone(),
-    //                         external_https_port,
-    //                         proto,
-    //                         tunnels,
-    //                         individual_hostname.clone(),
-    //                     )
-    //                     .await;
-    //
-    //                 match handle_result {
-    //                     Ok(Some((mapping_action, maybe_rate_limiter, mount_point_base_url))) => {
-    //                     }
-    //                     Ok(None) => Err(warp::reject::not_found()),
-    //                     Err(e) => {
-    //                         error!("Error resolving URL: {:?}", e);
-    //                         Err(warp::reject::not_found())
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     })
-    //     // check rate limits
-    //     .and_then({
-    //         move |(
-    //                   ws_or_body,
-    //                   headers,
-    //                   path,
-    //                   rate_limiters,
-    //                   action,
-    //                   requested_url,
-    //                   mount_point_base_url,
-    //                   params
-    //               ): (
-    //             _,
-    //             http::HeaderMap,
-    //             warp::filters::path::FullPath,
-    //             RateLimiters,
-    //             MappingAction,
-    //             _,
-    //             _,
-    //             _,
-    //         )| {
-    //             async move {
-    //                 // let delayed_for = match rate_limiters.process().await {
-    //                 //     RateLimiterResponse::DelayedBy(limiters) => {
-    //                 //         info!("Request delayed: {:?}", limiters);
-    //                 //         Some(limiters.iter().map(|(_, delay)| delay).sum::<Duration>())
-    //                 //     }
-    //                 //     RateLimiterResponse::LimitedError {
-    //                 //         rate_limiter_name,
-    //                 //         not_until,
-    //                 //     } => {
-    //                 //         info!(
-    //                 //             "rate limited by {} at least upto {:?}",
-    //                 //             rate_limiter_name, not_until
-    //                 //         );
-    //                 //         return Err::<_, _>(warp::reject::custom(RateLimited {
-    //                 //             not_until,
-    //                 //             rate_limiter_name,
-    //                 //         }));
-    //                 //     }
-    //                 //     RateLimiterResponse::Passthrough => None,
-    //                 // };
-    //
-    //                 Ok::<_, warp::Rejection>((
-    //                     ws_or_body,
-    //                     headers,
-    //                     None, //delayed_for,
-    //                     path,
-    //                     action,
-    //                     requested_url,
-    //                     mount_point_base_url,
-    //                     params
-    //                 ))
-    //             }
-    //         }
-    //     })
-    //     .and(warp::method())
-    //     .and(filters::addr::remote())
-    //     .and(filters::addr::local())
-    //     .and_then({
-    //         shadow_clone!(client);
-    //         shadow_clone!(resolver);
-    //         shadow_clone!(dbip);
-    //         shadow_clone!(individual_hostname);
-    //         shadow_clone!(tunnels);
-    //         shadow_clone!(account_rules_counters);
-    //
-    //         move |(
-    //                   ws_or_body,
-    //                   headers,
-    //                   delayed_for,
-    //                   path,
-    //                   mapping_action,
-    //                   requested_url,
-    //                   mount_point_base_url,
-    //                   params
-    //               ): (
-    //             _,
-    //             http::HeaderMap,
-    //             Option<Duration>,
-    //             _,
-    //             MappingAction,
-    //             Url,
-    //             UrlPrefix,
-    //             _,
-    //         ),
-    //               method: http::Method,
-    //               remote_addr: Option<SocketAddr>,
-    //               local_addr: Option<SocketAddr>| {
-    //             shadow_clone!(client);
-    //             shadow_clone!(resolver);
-    //             shadow_clone!(dbip);
-    //             shadow_clone!(tunnels);
-    //             shadow_clone!(individual_hostname);
-    //             shadow_clone!(mut tunnels);
-    //             shadow_clone!(account_rules_counters);
-    //
-    //             let remote_addr = remote_addr.unwrap().ip();
-    //             let local_addr = local_addr.unwrap().ip();
-    //
-    //             if let Some(dbip) = dbip {
-    //                 let resolved = dbip.lookup::<LocationAndIsp>(remote_addr);
-    //                 info!("GEO IP: {:?}", resolved);
-    //             }
-    //
-    //             async move {
-    //                 let account_unique_id = mapping_action.handler.account_unique_id.clone();
-    //                 let account_name = mapping_action.handler.account_name.clone();
-    //                 let project_name = mapping_action.handler.project_name.clone();
-    //                 // let url = mapping_action.handler.url.clone();
-    //
-    //                 account_rules_counters.register_request(&account_unique_id);
-    //
-    //                 let mut req = match ws_or_body {
-    //                     warp::Either::A((ws, )) => {
-    //                         RequestBody::new_ws(ws)
-    //                     }
-    //                     warp::Either::B((body, )) => {
-    //                         RequestBody::new_http(hyper::Body::wrap_stream(
-    //                             tokio::stream::StreamExt::timeout(
-    //                                 to_bytes_stream_and_check_injections(body),
-    //                                 HTTP_BYTES_TIMEOUT,
-    //                             )
-    //                                 .map(|r| {
-    //                                     debug!("streaming data {:?}", r);
-    //                                     match r {
-    //                                         Err(e) => Err(anyhow::Error::new(e)),
-    //                                         Ok(Err(e)) => Err(anyhow::Error::new(e)),
-    //                                         Ok(Ok(r)) => Ok(r),
-    //                                     }
-    //                                 }), //Timeout on data
-    //                         )).await
-    //                     }
-    //                 };
-    //
-    //                 info!("!handlers = {:?}", mapping_action.handler);
-    //
-    //                 'handlers: for handler in &mapping_action.handler.handlers_processor.handlers {
-    //                     info!("HANDLER: {:?}", handler);
-    //                     info!("requested_url: {:?}", requested_url);
-    //
-    //                     let mut replaced_url = requested_url.clone();
-    //                     replaced_url.set_scheme("http").unwrap();
-    //                     {
-    //                         let mut requested_segments = requested_url.path_segments().unwrap();
-    //                         info!("handle base_path = {:?}", handler.base_path);
-    //                         info!("requested_segments = {:?}",requested_segments);
-    //
-    //                         let matched_segments_count = handler
-    //                             .base_path
-    //                             .iter()
-    //                             .zip(&mut requested_segments)
-    //                             .take_while(|(a,b)| &a.as_ref() == b)
-    //                             .count();
-    //                         info!("matched_segments_count = {} <=> {}", matched_segments_count, handler.base_path.len());
-    //                         if matched_segments_count == handler.base_path.len() {
-    //                             {
-    //                                 let mut replaced_segments = replaced_url.path_segments_mut().unwrap();
-    //                                 replaced_segments.clear();
-    //                                 for segment in &handler.rewrite_base_path {
-    //                                     replaced_segments.push(segment.as_str());
-    //                                 }
-    //
-    //                                 // add rest part
-    //                                 for segment in requested_segments {
-    //                                     replaced_segments.push(segment);
-    //                                 }
-    //                             }
-    //                             info!("replaced_url = {:?}", replaced_url);
-    //
-    //                         } else {
-    //                             continue 'handlers;
-    //                         }
-    //                     }
-    //
-    //                     let matching_actions = handler.config_handler.find_filter_rule(replaced_url.clone());
-    //
-    //                     let mut should_try_next_handler = None;
-    //
-    //                     'actions: for action in matching_actions {
-    //                         // TODO: handle modifications
-    //
-    //                         account_rules_counters.register_rule(&account_unique_id);
-    //
-    //                         match action {
-    //                             Action::Respond { static_response_name, .. } => {
-    //                                 if let Some(static_response) = mapping_action
-    //                                     .static_responses
-    //                                     .get(static_response_name) {
-    //
-    //                                     let mut resp = Response::new(Body::from(""));
-    //                                     let accept = headers.typed_get::<Accept>().expect("FIXME").expect("FIXME");
-    //
-    //                                     match static_response.try_respond(&accept, &mut resp) {
-    //                                         Ok(()) => {
-    //                                             return Ok(resp);
-    //                                         }
-    //                                         Err(e) => {
-    //                                             return Err(warp::reject::custom(Exception {
-    //                                                 exception_name: "static-response-error".parse().unwrap(),
-    //                                                 delayed_for,
-    //                                                 data: btreemap! {
-    //                                                     "static-response".into() => static_response_name.to_string().into(),
-    //                                                     "error".into() => e.to_string().into(),
-    //                                                 }
-    //                                             }));
-    //                                         }
-    //                                     }
-    //                                 } else {
-    //                                     return Err(warp::reject::custom(Exception {
-    //                                         exception_name: "static-response-not-found".parse().unwrap(),
-    //                                         delayed_for,
-    //                                         data: btreemap! {
-    //                                             "static-response".into() => static_response_name.to_string().into(),
-    //                                         }
-    //                                     }));
-    //                                 }
-    //                             }
-    //                             Action::Throw { exception, data } => {
-    //                                 return Err(warp::reject::custom(Exception {
-    //                                     exception_name: exception.clone(),
-    //                                     delayed_for,
-    //                                     data: data.clone(),
-    //                                 }));
-    //                             }
-    //                             Action::NextHandler => {
-    //                                 info!("skip");
-    //                                 continue 'handlers;
-    //                             }
-    //                             Action::None => {}
-    //                             Action::Invoke { .. } => {
-    //                                 info!("try");
-    //                                 // FIXME
-    //                                 should_try_next_handler = Some(true);
-    //                                 break 'actions;
-    //                             }
-    //                         }
-    //                     };
-    //
-    //                     if let Some(should_try_next_handler) = should_try_next_handler {
-    //                         if let Some(auth) = handler.auth() {
-    //                             let cookies = headers.get_all(COOKIE);
-    //
-    //                             let proto = if req.is_ws_body() {
-    //                                 Protocol::WebSockets
-    //                             } else {
-    //                                 Protocol::Http
-    //                             };
-    //
-    //
-    //                             let auth_cookie_name =
-    //                                 format!("exg-auth-{}", handler.name);
-    //
-    //                             let jwt_token = cookies
-    //                                 .iter()
-    //                                 .map(|header| {
-    //                                     header
-    //                                         .to_str()
-    //                                         .unwrap()
-    //                                         .split(';')
-    //                                         .map(|s| s.trim_start().trim_end().to_string())
-    //                                 })
-    //                                 .flatten()
-    //                                 .filter_map(move |s| Cookie::parse(s).ok())
-    //                                 .find(|cookie| cookie.name() == auth_cookie_name);
-    //
-    //                             info!(
-    //                                 "replaced_url = {:?} mount_point_base_url = {:?}",
-    //                                 replaced_url, mount_point_base_url
-    //                             );
-    //
-    //                             if let Some(token) = jwt_token {
-    //                                 match jsonwebtoken::decode::<Claims>(
-    //                                     &token.value(),
-    //                                     &DecodingKey::from_ec_pem(&mapping_action.jwt_ecdsa.public_key)
-    //                                         .expect("FIXME"),
-    //                                     &Validation {
-    //                                         algorithms: vec![jsonwebtoken::Algorithm::ES256],
-    //                                         ..Default::default()
-    //                                     },
-    //                                 ) {
-    //                                     Ok(token) => {
-    //                                         info!("jwt-token parse and verified. go ahead. provider = {}", token.claims.idp);
-    //                                     }
-    //                                     Err(e) => {
-    //                                         if let jsonwebtoken::errors::ErrorKind::InvalidSignature =
-    //                                         e.kind()
-    //                                         {
-    //                                             info!("jwt-token parsed but not verified");
-    //                                         } else {
-    //                                             info!(
-    //                                                 "JWT token error: {:?}. Token: {}",
-    //                                                 e,
-    //                                                 token.value()
-    //                                             );
-    //                                         };
-    //                                         return Err::<_, _>(warp::reject::custom(NotAuthorized {
-    //                                             handler_name: handler.name.clone(),
-    //                                             auth,
-    //                                             requested_url: requested_url.clone(),
-    //                                             base_url: mount_point_base_url.clone(),
-    //                                             proto,
-    //                                             is_jwt_token_included: true,
-    //                                             jwt_ecdsa: mapping_action.jwt_ecdsa.clone(),
-    //                                         }));
-    //                                     }
-    //                                 }
-    //                             } else {
-    //                                 info!("jwt-token not found");
-    //
-    //                                 return Err::<_, _>(warp::reject::custom(NotAuthorized {
-    //                                     handler_name: handler.name.clone(),
-    //                                     auth,
-    //                                     requested_url: requested_url.clone(),
-    //                                     base_url: mount_point_base_url.clone(),
-    //                                     proto,
-    //                                     is_jwt_token_included: false,
-    //                                     jwt_ecdsa: mapping_action.jwt_ecdsa,
-    //                                 }));
-    //                             }
-    //                         } else if let Some((config_name, instances_ids)) = &handler.client_config_data {
-    //                             let config_id = ConfigId {
-    //                                 account_name: account_name.clone(),
-    //                                 account_unique_id: account_unique_id.clone(),
-    //                                 project_name: project_name.clone(),
-    //                                 config_name: config_name.clone(),
-    //                             };
-    //                             let mut ordered_instances = instances_ids.clone();
-    //                             {
-    //                                 let mut rng = thread_rng();
-    //                                 ordered_instances.shuffle(&mut rng);
-    //                             }
-    //
-    //                             if let Some(connect_target) = handler.connect_target("") {
-    //                                 'instances: for instance_id in &ordered_instances {
-    //                                     if let ConnectTarget::Upstream(upstream) = &connect_target {
-    //                                         let state = mapping_action.health.get_health(instance_id, upstream);
-    //
-    //                                         match state {
-    //                                             Some(HealthState::NotYetKnown) => {
-    //                                                 info!("Unknown health state. Try to proxy anyway {} {}", instance_id, upstream);
-    //                                             }
-    //                                             Some(HealthState::Unhealthy { probe, reason }) => {
-    //                                                 info!("Skip {} {}. probe {:?} failed with reason {:?}", instance_id, upstream, probe, reason);
-    //                                                 continue 'instances;
-    //                                             }
-    //                                             Some(HealthState::Healthy) | None => {}
-    //                                         }
-    //                                     };
-    //
-    //                                     info!("try proxy to {}", instance_id);
-    //                                     let (connector, hyper, proxy_to) =
-    //                                         if let Some(ConnectedTunnel {
-    //                                                         connector, hyper, ..
-    //                                                     }) = tunnels
-    //                                             .retrieve_client_tunnel(
-    //                                                 config_id.clone(),
-    //                                                 instance_id.clone(),
-    //                                                 individual_hostname.clone().into(),
-    //                                             )
-    //                                             .await
-    //                                         {
-    //                                             (connector, hyper, replaced_url.clone())
-    //                                         } else {
-    //                                             info!("No connected tunnels. Try again..");
-    //                                             continue;
-    //                                         };
-    //
-    //                                     info!("HTTP: proxy to {}. req = {:?}", proxy_to, req);
-    //
-    //                                     if req.is_ws_body() {
-    //                                         let res = proxy_ws(
-    //                                             &mut req,
-    //                                             remote_addr,
-    //                                             headers.clone(),
-    //                                             proxy_to,
-    //                                             local_addr,
-    //                                             mount_point_base_url.host().as_str(),
-    //                                             connector,
-    //                                             connect_target.clone(),
-    //                                         )
-    //                                             .await;
-    //
-    //                                         match res {
-    //                                             Ok(mut r) => {
-    //                                                 if r.status() == StatusCode::NOT_FOUND {
-    //                                                     info!("WS not found. try other handlers");
-    //                                                     break 'instances; //continue through handlers
-    //                                                 } else if r.status() == StatusCode::BAD_GATEWAY {
-    //                                                     info!("WS bad gateway. try another instance");
-    //                                                     continue 'instances;
-    //                                                 };
-    //                                                 if let Some(delay) = delayed_for {
-    //                                                     r.headers_mut().insert(
-    //                                                         "x-exg-delayed-for-ms",
-    //                                                         delay
-    //                                                             .as_millis()
-    //                                                             .to_string()
-    //                                                             .try_into()
-    //                                                             .unwrap(),
-    //                                                     );
-    //                                                 }
-    //
-    //                                                 return Ok(r);
-    //                                             }
-    //                                             Err(Error::AlreadyUsed) => {
-    //                                                 error!("Give Up retrying WS");
-    //                                                 return Err::<_, _>(warp::reject::custom(
-    //                                                     BadGateway { delayed_for },
-    //                                                 ));
-    //                                             }
-    //                                             Err(e) => {
-    //                                                 error!("WS error: {:?}", e);
-    //                                             }
-    //                                         }
-    //                                     } else if req.is_http() {
-    //                                         let res = proxy_http_request(
-    //                                             &mut req,
-    //                                             remote_addr,
-    //                                             headers.clone(),
-    //                                             proxy_to,
-    //                                             method.clone(),
-    //                                             local_addr,
-    //                                             mount_point_base_url.host().as_str(),
-    //                                             hyper,
-    //                                             connect_target.clone(),
-    //                                         )
-    //                                             .await;
-    //
-    //                                         match res {
-    //                                             Ok(mut r) => {
-    //                                                 if r.status() == StatusCode::NOT_FOUND {
-    //                                                     let body = hyper::body::to_bytes(r.body_mut()).await.unwrap();
-    //                                                     info!("HTTP not found. try other handlers. body = {:?}", body);
-    //                                                     break 'instances; //continue through handlers
-    //                                                 } else if r.status() == StatusCode::BAD_GATEWAY {
-    //                                                     let body = r.into_body();
-    //                                                     info!("HTTP bad gateway. try another instance: {:?}", body);
-    //                                                     continue 'instances;
-    //                                                 }
-    //
-    //                                                 if let Some(delay) = delayed_for {
-    //                                                     r.headers_mut().insert(
-    //                                                         "x-exg-delayed-for-ms",
-    //                                                         delay
-    //                                                             .as_millis()
-    //                                                             .to_string()
-    //                                                             .try_into()
-    //                                                             .unwrap(),
-    //                                                     );
-    //                                                 }
-    //
-    //                                                 return Ok(r);
-    //                                             }
-    //                                             Err(Error::AlreadyUsed) => {
-    //                                                 error!("Give Up retrying HTTP");
-    //                                                 return Err::<_, _>(warp::reject::custom(
-    //                                                     BadGateway { delayed_for },
-    //                                                 ));
-    //                                             }
-    //                                             Err(e) => {
-    //                                                 error!("HTTP error: {:?}", e);
-    //                                             }
-    //                                         }
-    //                                     } else {
-    //                                         info!("no longer retry: req = {:?}", req);
-    //                                         return Err::<_, _>(warp::reject::custom(
-    //                                             BadGateway { delayed_for },
-    //                                         ));
-    //                                     }
-    //                                 }
-    //                             }
-    //                         }
-    //                         if !should_try_next_handler {
-    //                             break 'handlers;
-    //                         }
-    //                     } else {
-    //                         continue 'handlers;
-    //                     }
-    //                 }
-    //
-    //                 // no handler processed at this point. Raise Exception
-    //
-    //                 return Err::<_, _>(warp::reject::custom(Exception {
-    //                     exception_name: "not-handled".parse().unwrap(),
-    //                     delayed_for,
-    //                     data: Default::default(),
-    //                 }));
-    //             }
-    //         }
-    //     })
-    //     .recover({
-    //         shadow_clone!(google_oauth2_client);
-    //         shadow_clone!(github_oauth2_client);
-    //         shadow_clone!(assistant_base_url);
-    //         shadow_clone!(maybe_identity);
-    //
-    //         move |r| {
-    //             shadow_clone!(google_oauth2_client);
-    //             shadow_clone!(github_oauth2_client);
-    //             shadow_clone!(assistant_base_url);
-    //             shadow_clone!(maybe_identity);
-    //
-    //             warn!("Error: {:?}", r);
-    //
-    //             handle_rejection(r, google_oauth2_client, github_oauth2_client, assistant_base_url, maybe_identity)
-    //         }
-    //     });
-
-    // let https_server = tokio::spawn(
-    //     warp::serve(
-    //         health
-    //             .or(oauth2_callback)
-    //             .or(server)
-    //             .with(warp::reply::with::headers(common_reply_headers))
-    //             .with(warp::trace::request()),
-    //     )
-    //     .serve_incoming_with_graceful_shutdown2(incoming_https_connections_rx, {
-    //         async move {
-    //             let reason = app_stop_wait.await;
-    //
-    //             https_stop_handle.stop(reason.clone());
-    //
-    //             info!("Triggering graceful shutdown by request: {}", reason);
-    //         }
-    //     }),
-    // );
+    let http_server = hyper::Server::builder(HyperAcceptor {
+        acceptor: incoming_http_connections_rx,
+    })
+    .serve(http_make_service)
+    .with_graceful_shutdown(async {
+        let reason = https_stop_wait.await;
+        info!(
+            "Triggering graceful shutdown of HTTP by request: {}",
+            reason
+        );
+    });
 
     let make_service = make_service_fn::<_, AcceptedIo<_>, _>(move |socket| {
         shadow_clone!(webapp_client);
@@ -1275,9 +633,16 @@ pub async fn server(
         shadow_clone!(github_oauth2_client);
         shadow_clone!(assistant_base_url);
         shadow_clone!(maybe_identity);
+        shadow_clone!(dbip);
 
         let local_addr = socket.local_addr();
         let remote_addr = socket.remote_addr();
+
+        if let Some(db) = dbip {
+            if let Ok(loc) = db.lookup::<LocationAndIsp>(remote_addr.ip()) {
+                info!("request from: {:?}", loc);
+            }
+        }
 
         async move {
             Ok::<_, hyper::Error>(service_fn(move |mut req: Request<Body>| {
@@ -1291,7 +656,6 @@ pub async fn server(
                 shadow_clone!(maybe_identity);
 
                 async move {
-                    info!("req {:?}", req);
                     let req_uri = req.uri().to_string();
 
                     let requested_url: Url = if req_uri.starts_with("/") {
@@ -1314,11 +678,6 @@ pub async fn server(
                         panic!("FIXME not domain")
                     };
 
-                    info!(
-                        "compare {:?} <=> {:?}",
-                        req.uri().host(),
-                        public_gw_base_url.host_str()
-                    );
                     if req.uri().host() == public_gw_base_url.host_str() {
                         let url = requested_url.clone();
 
@@ -1416,8 +775,6 @@ pub async fn server(
                         }
                     }
 
-                    info!("host_without_port = {:?}", host_without_port);
-
                     let matchable_url = MatchableUrl::from_components(
                         host_without_port.as_ref(),
                         requested_url.path().as_ref(),
@@ -1425,19 +782,12 @@ pub async fn server(
                     )
                     .expect("FIXME");
 
-                    // let proto = match &ws_or_body {
-                    //     warp::Either::A(_) => Protocol::WebSockets,
-                    //     warp::Either::B(_) => Protocol::Http,
-                    // };
-
-                    let proto = Protocol::Http;
-
                     let handle_result = webapp_client
                         .resolve_url(matchable_url, tunnels.clone(), individual_hostname.clone())
                         .await;
 
                     match handle_result {
-                        Ok(Some((requests_processor, mount_point_base_url))) => {
+                        Ok(Some((requests_processor, _mount_point_base_url))) => {
                             requests_processor
                                 .process(
                                     &mut req,
@@ -1488,813 +838,3 @@ pub async fn server(
         },
     }
 }
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("loop detected")]
-    LoopDetected,
-
-    #[error("request error")]
-    RequestError(#[from] hyper::Error),
-
-    #[error("request timeout")]
-    Timeout,
-
-    #[error("websocket connect error")]
-    WebSocketError(#[from] tungstenite::Error),
-
-    #[error("request is already used")]
-    AlreadyUsed,
-}
-
-// async fn handle_rejection(
-//     err: Rejection,
-//     google_oauth2_client: auth::google::GoogleOauth2Client,
-//     github_oauth2_client: auth::github::GithubOauth2Client,
-//     assistant_base_url: Url,
-//     maybe_identity: Option<Vec<u8>>,
-// ) -> Result<impl Reply, Infallible> {
-//     let mut resp = Response::new(Body::empty());
-//
-//     resp.headers_mut()
-//         .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-//     if err.is_not_found() {
-//         *resp.status_mut() = StatusCode::NOT_FOUND;
-//         *resp.body_mut() = Body::from("404 Not Found");
-//     } else if let Some(BadGateway { delayed_for }) = err.find() {
-//         if let Some(delay) = delayed_for {
-//             resp.headers_mut().insert(
-//                 "x-exg-delayed-for-ms",
-//                 delay.as_millis().to_string().try_into().unwrap(),
-//             );
-//         }
-//
-//         *resp.status_mut() = StatusCode::BAD_GATEWAY;
-//         *resp.body_mut() = Body::from("Bad Gateway")
-//     } else if let Some(RateLimited {
-//         not_until,
-//         rate_limiter_name,
-//     }) = err.find()
-//     {
-//         resp.headers_mut()
-//             .insert("x-exg-rate-limited", "1".try_into().unwrap());
-//         resp.headers_mut().insert(
-//             "x-exg-rate-limited-by",
-//             rate_limiter_name.to_string().try_into().unwrap(),
-//         );
-//         resp.headers_mut()
-//             .insert("x-exg-retry-at", not_until.to_rfc3339().try_into().unwrap());
-//
-//         *resp.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-//         *resp.body_mut() = Body::from("Rate Limited");
-//     } else if let Some(NotAuthorized {
-//         auth,
-//         handler_name,
-//         requested_url,
-//         jwt_ecdsa,
-//         base_url,
-//         proto,
-//         is_jwt_token_included,
-//     }) = err.find::<NotAuthorized>()
-//     {
-//         match proto {
-//             Protocol::Http => {
-//                 let mut url = base_url.to_url();
-//                 url.path_segments_mut().unwrap().push("_exg").push("auth");
-//                 url.set_query(Some(
-//                     format!(
-//                         "url={}&handler={}",
-//                         percent_encode(requested_url.as_str().as_ref(), NON_ALPHANUMERIC),
-//                         percent_encode(handler_name.as_ref(), NON_ALPHANUMERIC),
-//                     )
-//                     .as_str(),
-//                 ));
-//                 url.set_host(Some("strip")).unwrap();
-//                 url.set_scheme("http").unwrap();
-//                 let redirect_to = url
-//                     .to_string()
-//                     .strip_prefix("http://strip")
-//                     .unwrap()
-//                     .to_string();
-//
-//                 resp.headers_mut()
-//                     .insert(LOCATION, redirect_to.try_into().unwrap());
-//                 *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-//             }
-//             Protocol::WebSockets if *is_jwt_token_included => {
-//                 *resp.status_mut() = StatusCode::UNAUTHORIZED;
-//             }
-//             Protocol::WebSockets => {
-//                 *resp.status_mut() = StatusCode::FORBIDDEN;
-//             }
-//         }
-//     } else if let Some(ShowAuth {
-//         base_url,
-//         redirect_to,
-//         handler_name,
-//         auth,
-//         maybe_provider,
-//         jwt_ecdsa,
-//     }) = err.find()
-//     {
-//         respond_with_login(
-//             base_url,
-//             maybe_provider,
-//             redirect_to,
-//             handler_name,
-//             auth,
-//             jwt_ecdsa,
-//             &mut resp,
-//             google_oauth2_client.clone(),
-//             github_oauth2_client.clone(),
-//         )
-//         .await;
-//     } else if let Some(Authenticate {
-//         secret,
-//         mapping_action,
-//     }) = err.find::<Authenticate>()
-//     {
-//         match retrieve_assistant_key::<AuthFinalizer>(&assistant_base_url, &secret, maybe_identity)
-//             .await
-//         {
-//             Ok(res) => {
-//                 let handler_name = res.oauth2_flow_data.handler_name.clone();
-//                 let used_provider = res.oauth2_flow_data.provider.clone();
-//
-//                 let (_, auth) = mapping_action
-//                     .handler
-//                     .handlers_processor
-//                     .handlers
-//                     .iter()
-//                     .filter_map(|handler| {
-//                         if let ClientHandlerVariant::Auth(auth) = &handler.config_handler.variant {
-//                             Some((handler.name.clone(), auth.clone()))
-//                         } else {
-//                             None
-//                         }
-//                     })
-//                     .find(|(found_handler_name, _)| {
-//                         found_handler_name.as_str() == handler_name.as_str()
-//                     })
-//                     .expect("FIXME");
-//
-//                 info!("auth = {:?}", auth);
-//
-//                 let maybe_auth_definition =
-//                     auth.providers
-//                         .iter()
-//                         .find(|provider| match (&provider.name, &used_provider) {
-//                             (&AuthProvider::Google, &Oauth2Provider::Google) => true,
-//                             (&AuthProvider::Github, &Oauth2Provider::Github) => true,
-//                             _ => false,
-//                         });
-//                 info!("maybe_auth_definition = {:?}", maybe_auth_definition);
-//
-//                 match maybe_auth_definition {
-//                     Some(auth_definition) => {
-//                         let mut acl_allow = false;
-//
-//                         'acl: for acl_entry in &auth_definition.acl {
-//                             for identity in &res.identities {
-//                                 match acl_entry {
-//                                     AclEntry::Allow { identity: pass } => {
-//                                         let is_match = match Glob::new(pass) {
-//                                             Ok(glob) => glob.compile_matcher().is_match(identity),
-//                                             Err(_) => pass == identity,
-//                                         };
-//                                         if is_match {
-//                                             info!("Pass {} ", identity);
-//                                             acl_allow = true;
-//                                             break 'acl;
-//                                         }
-//                                     }
-//                                     AclEntry::Deny { identity: deny } => {
-//                                         let is_match = match Glob::new(deny) {
-//                                             Ok(glob) => glob.compile_matcher().is_match(identity),
-//                                             Err(_) => deny == identity,
-//                                         };
-//                                         if is_match {
-//                                             info!("Deny {} ", identity);
-//                                             acl_allow = false;
-//                                             break 'acl;
-//                                         }
-//                                     }
-//                                 }
-//                             }
-//                         }
-//
-//                         info!("acl_allow = {}", acl_allow);
-//
-//                         if acl_allow {
-//                             resp.headers_mut()
-//                                 .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-//
-//                             resp.headers_mut().insert(
-//                                 LOCATION,
-//                                 res.oauth2_flow_data
-//                                     .requested_url
-//                                     .to_string()
-//                                     .try_into()
-//                                     .unwrap(),
-//                             );
-//
-//                             *resp.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-//
-//                             let claims = Claims {
-//                                 idp: serde_json::to_value(res.oauth2_flow_data.provider)
-//                                     .unwrap()
-//                                     .to_string(),
-//                                 exp: (Utc::now() + chrono::Duration::hours(24))
-//                                     .timestamp()
-//                                     .try_into()
-//                                     .unwrap(),
-//                             };
-//
-//                             let token = jsonwebtoken::encode(
-//                                 &Header {
-//                                     alg: jsonwebtoken::Algorithm::ES256,
-//                                     ..Default::default()
-//                                 },
-//                                 &claims,
-//                                 &EncodingKey::from_ec_pem(
-//                                     res.oauth2_flow_data.jwt_ecdsa.private_key.as_ref(),
-//                                 )
-//                                 .expect("FIXME"),
-//                             )
-//                             .expect("FIXME");
-//
-//                             let auth_cookie_name =
-//                                 format!("exg-auth-{}", res.oauth2_flow_data.handler_name);
-//
-//                             let set_cookie = Cookie::build(auth_cookie_name, token)
-//                                 .path(res.oauth2_flow_data.base_url.path())
-//                                 .max_age(time::Duration::hours(24))
-//                                 .http_only(true)
-//                                 .secure(true)
-//                                 .finish();
-//
-//                             resp.headers_mut()
-//                                 .insert(SET_COOKIE, set_cookie.to_string().try_into().unwrap());
-//                         } else {
-//                             *resp.status_mut() = StatusCode::FORBIDDEN;
-//                             *resp.body_mut() = Body::from("Access Denied");
-//                         }
-//                     }
-//                     None => {
-//                         info!("could not find provider");
-//                         *resp.status_mut() = StatusCode::BAD_REQUEST;
-//                         *resp.body_mut() = Body::from("bad request");
-//                     }
-//                 }
-//             }
-//             Err(e) => {
-//                 info!("could not retrieve assistant oauth2 key: {}", e);
-//                 *resp.status_mut() = StatusCode::UNAUTHORIZED;
-//                 *resp.body_mut() = Body::from("error");
-//             }
-//         }
-//     } else if err.find::<NotSupported>().is_some() {
-//         *resp.status_mut() = StatusCode::NOT_IMPLEMENTED;
-//     } else if err.find::<InjectionFound>().is_some() {
-//         *resp.status_mut() = StatusCode::BAD_REQUEST;
-//         *resp.body_mut() = Body::from("Injection detected");
-//     } else if err.find::<AuthError>().is_some() {
-//         *resp.status_mut() = StatusCode::FORBIDDEN;
-//         *resp.body_mut() = Body::from("Forbidden");
-//     } else if let Some(ex) = err.find::<Exception>() {
-//         *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-//         let data = serde_json::to_string_pretty(&ex.data).unwrap();
-//         let msg = format!("Error {}: {}", ex.exception_name, data);
-//         *resp.body_mut() = Body::from(msg);
-//     } else {
-//         *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-//     }
-//     Ok(resp)
-// }
-
-// async fn proxy_ws(
-//     req: &mut RequestBody,
-//     client_ip_addr: IpAddr,
-//     headers: http::HeaderMap,
-//     mut proxy_to: Url,
-//     local_ip: IpAddr,
-//     external_host: &str,
-//     connector: Connector,
-//     connect_target: ConnectTarget,
-// ) -> Result<Response<hyper::Body>, Error> {
-//     info!("handle WS connection. proxy_to = {:?}", proxy_to);
-//
-//     connect_target.update_url(&mut proxy_to);
-//
-//     info!("handle WS connection. handler = {:?}", connect_target);
-//
-//     let should_use_tls = if proxy_to.scheme() == "http" {
-//         proxy_to.set_scheme("ws").unwrap();
-//         false
-//     } else if proxy_to.scheme() == "https" {
-//         proxy_to.set_scheme("wss").unwrap();
-//         true
-//     } else if proxy_to.scheme() == "ws" {
-//         false
-//     } else if proxy_to.scheme() == "wss" {
-//         true
-//     } else {
-//         error!("bad protocol {:?}", proxy_to);
-//         panic!("bad protocol {:?}", proxy_to)
-//     };
-//
-//     info!("handle WS connection. handler = {:?}", connect_target);
-//
-//     let mut proxy_req = http::Request::new(());
-//
-//     *proxy_req.uri_mut() = proxy_to.to_string().try_into().unwrap();
-//
-//     let proxy_headers = proxy_request_headers(local_ip, external_host, client_ip_addr, headers);
-//
-//     for (header, value) in proxy_headers.into_iter() {
-//         match proxy_req
-//             .headers_mut()
-//             .entry(HeaderName::from_bytes(header.as_bytes()).unwrap())
-//         {
-//             Entry::Occupied(mut e) => {
-//                 e.append(value.try_into().unwrap());
-//             }
-//             Entry::Vacant(e) => {
-//                 e.insert(value.try_into().unwrap());
-//             }
-//         }
-//     }
-//
-//     let transport: Box<dyn Conn> = Box::new(
-//         connector
-//             .retrieve_connection(connect_target, Compression::Zstd)
-//             .await
-//             .expect("FIXME"),
-//     );
-//
-//     info!("connected");
-//
-//     let (proxied_ws, proxied_response) = if should_use_tls {
-//         let (s, resp) = tokio_tungstenite::client_async_tls(proxy_req, transport).await?;
-//
-//         (Either::Left(s), resp)
-//     } else {
-//         info!("PLAIN");
-//         let (s, resp) = tokio_tungstenite::client_async(proxy_req, transport).await?;
-//
-//         (Either::Right(s), resp)
-//     };
-//
-//     // Take WS stream at this point. If error occurred before actual upgrade, the request may be retried with
-//
-//     let ws = req
-//         .take()
-//         .ok_or(Error::AlreadyUsed)?
-//         .take_ws()
-//         .expect("bad request type");
-//
-//     let mut resp = ws
-//         .on_upgrade({
-//             move |ws| async move {
-//                 let (server_sink, server_stream) = ws.split();
-//                 let (proxied_sink, proxied_stream) = proxied_ws.split();
-//
-//                 let forward1 = server_stream
-//                     .map({
-//                         move |warp_msg| {
-//                             warp_msg.map(move |r| {
-//                                 let m = if r.is_text() {
-//                                     tungstenite::Message::Text(r.to_str().unwrap().into())
-//                                 } else if r.is_binary() {
-//                                     tungstenite::Message::Binary(r.into_bytes())
-//                                 } else if r.is_ping() {
-//                                     tungstenite::Message::Ping(r.into_bytes())
-//                                 } else if r.is_pong() {
-//                                     tungstenite::Message::Pong(r.into_bytes())
-//                                 } else if r.is_close() {
-//                                     //TODO: fix passing close frame
-//                                     tungstenite::Message::Close(None)
-//                                 } else {
-//                                     unreachable!()
-//                                 };
-//
-//                                 trace!("Send warp message to handler: {:?}", m);
-//
-//                                 m
-//                             })
-//                         }
-//                     })
-//                     .map_err({
-//                         move |e| {
-//                             error!("Warp WS stream error: {:?}", e);
-//                         }
-//                     })
-//                     .forward(proxied_sink.sink_map_err({
-//                         move |e| {
-//                             error!("Tungstenite WS sink error: {:?}", e);
-//                         }
-//                     }));
-//
-//                 let forward2 = proxied_stream
-//                     .map({
-//                         move |tungstenite_msg| {
-//                             tungstenite_msg.map(move |r| {
-//                                 let m = match r {
-//                                     tungstenite::Message::Text(s) => warp::ws::Message::text(s),
-//                                     tungstenite::Message::Binary(v) => warp::ws::Message::binary(v),
-//                                     tungstenite::Message::Ping(v) => warp::ws::Message::ping(v),
-//                                     tungstenite::Message::Pong(v) => warp::ws::Message::pong(v),
-//                                     tungstenite::Message::Close(v) => {
-//                                         trace!("Proxied host asked to close connection");
-//                                         if let Some(close_frame) = v {
-//                                             warp::ws::Message::close_with(
-//                                                 close_frame.code,
-//                                                 close_frame.reason,
-//                                             )
-//                                         } else {
-//                                             warp::ws::Message::close()
-//                                         }
-//                                     }
-//                                 };
-//
-//                                 trace!("Send from host to warp: {:?}", m);
-//
-//                                 m
-//                             })
-//                         }
-//                     })
-//                     .map_err({
-//                         move |e| {
-//                             error!("Tungstenite WS stream error: {:?}", e);
-//                         }
-//                     })
-//                     .forward(server_sink.sink_map_err({
-//                         move |e| {
-//                             error!("Warp WS sink error: {:?}", e);
-//                         }
-//                     }));
-//
-//                 tokio::select! {
-//                     _ = forward1 => {},
-//                     _ = forward2 => {},
-//                 }
-//
-//                 info!("WS connection closed");
-//             }
-//         })
-//         .into_response();
-//
-//     *resp.status_mut() = proxied_response.status();
-//
-//     for (header, value) in proxied_response.headers().into_iter() {
-//         if header.as_str().to_lowercase().starts_with("x-exg") {
-//             info!("Trying to proxy already proxied request (prevent loops)");
-//             return Err(Error::LoopDetected);
-//         }
-//
-//         if !header.as_str().to_lowercase().starts_with("sec-")
-//             && header != CONNECTION
-//             && header != UPGRADE
-//         {
-//             match resp.headers_mut().entry(header) {
-//                 Entry::Occupied(mut e) => {
-//                     e.append(value.try_into().unwrap());
-//                 }
-//                 Entry::Vacant(e) => {
-//                     e.insert(value.try_into().unwrap());
-//                 }
-//             }
-//         }
-//     }
-//
-//     resp.headers_mut()
-//         .insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
-//
-//     Ok(resp)
-// }
-
-// static ACCEPT_ENCODING_HEADER: HeaderName = ACCEPT_ENCODING;
-// static CONNECTION_HEADER: HeaderName = CONNECTION;
-// static HOST_HEADER: HeaderName = HOST;
-// static UPGRADE_HEADER: HeaderName = UPGRADE;
-
-// fn proxy_request_headers(
-//     local_ip: IpAddr,
-//     external_host: &str,
-//     client_ip: IpAddr,
-//     mut headers: http::HeaderMap,
-// ) -> Vec<(String, String)> {
-//     let mut res = vec![];
-//
-//     res.push(("x-forwarded-host".to_string(), external_host.to_string()));
-//     res.push(("x-forwarded-proto".to_string(), "https".to_string()));
-//
-//     //X-Forwarded-Host and X-Forwarded-Proto
-//     let mut x_forwarded_for = headers
-//         .remove("x-forwarded-for")
-//         .map(|h| h.to_str().unwrap().to_string())
-//         .unwrap_or_else(|| client_ip.to_string());
-//
-//     x_forwarded_for.push_str(&format!(", {}", local_ip));
-//
-//     res.push(("x-forwarded-for".into(), x_forwarded_for));
-//     if !headers.contains_key("x-real-ip") {
-//         res.push(("x-real-ip".into(), client_ip.to_string()));
-//     }
-//
-//     let mut previous = None;
-//     for (initial_name, value) in headers.into_iter() {
-//         let name = initial_name.clone().or_else(|| previous.clone()).unwrap();
-//
-//         if initial_name.is_some() {
-//             previous = initial_name.clone();
-//         }
-//
-//         if name != ACCEPT_ENCODING_HEADER
-//             && name != CONNECTION_HEADER
-//             && name != HOST_HEADER
-//             && !name.as_str().to_lowercase().starts_with("sec-")
-//             && name != UPGRADE_HEADER
-//         {
-//             res.push((name.to_string(), value.to_str().unwrap().to_string()));
-//         }
-//     }
-//
-//     res.push(("x-exg".into(), "1".into()));
-//
-//     res
-// }
-
-const HTTP_REQ_TIMEOUT: Duration = Duration::from_secs(60 * 5);
-const HTTP_BYTES_TIMEOUT: Duration = Duration::from_secs(60);
-
-// async fn proxy_http_request(
-//     req: &mut RequestBody,
-//     client_ip_addr: IpAddr,
-//     headers: http::HeaderMap,
-//     mut proxy_to: Url,
-//     method: http::Method,
-//     local_ip: IpAddr,
-//     external_host: &str,
-//     hyper: hyper::client::Client<Connector>,
-//     connect_target: ConnectTarget,
-// ) -> Result<Response<hyper::Body>, Error> {
-//     connect_target.update_url(&mut proxy_to);
-//
-//     let accept_encoding = headers
-//         .typed_get::<typed_headers::AcceptEncoding>()
-//         .ok()
-//         .and_then(|r| r);
-//
-//     let proxy_headers = proxy_request_headers(local_ip, external_host, client_ip_addr, headers);
-//
-//     info!("Proxy request to {}", proxy_to);
-//
-//     let mut proxy_req = hyper::Request::builder()
-//         .uri(proxy_to.to_string())
-//         .method(method);
-//
-//     debug!("Request built");
-//
-//     for (header, value) in proxy_headers.into_iter() {
-//         debug!("copy header {:?}: {:?}", header, value);
-//         proxy_req.headers_mut().unwrap().append(
-//             HeaderName::from_bytes(header.as_bytes()).unwrap(),
-//             HeaderValue::from_str(&value).unwrap(),
-//         );
-//     }
-//
-//     let body_stream = req
-//         .take()
-//         .ok_or(Error::AlreadyUsed)?
-//         .take_http()
-//         .expect("bad request type");
-//
-//     let r = tokio::time::timeout(
-//         HTTP_REQ_TIMEOUT,
-//         hyper.request(proxy_req.body(body_stream).expect("FIXME")),
-//     )
-//     .await;
-//
-//     debug!("finished request {:?}", r);
-//
-//     match r {
-//         Err(_) => {
-//             info!("timeout processing request");
-//
-//             Err(Error::Timeout)
-//         }
-//         Ok(Err(e)) => {
-//             info!("error requesting client connection: {}", e);
-//
-//             Err(Error::RequestError(e))
-//         }
-//         Ok(Ok(hyper_response)) => {
-//             debug!("building response");
-//             let mut resp = Response::builder().status(match hyper_response.status() {
-//                 StatusCode::PERMANENT_REDIRECT => StatusCode::TEMPORARY_REDIRECT,
-//                 code => code,
-//             });
-//
-//             let content_type = hyper_response
-//                 .headers()
-//                 .typed_get::<typed_headers::ContentType>()
-//                 .ok()
-//                 .and_then(|r| r);
-//             let upstream_resp_headers = hyper_response
-//                 .headers()
-//                 .into_iter()
-//                 .map(|(k, v)| (k.clone(), v.clone()))
-//                 .collect::<Vec<_>>();
-//             let upstream_response_body = hyper_response.into_body();
-//             let (body_processing, compression) =
-//                 maybe_compress_body(upstream_response_body, accept_encoding, content_type);
-//
-//             let resp_stream = hyper::Body::wrap_stream(
-//                 tokio::stream::StreamExt::timeout(body_processing, HTTP_BYTES_TIMEOUT).map(|r| {
-//                     debug!("streaming data {:?}", r);
-//                     match r {
-//                         Err(e) => Err(anyhow::Error::new(e)),
-//                         Ok(Err(e)) => Err(anyhow::Error::new(e)),
-//                         Ok(Ok(r)) => Ok(r),
-//                     }
-//                 }), //Timeout on data
-//             );
-//
-//             {
-//                 let resp_headers = resp.headers_mut().unwrap();
-//
-//                 debug!("copy headers to response");
-//                 for (header, value) in &upstream_resp_headers {
-//                     if header == CONNECTION || header == CONTENT_ENCODING {
-//                         continue;
-//                     }
-//
-//                     if compression.is_some() && header == CONTENT_LENGTH {
-//                         continue;
-//                     }
-//
-//                     if header.as_str().to_lowercase().starts_with("x-exg") {
-//                         info!("Trying to proxy already proxied request (prevent loops)");
-//                         return Err(Error::LoopDetected);
-//                     }
-//
-//                     match resp_headers.entry(header) {
-//                         Entry::Occupied(mut e) => {
-//                             e.append(value.try_into().unwrap());
-//                         }
-//                         Entry::Vacant(e) => {
-//                             e.insert(value.try_into().unwrap());
-//                         }
-//                     }
-//                 }
-//
-//                 info!("copied resp_headers = {:?}", resp_headers);
-//
-//                 resp_headers.insert("x-exg-proxied", HeaderValue::from_str("1").unwrap());
-//                 resp_headers.insert("vary", HeaderValue::from_str("Accept-Encoding").unwrap());
-//
-//                 info!("compression = {:?}", compression);
-//
-//                 match compression {
-//                     // Some(SupportedContentEncoding::Brotli) => {
-//                     //     resp_headers.typed_insert(&ContentEncoding::from(ContentCoding::BROTLI));
-//                     // }
-//                     Some(SupportedContentEncoding::Gzip) => {
-//                         resp_headers.typed_insert(&ContentEncoding::from(ContentCoding::GZIP));
-//                     }
-//                     // Some(SupportedContentEncoding::Deflate) => {
-//                     //     resp_headers.typed_insert(&ContentEncoding::from(ContentCoding::DEFLATE));
-//                     // }
-//                     None => {
-//                         let _ = resp_headers.typed_remove::<ContentEncoding>();
-//                     }
-//                 }
-//
-//                 info!("updated resp_headers = {:?}", resp_headers);
-//             }
-//
-//             Ok(resp.body(resp_stream).expect("FIXME"))
-//         }
-//     }
-// }
-
-#[derive(thiserror::Error, Debug)]
-pub enum StreamingError {
-    #[error("streaming with upstream error: `{0}`")]
-    UpstreamStreaming(#[from] warp::Error),
-
-    #[error("streaming to user error: `{0}`")]
-    OutgoingStreaming(#[from] io::Error),
-    //
-    // #[error("XSS detected")]
-    // XssDetected,
-    //
-    // #[error("XSS detected")]
-    // SqlInjectionDetected { fingerprint: String },
-}
-
-#[inline]
-fn to_bytes_stream_and_check_injections(
-    s: impl Stream<Item = Result<impl Buf + 'static, warp::Error>>,
-) -> impl Stream<Item = Result<Bytes, StreamingError>> {
-    s.map(move |s| match s {
-        Ok(r) => {
-            let bytes = r.bytes();
-            // if let Ok(str) = std::str::from_utf8(bytes) {
-            //     let decoded = percent_decode_str(str).decode_utf8_lossy();
-            //     if let Some(true) = libinjection::xss(decoded.as_ref()) {
-            //         warn!("found XSS in body");
-            //         return Err(StreamingError::XssDetected);
-            //     }
-            //     if let Some((true, fingerprint)) = libinjection::sqli(decoded.as_ref()) {
-            //         warn!("found sql injection in body: `{:?}`", fingerprint);
-            //         return Err(StreamingError::SqlInjectionDetected { fingerprint });
-            //     }
-            // }
-
-            Ok(Bytes::copy_from_slice(bytes))
-        }
-        Err(e) => {
-            info!("Error sending data: {:?}", e);
-            Err(e.into())
-        }
-    })
-}
-
-// #[derive(Debug)]
-// struct Authenticate {
-//     secret: String,
-//     mapping_action: MappingAction,
-// }
-//
-// impl Reject for Authenticate {}
-//
-// #[derive(Debug)]
-// struct ShowAuth {
-//     redirect_to: Url,
-//     base_url: Url,
-//     auth: Auth,
-//     handler_name: HandlerName,
-//     maybe_provider: Option<AuthProvider>,
-//     jwt_ecdsa: JwtEcdsa,
-// }
-//
-// impl Reject for ShowAuth {}
-//
-// #[derive(Debug)]
-// struct AuthError {}
-//
-// impl Reject for AuthError {}
-//
-// #[derive(Debug)]
-// struct RateLimited {
-//     not_until: DateTime<Utc>,
-//     rate_limiter_name: RateLimiterName,
-// }
-//
-// impl Reject for RateLimited {}
-//
-// #[derive(Debug)]
-// struct NotAuthorized {
-//     handler_name: HandlerName,
-//     auth: Auth,
-//     base_url: UrlPrefix,
-//     requested_url: Url,
-//     jwt_ecdsa: JwtEcdsa,
-//     proto: Protocol,
-//     is_jwt_token_included: bool,
-// }
-//
-// impl Reject for NotAuthorized {}
-//
-// #[derive(Debug)]
-// struct NotSupported {}
-//
-// impl Reject for NotSupported {}
-//
-// #[derive(Debug)]
-// struct AlreadyProxied {}
-//
-// impl Reject for AlreadyProxied {}
-//
-// #[derive(Debug)]
-// struct InjectionFound {}
-//
-// impl Reject for InjectionFound {}
-//
-// #[derive(Debug)]
-// struct BadGateway {
-//     delayed_for: Option<Duration>,
-// }
-//
-// impl Reject for BadGateway {}
-//
-// #[derive(Debug)]
-// struct Exception {
-//     pub exception_name: ExceptionName,
-//     pub delayed_for: Option<Duration>,
-//     pub data: BTreeMap<SmolStr, SmolStr>,
-// }
-//
-// impl Reject for Exception {}

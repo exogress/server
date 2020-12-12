@@ -71,6 +71,7 @@ pub async fn handle<'a>(
     let subscriber = tracing_subscriber::fmt().with_max_level(log_level).finish();
 
     let bg_task = if let Some(gelf_host) = matches.value_of("gelf_host") {
+        println!("using GELF host: {}", gelf_host);
         let gelf_host = gelf_host.to_string();
 
         let gelf_port = matches
@@ -122,6 +123,8 @@ pub async fn handle<'a>(
                 .map_err(|e| anyhow!("TLS subscriber init error{:?}", e))?
         }
     } else {
+        tracing::subscriber::set_global_default(subscriber)
+            .map_err(|_err| anyhow!("Unable to set global default subscriber"))?;
         Box::pin(futures::future::pending())
     };
 

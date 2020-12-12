@@ -2,57 +2,46 @@ use crate::clients::ClientTunnels;
 use crate::http_serve::auth;
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::http_serve::auth::{
-    retrieve_assistant_key, save_assistant_key, AuthFinalizer, JwtEcdsa, Oauth2Provider,
-};
-use crate::http_serve::health_checks::HealthStorage;
+use crate::http_serve::auth::{retrieve_assistant_key, AuthFinalizer, JwtEcdsa, Oauth2Provider};
 use crate::http_serve::templates::respond_with_login;
 use crate::mime_helpers::{is_mime_match, ordered_by_quality};
+use crate::rules_counter::AccountRulesCounters;
 use crate::webapp::{ConfigData, ConfigsResponse};
 use anyhow::Context;
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
-use core::mem;
+use core::{fmt, mem};
 use exogress_config_core::{
-    AclEntry, Action, Auth, AuthProvider, Catch, CatchAction, CatchActions, ClientConfig,
-    ClientHandler, ClientHandlerVariant, Filter, MatchingPath, Proxy, ResponseBody, Rule,
-    StaticDir, StaticResponse, StatusCodeRange, StatusCodeRangeHandler, TemplateEngine,
-    UpstreamDefinition, UrlPathSegmentOrQueryPart,
+    AclEntry, Action, Auth, AuthProvider, CatchAction, CatchMatcher, ClientHandlerVariant,
+    Exception, MatchingPath, RescueItem, ResponseBody, StaticDir, StaticResponse, StatusCodeRange,
+    TemplateEngine, UpstreamDefinition, UrlPathSegmentOrQueryPart,
 };
 use exogress_entities::{
-    ConfigId, ConfigName, ExceptionName, HandlerName, InstanceId, MountPointName,
-    StaticResponseName, Upstream,
+    AccountUniqueId, ConfigId, HandlerName, InstanceId, StaticResponseName, Upstream,
 };
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use exogress_tunnel::ConnectTarget;
-use futures::{SinkExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::TryStreamExt;
 use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
 use http::header::{
     ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, COOKIE, HOST, LOCATION, SET_COOKIE,
-    TRANSFER_ENCODING,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
-use hyper::upgrade::Upgraded;
-use hyper::{Body, Error};
+use hyper::Body;
 use itertools::Itertools;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use parking_lot::Mutex;
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
-use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
 use std::io;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::str::FromStr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_either::Either;
-use typed_headers::{Accept, ContentCoding, ContentLength, ContentType, HeaderMapExt};
-use url::{PathSegmentsMut, Url};
+use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
+use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
 
 pub struct RequestsProcessor {
@@ -63,18 +52,14 @@ pub struct RequestsProcessor {
     pub github_oauth2_client: auth::github::GithubOauth2Client,
     pub assistant_base_url: Url,
     pub maybe_identity: Option<Vec<u8>>,
-    public_gw_base_url: Url,
+    rules_counter: AccountRulesCounters,
+    account_unique_id: AccountUniqueId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     idp: String,
     exp: usize,
-}
-
-pub enum StepProcessingResult {
-    Handled,
-    Skipped,
 }
 
 impl RequestsProcessor {
@@ -86,7 +71,12 @@ impl RequestsProcessor {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
     ) {
+        self.rules_counter.register_request(&self.account_unique_id);
+        let mut is_processed = false;
         for handler in &self.ordered_handlers {
+            // create new response for each handler, avoid using dirty data from the previous handler
+            *res = Response::new(Body::empty());
+
             let mut replaced_url = requested_url.clone();
             {
                 let mut requested_segments = requested_url.path_segments().unwrap();
@@ -97,6 +87,7 @@ impl RequestsProcessor {
                     .zip(&mut requested_segments)
                     .take_while(|(a, b)| &a.as_ref() == b)
                     .count();
+
                 if matched_segments_count == handler.base_path.len() {
                     let mut replaced_segments = replaced_url.path_segments_mut().unwrap();
                     replaced_segments.clear();
@@ -116,16 +107,37 @@ impl RequestsProcessor {
 
             *req.uri_mut() = replaced_url.as_str().parse().unwrap();
 
-            if handler
-                .handle_request(req, res, requested_url, local_addr, remote_addr)
-                .await
-                .is_some()
-            {
-                break;
+            let result = handler
+                .handle_request(
+                    req,
+                    res,
+                    requested_url,
+                    &replaced_url,
+                    local_addr,
+                    remote_addr,
+                )
+                .await;
+
+            match result {
+                ResolvedHandlerProcessingResult::Processed => {
+                    info!("handle successfully finished. exit from handlers loop");
+                    is_processed = true;
+                    break;
+                }
+                ResolvedHandlerProcessingResult::FiltersNotMatched => {}
+                ResolvedHandlerProcessingResult::NextHandler => {}
             };
         }
 
+        if !is_processed {
+            *res = Response::new(Body::from("Not found"));
+            *res.status_mut() = StatusCode::NOT_FOUND;
+        }
+
         self.compress(req, res);
+
+        res.headers_mut()
+            .insert("server", HeaderValue::from_static("exogress"));
     }
 
     fn compress(&self, req: &Request<Body>, res: &mut Response<Body>) {
@@ -160,7 +172,7 @@ impl RequestsProcessor {
             Some(compression) => compression,
         };
 
-        let mut uncompressed_body = mem::replace(res.body_mut(), Body::empty())
+        let uncompressed_body = mem::replace(res.body_mut(), Body::empty())
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()));
 
         res.headers_mut()
@@ -214,9 +226,108 @@ struct ResolvedProxy {
     public_hostname: SmolStr,
 }
 
-impl ResolvedProxy {
-    const EXCEPTION_LOOP_DETECTED: ExceptionName = ExceptionName::from_static("loop-detected");
+impl fmt::Debug for ResolvedProxy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedProxy")
+            .field("name", &self.name)
+            .field("upstream", &self.upstream)
+            .field("config_id", &self.config_id)
+            .finish()
+    }
+}
 
+fn copy_headers_from_proxy_res_to_res(
+    proxy_res: &Response<Body>,
+    res: &mut Response<Body>,
+    is_upgrade_allowed: bool,
+) {
+    for (incoming_header_name, incoming_header_value) in proxy_res.headers() {
+        if incoming_header_name == ACCEPT_ENCODING {
+            continue;
+        }
+
+        if incoming_header_name == CONNECTION {
+            if is_upgrade_allowed {
+                if !incoming_header_value
+                    .to_str()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("upgrade")
+                {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+
+        res.headers_mut()
+            .append(incoming_header_name, incoming_header_value.clone());
+    }
+}
+
+fn copy_headers_to_proxy_req(
+    req: &Request<Body>,
+    proxy_req: &mut Request<Body>,
+    is_upgrade_allowed: bool,
+) {
+    for (incoming_header_name, incoming_header_value) in req.headers() {
+        if incoming_header_name == ACCEPT_ENCODING || incoming_header_name == HOST {
+            continue;
+        }
+
+        if incoming_header_name == CONNECTION {
+            if is_upgrade_allowed {
+                if !incoming_header_value
+                    .to_str()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("upgrade")
+                {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+
+        proxy_req
+            .headers_mut()
+            .append(incoming_header_name, incoming_header_value.clone());
+    }
+}
+
+fn add_forwarded_headers(
+    req: &mut Request<Body>,
+    local_addr: &SocketAddr,
+    remote_addr: &SocketAddr,
+    public_hostname: &str,
+) {
+    req.headers_mut()
+        .append("x-forwarded-host", public_hostname.parse().unwrap());
+
+    req.headers_mut()
+        .append("x-forwarded-proto", "https".parse().unwrap());
+
+    //X-Forwarded-Host and X-Forwarded-Proto
+    let mut x_forwarded_for = req
+        .headers_mut()
+        .remove("x-forwarded-for")
+        .map(|h| h.to_str().unwrap().to_string())
+        .unwrap_or_else(|| remote_addr.ip().to_string());
+
+    x_forwarded_for.push_str(&format!(", {}", local_addr.ip()));
+
+    req.headers_mut()
+        .insert("x-forwarded-for", x_forwarded_for.parse().unwrap());
+
+    if !req.headers().contains_key("x-real-ip") {
+        req.headers_mut()
+            .append("x-real-ip", remote_addr.ip().to_string().parse().unwrap());
+    }
+}
+
+impl ResolvedProxy {
     async fn invoke(
         &self,
         req: &mut Request<Body>,
@@ -227,7 +338,7 @@ impl ResolvedProxy {
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
-                name: ResolvedProxy::EXCEPTION_LOOP_DETECTED,
+                name: "proxy:loop-detected".parse().unwrap(),
                 data: Default::default(),
             };
         }
@@ -250,142 +361,122 @@ impl ResolvedProxy {
         *proxy_req.method_mut() = req.method().clone();
         *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
 
-        for (incoming_header_name, incoming_header_value) in req.headers() {
-            if incoming_header_name == ACCEPT_ENCODING
-                || (incoming_header_name == CONNECTION
-                    && incoming_header_value.to_str().unwrap().to_lowercase() != "upgrade")
-                || incoming_header_name == HOST
-            {
-                continue;
-            }
+        copy_headers_to_proxy_req(req, &mut proxy_req, true);
 
-            proxy_req
-                .headers_mut()
-                .append(incoming_header_name, incoming_header_value.clone());
-        }
-
-        proxy_req
-            .headers_mut()
-            .append("x-forwarded-host", self.public_hostname.parse().unwrap());
-
-        proxy_req
-            .headers_mut()
-            .append("x-forwarded-proto", "https".parse().unwrap());
-
-        //X-Forwarded-Host and X-Forwarded-Proto
-        let mut x_forwarded_for = proxy_req
-            .headers_mut()
-            .remove("x-forwarded-for")
-            .map(|h| h.to_str().unwrap().to_string())
-            .unwrap_or_else(|| remote_addr.ip().to_string());
-
-        x_forwarded_for.push_str(&format!(", {}", local_addr.ip()));
-
-        proxy_req
-            .headers_mut()
-            .insert("x-forwarded-for", x_forwarded_for.parse().unwrap());
-
-        if !proxy_req.headers().contains_key("x-real-ip") {
-            proxy_req
-                .headers_mut()
-                .append("x-real-ip", remote_addr.ip().to_string().parse().unwrap());
-        }
+        add_forwarded_headers(
+            &mut proxy_req,
+            local_addr,
+            remote_addr,
+            &self.public_hostname,
+        );
 
         proxy_req
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
 
         if req.method() != &Method::GET
-            && req.headers().get(CONNECTION).map(|h| h.to_str().unwrap()) != Some("upgrade")
+            && req
+                .headers()
+                .get(CONNECTION)
+                .map(|h| h.to_str().unwrap().to_lowercase())
+                .map(|s| s.contains("upgrade"))
+                != Some(true)
         {
             *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
         }
 
-        let instance_id = Weight::next(&mut *self.instance_ids.lock()).expect("FIXME");
+        let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
 
-        let http_client = self
-            .client_tunnels
-            .retrieve_http_connector(
-                &self.config_id,
-                &instance_id,
-                self.individual_hostname.clone(),
-            )
-            .await
-            .expect("FIXME");
+        match selected_instance_id {
+            Some(instance_id) => {
+                let http_client = self
+                    .client_tunnels
+                    .retrieve_http_connector(
+                        &self.config_id,
+                        &instance_id,
+                        self.individual_hostname.clone(),
+                    )
+                    .await
+                    .expect("FIXME");
 
-        let mut proxy_resp = http_client.request(proxy_req).await.expect("FIXME");
+                let proxy_res = http_client.request(proxy_req).await.expect("FIXME");
 
-        for (incoming_header_name, incoming_header_value) in proxy_resp.headers() {
-            if incoming_header_name == ACCEPT_ENCODING
-                || (incoming_header_name == CONNECTION
-                    && incoming_header_value.to_str().unwrap().to_lowercase() != "upgrade")
-            {
-                continue;
-            }
+                copy_headers_from_proxy_res_to_res(&proxy_res, res, true);
 
-            res.headers_mut()
-                .append(incoming_header_name, incoming_header_value.clone());
-        }
+                res.headers_mut()
+                    .append("x-exg-proxied", "1".parse().unwrap());
 
-        res.headers_mut()
-            .append("x-exg-proxied", "1".parse().unwrap());
+                *res.status_mut() = proxy_res.status();
 
-        *res.status_mut() = proxy_resp.status();
+                if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
+                    let req_body = mem::replace(req.body_mut(), Body::empty());
 
-        if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
-            let req_body = mem::replace(req.body_mut(), Body::empty());
+                    tokio::spawn(
+                        #[allow(unreachable_code)]
+                        async move {
+                            match proxy_res.into_body().on_upgrade().await {
+                                Ok(mut proxy_upgraded) => {
+                                    let mut req_upgraded =
+                                        req_body.on_upgrade().await.expect("FIXME");
 
-            tokio::spawn(async move {
-                match proxy_resp.into_body().on_upgrade().await {
-                    Ok(mut proxy_upgraded) => {
-                        let mut req_upgraded = req_body.on_upgrade().await.expect("FIXME");
+                                    let mut buf1 = vec![0u8; 65536];
+                                    let mut buf2 = vec![0u8; 65536];
 
-                        let mut buf1 = vec![0u8; 65536];
-                        let mut buf2 = vec![0u8; 65536];
+                                    loop {
+                                        tokio::select! {
+                                            bytes_read_result = proxy_upgraded.read(&mut buf1) => {
+                                                let bytes_read = bytes_read_result
+                                                    .with_context(|| "error reading from incoming")?;
+                                                if bytes_read == 0 {
+                                                    return Ok(());
+                                                } else {
+                                                    req_upgraded
+                                                        .write_all(&buf1[..bytes_read])
+                                                        .await
+                                                        .with_context(|| "error writing to forwarded")?;
+                                                    req_upgraded.flush().await.with_context(|| "error flushing data to cliet")?;
+                                                }
+                                            },
 
-                        loop {
-                            tokio::select! {
-                                bytes_read_result = proxy_upgraded.read(&mut buf1) => {
-                                    let bytes_read = bytes_read_result
-                                        .with_context(|| "error reading from incoming")?;
-                                    if bytes_read == 0 {
-                                        return Ok(());
-                                    } else {
-                                        req_upgraded
-                                            .write_all(&buf1[..bytes_read])
-                                            .await
-                                            .with_context(|| "error writing to forwarded")?;
+                                            bytes_read_result = req_upgraded.read(&mut buf2) => {
+                                                let bytes_read = bytes_read_result
+                                                    .with_context(|| "error reading from forwarded")?;
+                                                if bytes_read == 0 {
+                                                    return Ok(());
+                                                } else {
+                                                    proxy_upgraded
+                                                        .write_all(&buf2[..bytes_read])
+                                                        .await
+                                                        .with_context(|| "error writing to incoming")?;
+                                                    proxy_upgraded
+                                                        .flush()
+                                                        .await
+                                                        .with_context(|| "error flushing data to proxy")?;
+                                                }
+                                            }
+                                        }
                                     }
-                                },
 
-                                bytes_read_result = req_upgraded.read(&mut buf2) => {
-                                    let bytes_read = bytes_read_result
-                                        .with_context(|| "error reading from forwarded")?;
-                                    if bytes_read == 0 {
-                                        return Ok(());
-                                    } else {
-                                        proxy_upgraded
-                                            .write_all(&buf2[..bytes_read])
-                                            .await
-                                            .with_context(|| "error writing to incoming")?;
-                                    }
+                                    Ok::<_, anyhow::Error>(())
+                                }
+                                Err(_) => {
+                                    // raise exception
+                                    panic!("FIXME");
                                 }
                             }
-                        }
-
-                        Ok::<_, anyhow::Error>(())
-                    }
-                    Err(_) => {
-                        // raise exception
-                        panic!("FIXME");
-                    }
+                        },
+                    );
+                } else {
+                    *res.body_mut() = proxy_res.into_body();
                 }
-            });
-        } else {
-            *res.body_mut() = proxy_resp.into_body();
-        }
 
-        HandlerInvocationResult::Responded
+                HandlerInvocationResult::Responded
+            }
+            None => HandlerInvocationResult::Exception {
+                name: "proxy:bad-gateway:no-healthy-upstreams".parse().unwrap(),
+                data: Default::default(),
+            },
+        }
     }
 }
 
@@ -399,12 +490,20 @@ struct ResolvedStaticDir {
     public_hostname: SmolStr,
 }
 
-impl ResolvedStaticDir {
-    const EXCEPTION_LOOP_DETECTED: ExceptionName = ResolvedProxy::EXCEPTION_LOOP_DETECTED;
+impl fmt::Debug for ResolvedStaticDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedStaticDir")
+            .field("config", &self.config)
+            .field("handler_name", &self.handler_name)
+            .field("config_id", &self.config_id)
+            .finish()
+    }
+}
 
+impl ResolvedStaticDir {
     async fn invoke(
         &self,
-        req: &mut Request<Body>,
+        req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &Url,
         local_addr: &SocketAddr,
@@ -412,7 +511,7 @@ impl ResolvedStaticDir {
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
-                name: ResolvedProxy::EXCEPTION_LOOP_DETECTED,
+                name: "proxy:loop-detected".parse().unwrap(),
                 data: Default::default(),
             };
         }
@@ -437,51 +536,18 @@ impl ResolvedStaticDir {
         *proxy_req.method_mut() = req.method().clone();
         *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
 
-        for (incoming_header_name, incoming_header_value) in req.headers() {
-            if incoming_header_name == ACCEPT_ENCODING
-                || incoming_header_name == CONNECTION
-                || incoming_header_name == HOST
-            {
-                continue;
-            }
+        copy_headers_to_proxy_req(req, &mut proxy_req, false);
 
-            proxy_req
-                .headers_mut()
-                .append(incoming_header_name, incoming_header_value.clone());
-        }
-
-        proxy_req
-            .headers_mut()
-            .append("x-forwarded-host", self.public_hostname.parse().unwrap());
-
-        proxy_req
-            .headers_mut()
-            .append("x-forwarded-proto", "https".parse().unwrap());
-
-        //X-Forwarded-Host and X-Forwarded-Proto
-        let mut x_forwarded_for = proxy_req
-            .headers_mut()
-            .remove("x-forwarded-for")
-            .map(|h| h.to_str().unwrap().to_string())
-            .unwrap_or_else(|| remote_addr.ip().to_string());
-
-        x_forwarded_for.push_str(&format!(", {}", local_addr.ip()));
-
-        proxy_req
-            .headers_mut()
-            .insert("x-forwarded-for", x_forwarded_for.parse().unwrap());
-
-        if !proxy_req.headers().contains_key("x-real-ip") {
-            proxy_req
-                .headers_mut()
-                .append("x-real-ip", remote_addr.ip().to_string().parse().unwrap());
-        }
+        add_forwarded_headers(
+            &mut proxy_req,
+            local_addr,
+            remote_addr,
+            &self.public_hostname,
+        );
 
         proxy_req
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
-
-        *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
 
         let instance_id = Weight::next(&mut *self.instance_ids.lock()).expect("FIXME");
 
@@ -495,21 +561,14 @@ impl ResolvedStaticDir {
             .await
             .expect("FIXME");
 
-        let mut proxy_resp = http_client.request(proxy_req).await.expect("FIXME");
+        let proxy_res = http_client.request(proxy_req).await.expect("FIXME");
 
-        for (incoming_header_name, incoming_header_value) in proxy_resp.headers() {
-            if incoming_header_name == ACCEPT_ENCODING || incoming_header_name == CONNECTION {
-                continue;
-            }
-
-            res.headers_mut()
-                .append(incoming_header_name, incoming_header_value.clone());
-        }
+        copy_headers_from_proxy_res_to_res(&proxy_res, res, false);
 
         res.headers_mut()
             .append("x-exg-proxied", "1".parse().unwrap());
-        *res.status_mut() = proxy_resp.status();
-        *res.body_mut() = proxy_resp.into_body();
+        *res.status_mut() = proxy_res.status();
+        *res.body_mut() = proxy_res.into_body();
 
         HandlerInvocationResult::Responded
     }
@@ -838,6 +897,7 @@ impl ResolvedAuth {
     }
 }
 
+#[derive(Debug)]
 enum ResolvedHandlerVariant {
     Proxy(ResolvedProxy),
     StaticDir(ResolvedStaticDir),
@@ -849,7 +909,7 @@ enum HandlerInvocationResult {
     Responded,
     ToNextHandler,
     Exception {
-        name: ExceptionName,
+        name: Exception,
         data: HashMap<SmolStr, SmolStr>,
     },
 }
@@ -954,15 +1014,16 @@ impl ResolvedHandlerVariant {
 #[derive(Debug)]
 enum ResolvedFinalizingRuleAction {
     Invoke {
-        catch: ResolvedCatchActions,
+        catch: Vec<ResolvedRescueItem>,
     },
     NextHandler,
     Throw {
-        exception: ExceptionName,
+        exception: Exception,
         data: HashMap<SmolStr, SmolStr>,
     },
     Respond {
         static_response: ResolvedStaticResponse,
+        data: HashMap<SmolStr, SmolStr>,
     },
 }
 
@@ -981,13 +1042,14 @@ impl ResolvedRuleAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ResolvedCatchAction {
     StaticResponse {
         static_response: ResolvedStaticResponse,
+        data: HashMap<SmolStr, SmolStr>,
     },
     Throw {
-        exception_name: ExceptionName,
+        exception: Exception,
         data: HashMap<SmolStr, SmolStr>,
     },
     NextHandler,
@@ -1107,54 +1169,182 @@ impl ResolvedRule {
 }
 
 struct ResolvedHandler {
-    config_name: Option<ConfigName>,
-
     resolved_variant: ResolvedHandlerVariant,
 
     base_path: Vec<UrlPathSegmentOrQueryPart>,
     replace_base_path: Vec<UrlPathSegmentOrQueryPart>,
     priority: u16,
-    handler_catch: ResolvedCatchActions,
-    name: HandlerName,
+    handler_rescue: Vec<ResolvedRescueItem>,
 
-    mount_point_catch: ResolvedCatchActions,
-    project_catch: ResolvedCatchActions,
+    mount_point_rescue: Vec<ResolvedRescueItem>,
+    project_rescue: Vec<ResolvedRescueItem>,
 
     resolved_rules: Vec<ResolvedRule>,
+
+    account_unique_id: AccountUniqueId,
+    rules_counter: AccountRulesCounters,
+}
+
+#[derive(Debug)]
+enum Rescueable<'a> {
+    Exception {
+        exception: &'a Exception,
+        data: &'a HashMap<SmolStr, SmolStr>,
+    },
+    StatusCode(StatusCode),
+}
+
+impl<'a> Rescueable<'a> {
+    fn is_exception(&'a self) -> bool {
+        match self {
+            Rescueable::Exception { .. } => true,
+            Rescueable::StatusCode(_) => false,
+        }
+    }
+
+    fn data(&'a self) -> Option<&'a HashMap<SmolStr, SmolStr>> {
+        match self {
+            Rescueable::Exception { data, .. } => Some(data),
+            Rescueable::StatusCode(_) => None,
+        }
+    }
+}
+
+#[must_use]
+enum ResolvedHandlerProcessingResult {
+    Processed,
+    FiltersNotMatched,
+    NextHandler,
 }
 
 impl ResolvedHandler {
-    /// Handle exception in the right order
-    fn handle_exception(
-        &self,
-        exception_name: &ExceptionName,
-        exception_data: &HashMap<SmolStr, SmolStr>,
-        maybe_rule_invoke_catch: Option<&ResolvedCatchActions>,
-    ) -> ExceptionHandleResult {
-        let maybe_resolved_exception = maybe_rule_invoke_catch
-            .and_then(|r| r.handle_exception(exception_name))
-            .or_else(|| self.handler_catch.handle_exception(exception_name))
-            .or_else(|| self.mount_point_catch.handle_exception(exception_name))
-            .or_else(|| self.project_catch.handle_exception(exception_name));
+    fn is_exception_matches(matcher: &Exception, exception: &Exception) -> bool {
+        if matcher.0.len() > exception.0.len() {
+            return false;
+        }
 
-        match maybe_resolved_exception {
-            None => ExceptionHandleResult::UnhandledException {
-                exception_name: exception_name.clone(),
-                data: exception_data.clone(),
+        let zipped = matcher.0.iter().zip(exception.0.iter());
+
+        for (matcher_segment, exception_segment) in zipped {
+            if matcher_segment != exception_segment {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn is_status_code_matches(matcher: &StatusCodeRange, status_code: &StatusCode) -> bool {
+        match matcher {
+            StatusCodeRange::Single(single) => single == status_code,
+            StatusCodeRange::Range(from, to) => {
+                (from.as_u16()..=to.as_u16()).contains(&status_code.as_u16())
+            }
+            StatusCodeRange::List(codes) => codes
+                .iter()
+                .find(|code| code.as_u16() == status_code.as_u16())
+                .is_some(),
+        }
+    }
+
+    fn find_exception_handler(
+        rescue: &Vec<ResolvedRescueItem>,
+        rescueable: &Rescueable<'_>,
+    ) -> Option<ResolvedCatchAction> {
+        for rescue_item in rescue.iter() {
+            match (rescueable, &rescue_item.catch) {
+                (
+                    Rescueable::Exception { exception, .. },
+                    ResolvedCatchMatcher::Exception(exception_matcher),
+                ) if Self::is_exception_matches(exception_matcher, exception) => {
+                    return Some(rescue_item.handle.clone())
+                }
+                (
+                    Rescueable::StatusCode(status_code),
+                    ResolvedCatchMatcher::StatusCode(status_code_rande),
+                ) if Self::is_status_code_matches(status_code_rande, status_code) => {
+                    return Some(rescue_item.handle.clone())
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    /// Handle exception in the right order
+    fn handle_rescueable(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        rescueable: &Rescueable<'_>,
+        maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+    ) -> ResolvedHandlerProcessingResult {
+        info!("handle rescueable: {:?}", rescueable);
+
+        let maybe_resolved_exception = maybe_rule_invoke_catch
+            .and_then(|r| Self::find_exception_handler(r, &rescueable))
+            .or_else(|| Self::find_exception_handler(&self.handler_rescue, &rescueable))
+            .or_else(|| Self::find_exception_handler(&self.mount_point_rescue, &rescueable))
+            .or_else(|| Self::find_exception_handler(&self.project_rescue, &rescueable));
+
+        let result = match maybe_resolved_exception {
+            None => match rescueable {
+                &Rescueable::Exception { exception, data } => {
+                    RescueableHandleResult::UnhandledException {
+                        exception_name: exception.clone(),
+                        data: data.clone(),
+                    }
+                }
+                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing,
             },
-            Some(ResolvedCatchAction::Throw {
-                exception_name,
+            Some(ResolvedCatchAction::Throw { exception, data }) => match rescueable {
+                &Rescueable::Exception { .. } => RescueableHandleResult::UnhandledException {
+                    exception_name: exception.clone(),
+                    data: data.clone(),
+                },
+                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing,
+            },
+            Some(ResolvedCatchAction::StaticResponse {
+                static_response,
                 data,
-            }) => ExceptionHandleResult::UnhandledException {
-                exception_name: exception_name.clone(),
+            }) => RescueableHandleResult::StaticResponse {
+                static_response: static_response.clone(),
                 data: data.clone(),
             },
-            Some(ResolvedCatchAction::StaticResponse { static_response }) => {
-                ExceptionHandleResult::StaticResponse {
-                    static_response: static_response.clone(),
+            Some(ResolvedCatchAction::NextHandler) => RescueableHandleResult::NextHandler,
+        };
+
+        match result {
+            RescueableHandleResult::StaticResponse {
+                static_response,
+                mut data,
+            } => {
+                if let Some(additional_data) = rescueable.data() {
+                    data.extend(additional_data.iter().map(|(k, v)| (k.clone(), v.clone())));
                 }
+                return self.handle_static_response(
+                    req,
+                    res,
+                    &static_response,
+                    data,
+                    rescueable.is_exception(),
+                    maybe_rule_invoke_catch,
+                );
             }
-            Some(ResolvedCatchAction::NextHandler) => ExceptionHandleResult::NextHandler,
+            RescueableHandleResult::NextHandler => {
+                info!("move on to next handler");
+                return ResolvedHandlerProcessingResult::NextHandler;
+            }
+            RescueableHandleResult::UnhandledException { exception_name, .. } => {
+                warn!("unhandled exception: {}", exception_name);
+                self.respond_server_error(res);
+                return ResolvedHandlerProcessingResult::Processed;
+            }
+            RescueableHandleResult::FinishProcessing => {
+                info!("processing finished");
+                return ResolvedHandlerProcessingResult::Processed;
+            }
         }
     }
 
@@ -1163,9 +1353,17 @@ impl ResolvedHandler {
         self.resolved_rules
             .iter()
             .filter_map(|resolved_rule| resolved_rule.get_action(url))
+            .inspect(|_| {
+                self.rules_counter.register_rule(&self.account_unique_id);
+            })
             // TODO: apply modifications
             .filter(|maybe_resolved_action| maybe_resolved_action.is_finalizing())
             .next()
+    }
+
+    fn respond_server_error(&self, res: &mut Response<Body>) {
+        *res = Response::new(Body::from("Internal server error"));
+        *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     }
 
     // Handle whole request
@@ -1173,84 +1371,122 @@ impl ResolvedHandler {
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
+        _requested_url: &Url,
+        replaced_url: &Url,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
-    ) -> Option<()> {
-        let mut url: Url = req.uri().to_string().parse().unwrap();
-
-        let action = self.find_action(&url)?;
-
+    ) -> ResolvedHandlerProcessingResult {
+        let action = match self.find_action(replaced_url) {
+            None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
+            Some(action) => action,
+        };
         match action {
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke { catch }) => {
                 let invocation_result = self
                     .resolved_variant
-                    .invoke(req, res, requested_url, local_addr, remote_addr)
+                    .invoke(req, res, replaced_url, local_addr, remote_addr)
                     .await;
-
-                info!("invocation_result = {:?}", invocation_result);
 
                 match invocation_result {
                     HandlerInvocationResult::Responded => {
-                        // TODO: handle status-code catch block!
-                        return Some(());
+                        let rescueable = Rescueable::StatusCode(res.status());
+                        return self.handle_rescueable(req, res, &rescueable, Some(catch));
                     }
                     HandlerInvocationResult::ToNextHandler => {
-                        return None;
+                        return ResolvedHandlerProcessingResult::NextHandler;
                     }
                     HandlerInvocationResult::Exception { name, data } => {
-                        let handle_exception = self.handle_exception(&name, &data, Some(catch));
-                        error!("handle_exception = {:?}", handle_exception);
+                        let rescueable = Rescueable::Exception {
+                            exception: &name,
+                            data: &data,
+                        };
+                        return self.handle_rescueable(req, res, &rescueable, Some(catch));
                     }
                 }
             }
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::NextHandler) => {
-                return None
+                return ResolvedHandlerProcessingResult::NextHandler;
             }
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Throw {
                 exception,
                 data,
             }) => {
-                self.handle_exception(exception, data, None);
+                let rescueable = Rescueable::Exception { exception, data };
+                return self.handle_rescueable(req, res, &rescueable, None);
             }
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
                 static_response,
-            }) => static_response.invoke(req, res),
+                data,
+            }) => {
+                return self.handle_static_response(
+                    req,
+                    res,
+                    static_response,
+                    data.clone(),
+                    false,
+                    None,
+                );
+            }
             ResolvedRuleAction::None => {
                 unreachable!("None action should never be called for execution")
             }
         }
-
-        None
     }
-}
 
-impl ResolvedCatchActions {
-    fn handle_exception(&self, name: &ExceptionName) -> Option<&ResolvedCatchAction> {
-        if let Some(catch) = self.exceptions.get(name) {
-            return Some(catch);
+    fn handle_static_response(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        static_response: &ResolvedStaticResponse,
+        additional_data: HashMap<SmolStr, SmolStr>,
+        is_in_exception: bool,
+        maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+    ) -> ResolvedHandlerProcessingResult {
+        *res = Response::new(Body::empty());
+
+        match static_response.invoke(req, res, additional_data) {
+            Ok(()) => ResolvedHandlerProcessingResult::Processed,
+            Err((exception, data)) => {
+                *res = Response::new(Body::empty());
+                if !is_in_exception {
+                    let rescueable = Rescueable::Exception {
+                        exception: &exception,
+                        data: &data,
+                    };
+                    info!("handle_rescueable data = {:?}", rescueable);
+                    return self.handle_rescueable(req, res, &rescueable, maybe_rule_invoke_catch);
+                } else {
+                    error!(
+                        "error evaluating static response while in exception handling: {:?}. {:?}",
+                        exception, data
+                    );
+                    *res.body_mut() = Body::from("Internal server error");
+                    *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+
+                    return ResolvedHandlerProcessingResult::Processed;
+                }
+            }
         }
-        if let Some(unhandled_catch) = &self.unhandled_exception {
-            return Some(unhandled_catch);
-        }
-        None
     }
 }
 
 #[derive(Debug)]
-enum ExceptionHandleResult {
+#[must_use]
+enum RescueableHandleResult {
+    /// Respond with static response
     StaticResponse {
         static_response: ResolvedStaticResponse,
-    },
-    NextHandler,
-    UnhandledException {
-        exception_name: ExceptionName,
         data: HashMap<SmolStr, SmolStr>,
     },
-}
-
-struct ResolvedMountPoint {
-    handlers: Vec<ResolvedHandler>,
+    /// Move on to next handler
+    NextHandler,
+    /// Exception hasn't been handled by ant of handlers
+    UnhandledException {
+        exception_name: Exception,
+        data: HashMap<SmolStr, SmolStr>,
+    },
+    /// Finish processing normally, respond with prepared response
+    FinishProcessing,
 }
 
 fn resolve_static_response(
@@ -1282,7 +1518,7 @@ fn resolve_static_response(
             StaticResponse::Redirect(redirect) => {
                 let mut headers = redirect.common.headers.clone();
                 headers.insert(
-                    "Location",
+                    LOCATION,
                     redirect.destination.as_str().parse().expect("bad URL"),
                 );
                 headers
@@ -1303,58 +1539,41 @@ fn resolve_cache_action(
 ) -> Option<ResolvedCatchAction> {
     Some(match catch_action {
         CatchAction::StaticResponse {
-            static_response_name,
+            name,
             status_code,
             data,
         } => ResolvedCatchAction::StaticResponse {
-            static_response: resolve_static_response(
-                static_response_name,
-                status_code,
-                data,
-                static_responses,
-            )?,
+            static_response: resolve_static_response(name, status_code, data, static_responses)?,
+            data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         },
-        CatchAction::Throw {
-            exception_name,
-            data,
-        } => ResolvedCatchAction::Throw {
-            exception_name: exception_name.clone(),
+        CatchAction::Throw { exception, data } => ResolvedCatchAction::Throw {
+            exception: exception.clone(),
             data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         },
         CatchAction::NextHandler => ResolvedCatchAction::NextHandler,
     })
 }
 
-fn resolve_catch_actions(
-    catch_actions: &CatchActions,
+fn resolve_rescue_items(
+    rescue: &[RescueItem],
     static_responses: &HashMap<StaticResponseName, StaticResponse>,
-) -> Option<ResolvedCatchActions> {
-    Some(ResolvedCatchActions {
-        exceptions: catch_actions
-            .exceptions
-            .iter()
-            .map(|(exception_name, catch_action)| {
-                let resolved_action = resolve_cache_action(catch_action, &static_responses)?;
-
-                Some((exception_name.clone(), resolved_action))
+) -> Option<Vec<ResolvedRescueItem>> {
+    rescue
+        .iter()
+        .map(|rescue_item| {
+            Some(ResolvedRescueItem {
+                catch: match &rescue_item.catch {
+                    CatchMatcher::StatusCode(status_code) => {
+                        ResolvedCatchMatcher::StatusCode(status_code.clone())
+                    }
+                    CatchMatcher::Exception(exception) => {
+                        ResolvedCatchMatcher::Exception(exception.clone())
+                    }
+                },
+                handle: resolve_cache_action(&rescue_item.handle, &static_responses)?,
             })
-            .into_iter()
-            .collect::<Option<HashMap<ExceptionName, ResolvedCatchAction>>>()?,
-        unhandled_exception: catch_actions
-            .unhandled_exception
-            .as_ref()
-            .and_then(|r| resolve_cache_action(r, &static_responses)),
-        status_codes: catch_actions
-            .status_codes
-            .iter()
-            .map(|range_handler| {
-                Some(ResolvedStatusCodeRangeHandler {
-                    status_codes_range: range_handler.status_codes_range.clone(),
-                    catch: resolve_cache_action(&range_handler.catch, &static_responses)?,
-                })
-            })
-            .collect::<Option<_>>()?,
-    })
+        })
+        .collect::<Option<_>>()
 }
 impl RequestsProcessor {
     pub fn new(
@@ -1362,14 +1581,14 @@ impl RequestsProcessor {
         google_oauth2_client: auth::google::GoogleOauth2Client,
         github_oauth2_client: auth::github::GithubOauth2Client,
         assistant_base_url: Url,
-        public_gw_base_url: &Url,
         client_tunnels: ClientTunnels,
+        rules_counter: AccountRulesCounters,
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
     ) -> Result<RequestsProcessor, ()> {
         let grouped = resp.configs.iter().group_by(|item| &item.config_name);
 
-        let project_catch = resp.project_config.catch;
+        let project_rescue = resp.project_config.rescue;
         let jwt_ecdsa = JwtEcdsa {
             private_key: resp.jwt_ecdsa.private_key.into(),
             public_key: resp.jwt_ecdsa.public_key.into(),
@@ -1402,7 +1621,7 @@ impl RequestsProcessor {
                     .1;
 
                 let config = &entry.config;
-                let instance_ids: &SmallVec<[InstanceId; 4]> = &entry.instance_ids;
+                let instance_ids = entry.instance_ids.clone();
 
                 let upstreams = &config.upstreams;
 
@@ -1439,10 +1658,10 @@ impl RequestsProcessor {
         let mut merged_resolved_handlers = vec![];
 
         for (_, (config_name, upstreams, instance_ids, mp)) in grouped_mount_points.into_iter() {
-            let mp_catch = mp.catch.clone();
+            let mp_rescue = mp.rescue.clone();
 
             shadow_clone!(instance_ids);
-            shadow_clone!(project_catch);
+            shadow_clone!(project_rescue);
             shadow_clone!(static_responses);
             shadow_clone!(jwt_ecdsa);
             shadow_clone!(mount_point_base_url);
@@ -1455,6 +1674,7 @@ impl RequestsProcessor {
             shadow_clone!(account_name);
             shadow_clone!(account_unique_id);
             shadow_clone!(project_name);
+            shadow_clone!(rules_counter);
 
             let mut r = mp.handlers
                 .into_iter()
@@ -1462,8 +1682,6 @@ impl RequestsProcessor {
                     let replace_base_path = handler.replace_base_path.clone();
 
                     Some(ResolvedHandler {
-                        config_name: config_name.clone(),
-
                         resolved_variant: match handler.variant {
                             ClientHandlerVariant::Auth(auth) => {
                                 ResolvedHandlerVariant::Auth(ResolvedAuth {
@@ -1486,7 +1704,7 @@ impl RequestsProcessor {
                                         let instance_ids = instance_ids
                                             .as_ref()
                                             .expect("[BUG] try to access instance_ids on project-level config")
-                                            .iter();
+                                            .keys();
                                         for instance_id in instance_ids {
                                             balancer.add(instance_id.clone(), 1);
                                         }
@@ -1520,8 +1738,10 @@ impl RequestsProcessor {
                                             .as_ref()
                                             .expect("[BUG] try to access instance_ids on project-level config")
                                             .iter();
-                                        for instance_id in instance_ids {
-                                            balancer.add(instance_id.clone(), 1);
+                                        for (instance_id, health_status) in instance_ids {
+                                            if health_status.get(&proxy.upstream) == Some(&true) {
+                                                balancer.add(instance_id.clone(), 1);
+                                            }
                                         }
 
                                         Mutex::new(balancer)
@@ -1539,17 +1759,16 @@ impl RequestsProcessor {
                             }
                         },
                         priority: handler.priority,
-                        handler_catch: resolve_catch_actions(
-                            &handler.catch.actions,
+                        handler_rescue: resolve_rescue_items(
+                            &handler.rescue,
                             &static_responses,
                         )?,
-                        name: handler_name,
-                        mount_point_catch: resolve_catch_actions(
-                            &mp_catch.actions,
+                        mount_point_rescue: resolve_rescue_items(
+                            &mp_rescue,
                             &static_responses,
                         )?,
-                        project_catch: resolve_catch_actions(
-                            &project_catch.actions,
+                        project_rescue: resolve_rescue_items(
+                            &project_rescue,
                             &static_responses,
                         )?,
                         resolved_rules: handler
@@ -1562,9 +1781,9 @@ impl RequestsProcessor {
                                             base_path: replace_base_path.clone(),
                                         },
                                         action: match rule.action {
-                                            Action::Invoke { catch } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
-                                                catch: resolve_catch_actions(
-                                                    &catch.actions,
+                                            Action::Invoke { rescue } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
+                                                catch: resolve_rescue_items(
+                                                    &rescue,
                                                     &static_responses,
                                                 )?,
                                             }),
@@ -1575,9 +1794,7 @@ impl RequestsProcessor {
                                                 data: data.iter().map(|(k,v)| (k.as_str().into(), v.as_str().into())).collect(),
                                             }),
                                             Action::Respond {
-                                                static_response_name,
-                                                status_code,
-                                                data,
+                                                name: static_response_name, status_code, data, rescue: _rescue
                                             } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
                                                 static_response: resolve_static_response(
                                                     &static_response_name,
@@ -1585,13 +1802,16 @@ impl RequestsProcessor {
                                                     &data,
                                                     &static_responses,
                                                 )?,
+                                                data: Default::default(),
                                             }),
                                         },
                                     })
                                 })
                             .collect::<Option<_>>()?,
+                        account_unique_id,
                         base_path: handler.base_path,
                         replace_base_path: handler.replace_base_path,
+                        rules_counter: rules_counter.clone(),
                     })
                 })
                 .collect::<Option<Vec<_>>>()
@@ -1609,7 +1829,8 @@ impl RequestsProcessor {
             github_oauth2_client,
             assistant_base_url,
             maybe_identity,
-            public_gw_base_url: public_gw_base_url.clone(),
+            rules_counter,
+            account_unique_id,
         })
     }
 }
@@ -1623,7 +1844,17 @@ struct ResolvedStaticResponse {
 }
 
 impl ResolvedStaticResponse {
-    fn invoke(&self, req: &Request<Body>, res: &mut Response<Body>) {
+    fn invoke(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        additional_data: HashMap<SmolStr, SmolStr>,
+    ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
+        let mut merged_data = self.data.clone();
+        merged_data.extend(additional_data.into_iter());
+
+        merged_data.insert("time".into(), Utc::now().to_string().into());
+
         for (k, v) in &self.headers {
             res.headers_mut().append(k, v.clone());
         }
@@ -1632,14 +1863,24 @@ impl ResolvedStaticResponse {
 
         if self.body.is_empty() {
             // no body defined, just respond with the status code
-            return;
+            return Ok(());
         }
 
         let accept = req
             .headers()
             .typed_get::<Accept>()
-            .expect("FIXME")
-            .expect("FIXME");
+            .map_err(|_| {
+                (
+                    Exception::from_str("static-response:bad-accept-header").unwrap(),
+                    merged_data.clone(),
+                )
+            })?
+            .ok_or_else(|| {
+                (
+                    Exception::from_str("static-response:no-accept-header").unwrap(),
+                    merged_data.clone(),
+                )
+            })?;
 
         let best_content_type = ordered_by_quality(&accept)
             .filter_map(|mime_pattern| {
@@ -1666,13 +1907,15 @@ impl ResolvedStaticResponse {
 
                     Some(TemplateEngine::Handlebars) => {
                         let handlebars = Handlebars::new();
-                        let data = hashmap! {
-                            "time" => Utc::now()
-                        };
-                        // TODO: add data bash-map
                         handlebars
-                            .render_template(&resp.content, &data)
-                            .expect("FIXME")
+                            .render_template(&resp.content, &merged_data)
+                            .map_err(|e| {
+                                merged_data.insert("error".into(), e.to_string().into());
+                                (
+                                    Exception::from_str("static-response:render-error").unwrap(),
+                                    merged_data.into_iter().collect(),
+                                )
+                            })?
                     }
                 };
                 *res.body_mut() = Body::from(body);
@@ -1681,14 +1924,21 @@ impl ResolvedStaticResponse {
                 *res.status_mut() = StatusCode::NOT_ACCEPTABLE;
             }
         }
+
+        Ok(())
     }
 }
 
 #[derive(Debug)]
-struct ResolvedCatchActions {
-    exceptions: HashMap<ExceptionName, ResolvedCatchAction>,
-    unhandled_exception: Option<ResolvedCatchAction>,
-    status_codes: Vec<ResolvedStatusCodeRangeHandler>,
+pub enum ResolvedCatchMatcher {
+    StatusCode(StatusCodeRange),
+    Exception(Exception),
+}
+
+#[derive(Debug)]
+pub struct ResolvedRescueItem {
+    catch: ResolvedCatchMatcher,
+    handle: ResolvedCatchAction,
 }
 
 #[derive(Debug)]

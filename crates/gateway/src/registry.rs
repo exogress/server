@@ -6,9 +6,7 @@ use chrono::{DateTime, Utc};
 use lru_time_cache::LruCache;
 use patricia_tree::PatriciaMap;
 
-use crate::clients::ClientTunnels;
 use crate::urls::matchable_url::MatchableUrl;
-use crate::urls::Protocol;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 
 struct Inner {
@@ -21,15 +19,8 @@ struct Inner {
 
 impl Inner {
     fn process_evicted(&mut self, evicted: Vec<(String, Option<Arc<RequestsProcessor>>)>) {
-        for (k, maybe_requests_processors) in evicted.into_iter() {
+        for (k, _) in evicted.into_iter() {
             self.from_prefix_lookup_tree.remove(k);
-            if let Some(requests_processors) = maybe_requests_processors {
-                // requests_processors
-                //     .health
-                //     .health_deleted()
-                //     .await
-                //     .expect("FIXME");
-            }
         }
     }
 
@@ -97,16 +88,9 @@ impl Inner {
 
             self.process_evicted(evicted);
 
-            let maybe_requests_processors = self.lru_storage.remove(&found_url_prefix_string);
+            self.lru_storage.remove(&found_url_prefix_string);
             self.from_prefix_lookup_tree
                 .remove(&found_url_prefix_string);
-
-            if let Some(Some(requests_processors)) = maybe_requests_processors {
-                // requests_processors
-                //     .health
-                //     .health_deleted()
-                //     .expect("FIXME");
-            }
         }
     }
 

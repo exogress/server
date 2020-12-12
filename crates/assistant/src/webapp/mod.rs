@@ -23,9 +23,6 @@ pub enum Error {
     #[error("request error: `{0}`")]
     Reqwest(#[from] reqwest::Error),
 
-    #[error("bad response")]
-    BadResponse,
-
     #[error("URL prefix error: `{0}`")]
     Url(#[from] url::ParseError),
 }
@@ -46,23 +43,6 @@ impl Client {
         Client {
             reqwest: reqwest.build().unwrap(),
             base_url,
-        }
-    }
-
-    pub async fn report_health(&self, report: Vec<UpstreamReportWithGwInfo>) -> Result<(), Error> {
-        let mut url = self.base_url.clone();
-        url.path_segments_mut()
-            .unwrap()
-            .push("int_api")
-            .push("v1")
-            .push("healths");
-
-        let res = self.reqwest.post(url).json(&report).send().await?;
-
-        if res.status().is_success() {
-            Ok(())
-        } else {
-            Err(Error::BadResponse)
         }
     }
 }

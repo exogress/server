@@ -20,7 +20,6 @@ use forwarder::{ForwarderBuilder, ForwardingRules};
 use std::net::IpAddr;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
 fn main() {
@@ -117,11 +116,7 @@ fn main() {
         .unwrap();
 
     let resolver = rt
-        .block_on(TokioAsyncResolver::new(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-            rt.handle().clone(),
-        ))
+        .block_on(TokioAsyncResolver::from_system_conf(rt.handle().clone()))
         .unwrap();
 
     let logger_bg = rt
@@ -180,8 +175,8 @@ fn main() {
         .parse()
         .expect("bad gw_http_port");
 
-    info!("listen_http = {}", listen_http);
-    info!("listen_https = {}", listen_https);
+    info!("listen HTTP: {}", listen_http);
+    info!("listen HTTPS = {}", listen_https);
 
     rt.block_on(async move {
         tokio::spawn(stop_signal_listener(app_stop_handle.clone()));

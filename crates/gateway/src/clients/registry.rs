@@ -6,19 +6,15 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 use tokio::time::timeout;
 
-use exogress_tunnel::{
-    Compression, ConnectTarget, Connector, ConnectorRequest, TunneledConnection,
-};
+use exogress_tunnel::{Compression, ConnectTarget, Connector, TunneledConnection};
 
 use crate::clients::signaling::request_connection;
-use exogress_entities::{ConfigId, InstanceId, TunnelId, Ulid};
-use futures::channel::{mpsc, oneshot};
+use exogress_entities::{ConfigId, InstanceId, TunnelId};
+use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use http::Uri;
-use rand::prelude::*;
 use smol_str::SmolStr;
-use std::hash::{Hash, Hasher};
 use std::task;
 use std::task::Poll;
 use url::Url;
@@ -53,10 +49,6 @@ impl InstanceConnector {
         for (_, (connected_tunnel, _)) in storage {
             balancer.add(connected_tunnel.connector.clone(), 1);
         }
-    }
-
-    pub fn next_connection(&self) -> Option<Connector> {
-        self.inner.lock().next()
     }
 }
 
@@ -101,12 +93,6 @@ pub struct InstanceConnections {
     pub instance_connector: InstanceConnector,
 }
 
-impl InstanceConnections {
-    pub fn next_connection(&self) -> Option<Connector> {
-        self.instance_connector.next_connection()
-    }
-}
-
 pub enum TunnelConnectionState {
     Requested(Arc<ManualResetEvent>),
     Connected(HashMap<InstanceId, InstanceConnections>),
@@ -114,15 +100,6 @@ pub enum TunnelConnectionState {
 }
 
 impl TunnelConnectionState {
-    pub fn count_tunnels(&self) -> usize {
-        match self {
-            TunnelConnectionState::Requested(_) => 0,
-            TunnelConnectionState::Connected(s) => {
-                s.values().map(|inner| inner.storage.len()).sum()
-            }
-        }
-    }
-
     pub fn close(&mut self) {
         if let TunnelConnectionState::Connected(s) = self {
             for inner in s.values_mut() {
@@ -137,7 +114,6 @@ impl TunnelConnectionState {
 }
 
 pub struct ClientTunnelsInner {
-    rng: SmallRng,
     pub(crate) by_config: HashMap<ConfigId, TunnelConnectionState>,
 }
 
@@ -154,7 +130,6 @@ impl ClientTunnels {
     pub fn new(signaler_base_url: Url, maybe_identity: Option<Vec<u8>>) -> Self {
         ClientTunnels {
             inner: Arc::new(Mutex::new(ClientTunnelsInner {
-                rng: SmallRng::from_entropy(),
                 by_config: Default::default(),
             })),
             signaler_base_url,

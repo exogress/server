@@ -6,7 +6,6 @@ use std::panic::UnwindSafe;
 pub enum StopReason {
     SignalReceived,
     SetOfflineError,
-    HealthReportError,
 }
 
 impl UnwindSafe for StopReason {}
@@ -16,7 +15,6 @@ impl fmt::Display for StopReason {
         match self {
             StopReason::SignalReceived => write!(f, "signal received"),
             StopReason::SetOfflineError => write!(f, "set offline error"),
-            StopReason::HealthReportError => write!(f, "health report error"),
         }
     }
 }

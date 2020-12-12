@@ -45,7 +45,7 @@ use crate::stop_reasons::StopReason;
 use crate::webapp::Client;
 use exogress_common_utils::termination::stop_signal_listener;
 use exogress_server_common::assistant::{
-    HealthReport, RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage,
+    RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage,
 };
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::channel::mpsc;
@@ -53,7 +53,6 @@ use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use tokio::runtime::Builder;
 use tokio::time::delay_for;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
 mod chain;
@@ -351,11 +350,7 @@ fn main() {
         .unwrap();
 
     let resolver = rt
-        .block_on(TokioAsyncResolver::new(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-            rt.handle().clone(),
-        ))
+        .block_on(TokioAsyncResolver::from_system_conf(rt.handle().clone()))
         .unwrap();
 
     let logger_bg = rt
@@ -592,7 +587,6 @@ fn main() {
 
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
-        let (health_state_change_tx, health_state_change_rx) = mpsc::channel(256);
 
         let google_oauth2_client = GoogleOauth2Client::new(
             Duration::from_secs(60),
@@ -612,9 +606,11 @@ fn main() {
             int_client_cert.clone(),
         );
 
+        let account_rules_counters = AccountRulesCounters::new();
+
         let api_client = Client::new(
             cache_ttl,
-            health_state_change_tx,
+            account_rules_counters.clone(),
             webapp_base_url,
             google_oauth2_client.clone(),
             github_oauth2_client.clone(),
@@ -648,36 +644,6 @@ fn main() {
             .value_of("location")
             .expect("Please provide --location")
             .to_string();
-
-        let account_rules_counters = AccountRulesCounters::new();
-
-        let dump_health_changes = {
-            shadow_clone!(individual_hostname);
-            shadow_clone!(mut statistics_tx);
-
-            const CHUNK: usize = 2048;
-            let mut ready_chunks = health_state_change_rx.ready_chunks(CHUNK);
-            async move {
-                while let Some(ready_chunks) = ready_chunks.next().await {
-                    let should_wait = ready_chunks.len() != CHUNK;
-
-                    info!("health report: {:?}", ready_chunks);
-
-                    let batch = WsFromGwMessage::Health {
-                        report: HealthReport::UpstreamsHealth {
-                            records: ready_chunks,
-                        },
-                    };
-
-                    statistics_tx.send(batch).await?;
-                    if should_wait {
-                        delay_for(Duration::from_secs(5)).await;
-                    }
-                }
-
-                Ok::<_, anyhow::Error>(())
-            }
-        };
 
         let dump_traffic_statistics = {
             shadow_clone!(individual_hostname);
@@ -806,11 +772,9 @@ fn main() {
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
-            &account_rules_counters,
             int_client_cert,
             https_counters_tx,
             dbip,
-            resolver,
         );
 
         let acme_server = acme_server(webroot, listen_http_acme_challenge_addr);
@@ -819,7 +783,6 @@ fn main() {
             tokio::select! {
                 _ = tokio::spawn(dump_traffic_statistics) => {},
                 _ = tokio::spawn(dump_rules_statistics) => {},
-                _ = tokio::spawn(dump_health_changes) => {},
             }
         });
 

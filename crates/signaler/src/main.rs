@@ -164,15 +164,20 @@ fn main() {
         shadow_clone!(signaler_id);
 
         AssertUnwindSafe(async move {
+            println!("spawn presence client");
+
             let presence_client =
                 presence::Client::new(webapp_base_url, signaler_id, int_client_cert);
 
             tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
+            println!("Spawning signaler");
+
             presence_client
                 .register_signaler()
                 .await
                 .expect("Could not register signaler");
+            println!("Signaler registered");
 
             let periodic_send_alive = {
                 let presence_client = presence_client.clone();
@@ -191,7 +196,7 @@ fn main() {
             }
             .fuse();
 
-            info!("Listening public HTTP on {}", listen_public_http_addr);
+            println!("Listening public HTTP on {}", listen_public_http_addr);
 
             let redis_client = Client::open(redis_addr.as_str()).unwrap();
 

@@ -3,8 +3,8 @@ use std::time::Duration;
 use crate::clients::ClientTunnels;
 use crate::http_serve::{auth, RequestsProcessor};
 use crate::registry::RequestsProcessorsRegistry;
+use crate::rules_counter::AccountRulesCounters;
 use crate::urls::matchable_url::MatchableUrl;
-use crate::urls::Protocol;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -12,19 +12,19 @@ use exogress_common_utils::jwt::{jwt_token, JwtError};
 use exogress_config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
 use exogress_entities::{
     AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName,
+    Upstream,
 };
-use exogress_server_common::assistant::UpstreamReport;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
-use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
+use hashbrown::HashMap;
 use http::StatusCode;
-use itertools::Itertools;
 use lru_time_cache::LruCache;
 use percent_encoding::NON_ALPHANUMERIC;
 use reqwest::Identity;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::sync::Arc;
+use tokio::time::timeout;
 use url::Url;
 
 #[derive(Clone)]
@@ -41,7 +41,6 @@ pub struct Client {
     certificates: Arc<parking_lot::Mutex<LruCache<String, CertificateRetrievalState>>>,
     requests_processors_registry: RequestsProcessorsRegistry,
     webapp_base_url: Url,
-    health_state_change_tx: mpsc::Sender<UpstreamReport>,
 
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
@@ -49,6 +48,8 @@ pub struct Client {
     maybe_identity: Option<Vec<u8>>,
 
     public_gw_base_url: Url,
+
+    rules_counters: AccountRulesCounters,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -140,7 +141,7 @@ pub struct AcmeHttpChallengeVerificationQueryParams {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct ConfigData {
-    pub instance_ids: SmallVec<[InstanceId; 4]>,
+    pub instance_ids: HashMap<InstanceId, HashMap<Upstream, bool>>,
     pub config: ClientConfig,
     pub revision: ClientConfigRevision,
     pub config_name: ConfigName,
@@ -169,7 +170,7 @@ pub struct ConfigsResponse {
 impl Client {
     pub fn new(
         ttl: Duration,
-        health_state_change_tx: mpsc::Sender<UpstreamReport>,
+        rules_counters: AccountRulesCounters,
         base_url: Url,
         google_oauth2_client: auth::google::GoogleOauth2Client,
         github_oauth2_client: auth::github::GithubOauth2Client,
@@ -195,12 +196,12 @@ impl Client {
             certificates: Arc::new(parking_lot::Mutex::new(
                 LruCache::with_expiry_duration_and_capacity(ttl, 1024),
             )),
-            health_state_change_tx,
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
             maybe_identity,
             public_gw_base_url: public_gw_base_url.clone(),
+            rules_counters,
         }
     }
 
@@ -273,8 +274,6 @@ impl Client {
 
         let host = matchable_url.host();
 
-        let health_state_change_tx = self.health_state_change_tx.clone();
-
         // take lock and deal with in_flight queries
         let in_flight_request = self
             .retrieve_configs
@@ -289,6 +288,7 @@ impl Client {
                 let assistant_base_url = self.assistant_base_url.clone();
                 let maybe_identity = self.maybe_identity.clone();
                 let public_gw_base_url = self.public_gw_base_url.clone();
+                let rules_counters = self.rules_counters.clone();
 
                 let requests_processors_registry = self.requests_processors_registry.clone();
 
@@ -305,6 +305,7 @@ impl Client {
                         shadow_clone!(assistant_base_url);
                         shadow_clone!(maybe_identity);
                         shadow_clone!(public_gw_base_url);
+                        shadow_clone!(rules_counters);
 
                         async move {
                             info!(
@@ -350,8 +351,8 @@ impl Client {
                                                     google_oauth2_client,
                                                     github_oauth2_client,
                                                     assistant_base_url,
-                                                    &public_gw_base_url,
                                                     tunnels,
+                                                    rules_counters.clone(),
                                                     individual_hostname,
                                                     maybe_identity,
                                                 )
@@ -396,7 +397,7 @@ impl Client {
             })
             .clone();
 
-        in_flight_request.wait().await;
+        let _ = timeout(Duration::from_secs(20), in_flight_request.wait()).await;
 
         if let dashmap::mapref::entry::Entry::Occupied(entry) =
             self.retrieve_configs.entry(host.into())
@@ -457,7 +458,7 @@ impl Client {
                                     CertificateRetrievalState::Found(certs.clone()),
                                 );
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 certificates
                                     .lock()
                                     .insert(domain, CertificateRetrievalState::NotExist);
@@ -472,7 +473,7 @@ impl Client {
             }
         };
 
-        reset_event.wait().await;
+        let _ = timeout(Duration::from_secs(20), reset_event.wait()).await;
 
         match self.certificates.lock().get(&domain).cloned() {
             Some(CertificateRetrievalState::Found(resp)) => Ok(Some(resp)),

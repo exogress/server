@@ -9,8 +9,7 @@ use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
 use hyper::header::{HeaderValue, UPGRADE};
 use hyper::service::{make_service_fn, service_fn};
-use hyper::upgrade::Upgraded;
-use hyper::{Body, Client, Request, Response, Server, StatusCode, Version};
+use hyper::{Body, Request, Response, Server, StatusCode, Version};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{delay_for, timeout};
@@ -31,15 +30,10 @@ use crate::clients::traffic_counter::{
 use crate::webapp;
 use exogress_entities::{ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
-use futures::future::ok;
 use futures::{SinkExt, Stream, StreamExt, TryStreamExt};
-use hyper::server::accept::Accept;
-use parking_lot::Mutex;
 use std::convert::TryInto;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::future;
-use weighted_rs::{SmoothWeight, Weight};
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))
@@ -87,7 +81,7 @@ where
 
     fn poll_accept(
         mut self: Pin<&mut Self>,
-        cx: &mut Context,
+        cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
         Pin::new(&mut self.acceptor).poll_next(cx)
     }
@@ -273,8 +267,7 @@ pub async fn tunnels_acceptor(
                                                     (new_connected_tunnel, Some(stop_tx)),
                                                 );
 
-                                                let mut instance_connector =
-                                                    InstanceConnector::new();
+                                                let instance_connector = InstanceConnector::new();
                                                 instance_connector.sync(&tunnels);
 
                                                 let instance_conections = InstanceConnections {
@@ -319,7 +312,7 @@ pub async fn tunnels_acceptor(
                                                             (new_connected_tunnel, Some(stop_tx)),
                                                         );
 
-                                                        let mut instance_connector =
+                                                        let instance_connector =
                                                             InstanceConnector::new();
                                                         instance_connector.sync(&tunnels);
 
@@ -349,7 +342,7 @@ pub async fn tunnels_acceptor(
                                             (new_connected_tunnel, Some(stop_tx)),
                                         );
 
-                                        let mut instance_connector = InstanceConnector::new();
+                                        let instance_connector = InstanceConnector::new();
                                         instance_connector.sync(&tunnels);
 
                                         let instance_connections = InstanceConnections {

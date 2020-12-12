@@ -1,6 +1,11 @@
 //! Presence API
 use exogress_config_core::ClientConfig;
-use exogress_entities::{AccessKeyId, AccountName, AccountUniqueId, InstanceId, ProjectName};
+use exogress_entities::{
+    AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProjectName,
+    Upstream,
+};
+use exogress_signaling::ProbeHealthStatus;
+use hashbrown::HashMap;
 use reqwest::{Identity, Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -48,15 +53,7 @@ pub enum Error {
 }
 
 impl Client {
-    pub fn new(mut webapp_base_url: Url, name: String, maybe_identity: Option<Vec<u8>>) -> Self {
-        {
-            let mut segments = webapp_base_url.path_segments_mut().unwrap();
-            segments.push("int_api");
-            segments.push("v1");
-            segments.push("signalers");
-            segments.push(name.as_str());
-        }
-
+    pub fn new(webapp_base_url: Url, name: String, maybe_identity: Option<Vec<u8>>) -> Self {
         let mut builder = reqwest::ClientBuilder::new()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
@@ -103,7 +100,15 @@ impl Client {
     }
 
     async fn execute_signaler(&self, method: Method) -> Result<Nothing, Error> {
-        let url = self.base_url.clone();
+        let mut url = self.base_url.clone();
+
+        {
+            let mut segments = url.path_segments_mut().unwrap();
+            segments.push("int_api");
+            segments.push("v1");
+            segments.push("signalers");
+            segments.push(self.name.as_str());
+        }
 
         self.execute_url(url, method, None, &()).await
     }
@@ -120,7 +125,12 @@ impl Client {
 
         {
             let mut segments = url.path_segments_mut().unwrap();
-            segments.push("instances");
+            segments
+                .push("int_api")
+                .push("v1")
+                .push("signalers")
+                .push(self.name.as_str())
+                .push("instances");
             if let Some(instance_id) = instance_id {
                 segments.push(instance_id.to_string().as_str());
             }
@@ -169,7 +179,12 @@ impl Client {
         let mut url = self.base_url.clone();
         {
             let mut segments = url.path_segments_mut().unwrap();
-            segments.push("alive");
+            segments
+                .push("int_api")
+                .push("v1")
+                .push("signalers")
+                .push(self.name.as_str())
+                .push("alive");
         }
 
         self.execute_url(url, Method::POST, None, &()).await
@@ -193,4 +208,29 @@ impl Client {
         self.execute_presence(Method::PUT, Some(instance_id), authorization, None, config)
             .await
     }
+
+    pub async fn report_health(&self, report: UpstreamHealthReport) -> Result<(), Error> {
+        let mut url = self.base_url.clone();
+        url.path_segments_mut()
+            .unwrap()
+            .push("int_api")
+            .push("v1")
+            .push("healths");
+
+        let res = self.client.post(url).json(&report).send().await?;
+
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            Err(Error::BadResponse(res.status()))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpstreamHealthReport {
+    pub instance_id: InstanceId,
+    pub account_name: AccountName,
+    pub project_name: ProjectName,
+    pub health_probes: HashMap<Upstream, HashMap<HealthCheckProbeName, ProbeHealthStatus>>,
 }

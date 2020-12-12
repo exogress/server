@@ -99,9 +99,6 @@ pub enum Oauth2FlowError {
     #[error("no `code` param in google oauth2 callback")]
     NoCodeInCallback,
 
-    #[error("state (CSRF) not found")]
-    StateNotFound,
-
     #[error("no `state` param in google oauth2 callback")]
     NoStateInCallback,
 

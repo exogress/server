@@ -56,9 +56,6 @@ pub enum WsToGwMessage {
 pub enum WsFromGwMessage {
     #[serde(rename = "statistics")]
     Statistics { report: StatisticsReport },
-
-    #[serde(rename = "health")]
-    Health { report: HealthReport },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

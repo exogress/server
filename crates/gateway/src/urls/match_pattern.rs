@@ -1,4 +1,3 @@
-use crate::urls::Protocol;
 use core::fmt;
 use http::Uri;
 use std::str::FromStr;
@@ -52,29 +51,6 @@ impl MatchPattern {
         Ok(MatchPattern {
             matchable_prefix: uri.to_string().trim_start_matches("http://").into(),
         })
-    }
-
-    pub fn generate_url(
-        &self,
-        proto: Protocol,
-        maybe_port: Option<u16>,
-        relative_url: &str,
-    ) -> Url {
-        let scheme = match proto {
-            Protocol::Http => "https",
-            Protocol::WebSockets => "wss",
-        };
-
-        let mut url =
-            Url::parse(format!("{}://{}", scheme, self.matchable_prefix).as_str()).unwrap();
-
-        url.set_port(maybe_port).unwrap();
-
-        url.path_segments_mut().unwrap().extend(
-            relative_url.split('/').filter(|s| !s.is_empty()), //remove first empty
-        );
-
-        url
     }
 }
 

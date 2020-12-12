@@ -1,10 +1,8 @@
 use crate::reporting::MongoDbClient;
 use crate::termination::StopReason;
-use crate::webapp::UpstreamReportWithGwInfo;
 use exogress_common_utils::backoff::Backoff;
 use exogress_server_common::assistant::{
-    GatewayConfigMessage, GetValue, HealthReport, Notification, SetValue, WsFromGwMessage,
-    WsToGwMessage,
+    GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
 };
 use futures::{FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
@@ -127,25 +125,6 @@ pub async fn server(
                                                     match msg {
                                                         WsFromGwMessage::Statistics { report } => {
                                                             clickhouse_client.register_statistics_report(report, &gw_hostname, &gw_location).await?;
-                                                        }
-                                                        WsFromGwMessage::Health { report: HealthReport::UpstreamsHealth { records } } => {
-                                                            info!("records = {:?}", records);
-                                                            let full_recs = records
-                                                                .into_iter()
-                                                                .map(|r| {
-                                                                    UpstreamReportWithGwInfo {
-                                                                        gw_hostname: gw_hostname.clone(),
-                                                                        gw_location: gw_location.clone(),
-                                                                        inner: r,
-                                                                    }
-                                                                })
-                                                                .collect();
-                                                            if let Err(e) = webapp_client
-                                                                .report_health(full_recs)
-                                                                .await {
-                                                                error!("failed to report health: {:?}", e);
-                                                                stop_handle.stop(StopReason::HealthReportError);
-                                                            }
                                                         }
                                                         _ => {},
                                                     }
