@@ -1,16 +1,6 @@
-use exogress_server_common::assistant::UpstreamReport;
 use reqwest::Identity;
 use std::time::Duration;
 use url::Url;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpstreamReportWithGwInfo {
-    pub gw_hostname: String,
-    pub gw_location: String,
-
-    #[serde(flatten)]
-    pub inner: UpstreamReport,
-}
 
 #[derive(Clone)]
 pub struct Client {

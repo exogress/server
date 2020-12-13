@@ -1,7 +1,6 @@
-use crate::health::{HealthEndpoint, HealthState};
 use crate::url_prefix::MountPointBaseUrl;
 use chrono::serde::ts_milliseconds;
-use exogress_entities::{AccountName, AccountUniqueId, ConfigId, ProjectName};
+use exogress_entities::{AccountUniqueId, ConfigId};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 
@@ -87,22 +86,4 @@ pub enum StatisticsReport {
 
     #[serde(rename = "rules")]
     Rules { records: Vec<RulesRecord> },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-#[non_exhaustive]
-pub enum HealthReport {
-    #[serde(rename = "upstreams")]
-    UpstreamsHealth { records: Vec<UpstreamReport> },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpstreamReport {
-    pub account_name: AccountName,
-    pub project_name: ProjectName,
-    pub health_endpoint: HealthEndpoint,
-    pub health: Option<HealthState>, // None == no longer exist
-    #[serde(with = "ts_milliseconds")]
-    pub datetime: DateTime<Utc>,
 }
