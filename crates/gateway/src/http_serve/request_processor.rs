@@ -34,10 +34,12 @@ use itertools::Itertools;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use parking_lot::Mutex;
 use smol_str::SmolStr;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
 use std::io;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::str::FromStr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
@@ -1014,7 +1016,7 @@ impl ResolvedHandlerVariant {
 #[derive(Debug)]
 enum ResolvedFinalizingRuleAction {
     Invoke {
-        catch: Vec<ResolvedRescueItem>,
+        rescue: Vec<ResolvedRescueItem>,
     },
     NextHandler,
     Throw {
@@ -1024,6 +1026,7 @@ enum ResolvedFinalizingRuleAction {
     Respond {
         static_response: ResolvedStaticResponse,
         data: HashMap<SmolStr, SmolStr>,
+        rescue: Vec<ResolvedRescueItem>,
     },
 }
 
@@ -1381,7 +1384,9 @@ impl ResolvedHandler {
             Some(action) => action,
         };
         match action {
-            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke { catch }) => {
+            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
+                rescue: catch,
+            }) => {
                 let invocation_result = self
                     .resolved_variant
                     .invoke(req, res, replaced_url, local_addr, remote_addr)
@@ -1417,6 +1422,7 @@ impl ResolvedHandler {
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
                 static_response,
                 data,
+                rescue,
             }) => {
                 return self.handle_static_response(
                     req,
@@ -1424,7 +1430,7 @@ impl ResolvedHandler {
                     static_response,
                     data.clone(),
                     false,
-                    None,
+                    Some(rescue),
                 );
             }
             ResolvedRuleAction::None => {
@@ -1606,40 +1612,50 @@ impl RequestsProcessor {
             .map(|(k, v)| (k, (None, None, None, v.into())));
 
         // static responses are shared accross different config names
-        let mut static_responses = HashMap::new();
+        let static_responses = Rc::new(RefCell::new(HashMap::new()));
 
         let grouped_mount_points = grouped
             .into_iter()
-            .map(move |(config_name, configs)| {
-                let entry: &ConfigData = &configs
-                    .into_iter()
-                    .map(|entry| (entry.instance_ids.len(), entry))
-                    .sorted_by(|(left, _), (right, _)| left.cmp(&right).reverse())
-                    .into_iter()
-                    .next() //keep only revision with largest number of instances
-                    .unwrap()
-                    .1;
+            .map({
+                shadow_clone!(static_responses);
 
-                let config = &entry.config;
-                let instance_ids = entry.instance_ids.clone();
+                move |(config_name, configs)| {
+                    let entry: &ConfigData = &configs
+                        .into_iter()
+                        .map(|entry| (entry.instance_ids.len(), entry))
+                        .sorted_by(|(left, _), (right, _)| left.cmp(&right).reverse())
+                        .into_iter()
+                        .next() //keep only revision with largest number of instances
+                        .unwrap()
+                        .1;
 
-                let upstreams = &config.upstreams;
+                    let config = &entry.config;
+                    let instance_ids = entry.instance_ids.clone();
 
-                config
-                    .mount_points
-                    .clone()
-                    .into_iter()
-                    .map(move |(mp_name, mp)| {
-                        (
-                            mp_name,
+                    let upstreams = &config.upstreams;
+
+                    for (name, static_response) in &config.static_responses {
+                        static_responses
+                            .borrow_mut()
+                            .insert(name.clone(), static_response.clone());
+                    }
+
+                    config
+                        .mount_points
+                        .clone()
+                        .into_iter()
+                        .map(move |(mp_name, mp)| {
                             (
-                                Some(config_name.clone()),
-                                Some(upstreams.clone()),
-                                Some(instance_ids.clone()),
-                                mp,
-                            ),
-                        )
-                    })
+                                mp_name,
+                                (
+                                    Some(config_name.clone()),
+                                    Some(upstreams.clone()),
+                                    Some(instance_ids.clone()),
+                                    mp,
+                                ),
+                            )
+                        })
+                }
             })
             .flatten()
             .chain(project_mount_points)
@@ -1651,8 +1667,16 @@ impl RequestsProcessor {
 
         for (_, (_, _, _, mp)) in &grouped_mount_points {
             for (name, static_response) in &mp.static_responses {
-                static_responses.insert(name.clone(), static_response.clone());
+                static_responses
+                    .borrow_mut()
+                    .insert(name.clone(), static_response.clone());
             }
+        }
+
+        for (name, static_response) in &resp.project_config.static_responses {
+            static_responses
+                .borrow_mut()
+                .insert(name.clone(), static_response.clone());
         }
 
         let mut merged_resolved_handlers = vec![];
@@ -1761,15 +1785,15 @@ impl RequestsProcessor {
                         priority: handler.priority,
                         handler_rescue: resolve_rescue_items(
                             &handler.rescue,
-                            &static_responses,
+                            &*static_responses.borrow(),
                         )?,
                         mount_point_rescue: resolve_rescue_items(
                             &mp_rescue,
-                            &static_responses,
+                            &*static_responses.borrow(),
                         )?,
                         project_rescue: resolve_rescue_items(
                             &project_rescue,
-                            &static_responses,
+                            &*static_responses.borrow(),
                         )?,
                         resolved_rules: handler
                             .rules
@@ -1782,9 +1806,9 @@ impl RequestsProcessor {
                                         },
                                         action: match rule.action {
                                             Action::Invoke { rescue } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
-                                                catch: resolve_rescue_items(
+                                                rescue: resolve_rescue_items(
                                                     &rescue,
-                                                    &static_responses,
+                                                    &*static_responses.borrow(),
                                                 )?,
                                             }),
                                             Action::NextHandler => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::NextHandler),
@@ -1794,15 +1818,19 @@ impl RequestsProcessor {
                                                 data: data.iter().map(|(k,v)| (k.as_str().into(), v.as_str().into())).collect(),
                                             }),
                                             Action::Respond {
-                                                name: static_response_name, status_code, data, rescue: _rescue
+                                                name: static_response_name, status_code, data, rescue
                                             } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
                                                 static_response: resolve_static_response(
                                                     &static_response_name,
                                                     &status_code,
                                                     &data,
-                                                    &static_responses,
+                                                    &*static_responses.borrow(),
                                                 )?,
-                                                data: Default::default(),
+                                                data: Default::default(), // TODO: what data should be here? argh, need integrateion test suite
+                                                rescue: resolve_rescue_items(
+                                                    &rescue,
+                                                    &*static_responses.borrow(),
+                                                )?,
                                             }),
                                         },
                                     })
