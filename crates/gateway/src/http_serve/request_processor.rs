@@ -340,7 +340,7 @@ impl ResolvedProxy {
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
-                name: "proxy:loop-detected".parse().unwrap(),
+                name: "proxy-error:loop-detected".parse().unwrap(),
                 data: Default::default(),
             };
         }
@@ -475,7 +475,9 @@ impl ResolvedProxy {
                 HandlerInvocationResult::Responded
             }
             None => HandlerInvocationResult::Exception {
-                name: "proxy:bad-gateway:no-healthy-upstreams".parse().unwrap(),
+                name: "proxy-error:bad-gateway:no-healthy-upstreams"
+                    .parse()
+                    .unwrap(),
                 data: Default::default(),
             },
         }
@@ -513,7 +515,7 @@ impl ResolvedStaticDir {
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
-                name: "proxy:loop-detected".parse().unwrap(),
+                name: "proxy-error:loop-detected".parse().unwrap(),
                 data: Default::default(),
             };
         }
@@ -1459,7 +1461,6 @@ impl ResolvedHandler {
                         exception: &exception,
                         data: &data,
                     };
-                    info!("handle_rescueable data = {:?}", rescueable);
                     return self.handle_rescueable(req, res, &rescueable, maybe_rule_invoke_catch);
                 } else {
                     error!(
@@ -1899,13 +1900,13 @@ impl ResolvedStaticResponse {
             .typed_get::<Accept>()
             .map_err(|_| {
                 (
-                    Exception::from_str("static-response:bad-accept-header").unwrap(),
+                    Exception::from_str("static-response-error:bad-accept-header").unwrap(),
                     merged_data.clone(),
                 )
             })?
             .ok_or_else(|| {
                 (
-                    Exception::from_str("static-response:no-accept-header").unwrap(),
+                    Exception::from_str("static-response-error:no-accept-header").unwrap(),
                     merged_data.clone(),
                 )
             })?;
@@ -1940,7 +1941,8 @@ impl ResolvedStaticResponse {
                             .map_err(|e| {
                                 merged_data.insert("error".into(), e.to_string().into());
                                 (
-                                    Exception::from_str("static-response:render-error").unwrap(),
+                                    Exception::from_str("static-response-error:render-error")
+                                        .unwrap(),
                                     merged_data.into_iter().collect(),
                                 )
                             })?
