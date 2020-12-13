@@ -1,9 +1,11 @@
+use smol_str::SmolStr;
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LocationAndIsp {
     pub autonomous_system_number: Option<u32>,
-    pub autonomous_system_organization: Option<String>,
-    pub isp: Option<String>,
-    pub organization: Option<String>,
+    pub autonomous_system_organization: Option<SmolStr>,
+    pub isp: Option<SmolStr>,
+    pub organization: Option<SmolStr>,
 
     pub city: Option<model::City>,
     pub continent: Option<model::Continent>,
@@ -13,17 +15,18 @@ pub struct LocationAndIsp {
 
     // pub connection_type: Option<model::ConnectionType>,
 
-    // pub subdivisions: Option<BTreeMap<String, model::Subdivision>>,
+    // pub subdivisions: Option<BTreeMap<SmolStr, model::Subdivision>>,
 }
 
 pub mod model {
     use serde::de;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use smol_str::SmolStr;
 
     #[derive(Deserialize, Serialize, Clone, Debug)]
     pub struct Country {
         pub is_in_european_union: Option<bool>,
-        pub iso_code: Option<String>,
+        pub iso_code: Option<SmolStr>,
         pub names: Option<EnglishName>,
     }
 
@@ -31,18 +34,18 @@ pub mod model {
     pub struct Location {
         pub latitude: Option<f64>,
         pub longitude: Option<f64>,
-        pub time_zone: Option<String>,
-        pub weather_code: Option<String>,
+        pub time_zone: Option<SmolStr>,
+        pub weather_code: Option<SmolStr>,
     }
 
     #[derive(Deserialize, Serialize, Clone, Debug)]
     pub struct Postal {
-        pub code: Option<String>,
+        pub code: Option<SmolStr>,
     }
 
     #[derive(Deserialize, Serialize, Clone, Debug)]
     pub struct Continent {
-        pub code: Option<String>,
+        pub code: Option<SmolStr>,
         pub names: Option<EnglishName>,
     }
 
@@ -54,7 +57,7 @@ pub mod model {
 
     #[derive(Deserialize, Serialize, Clone, Debug)]
     pub struct EnglishName {
-        pub en: Option<String>,
+        pub en: Option<SmolStr>,
     }
 
     #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -94,7 +97,7 @@ pub mod model {
         where
             D: Deserializer<'de>,
         {
-            let s = String::deserialize(deserializer)?;
+            let s = SmolStr::deserialize(deserializer)?;
             match s.as_str() {
                 "dialup" => Ok(ConnectionType::Dialup),
                 "isdn" => Ok(ConnectionType::Isdn),
