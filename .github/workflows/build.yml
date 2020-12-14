@@ -43,7 +43,7 @@ jobs:
           && cd ImageMagick-7.0* \
           && ./configure --with-magick-plus-plus=no --with-perl=no \
           && make \
-          && make install \
+          && sudo make install \
           && cd .. \
           && rm -r ImageMagick-7.0*
 
