@@ -124,17 +124,13 @@ pub async fn server(
                                         return;
                                     }
                                     Err(Error::BadRequest(maybe_str)) => {
-                                        let msg = format!(
-                                            "bad request: {}",
-                                            maybe_str.unwrap_or("no error specified".into())
-                                        );
                                         info!(
                                             "Closing connection with bad request message: {}",
-                                            msg
+                                            maybe_str.as_ref().unwrap_or(&"".to_string())
                                         );
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
-                                                4000u16, msg,
+                                                4000u16, maybe_str.unwrap_or("{}".to_string()),
                                             ))
                                             .await;
                                         return;

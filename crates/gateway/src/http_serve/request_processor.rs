@@ -17,7 +17,8 @@ use exogress_config_core::{
     TemplateEngine, UpstreamDefinition, UrlPathSegmentOrQueryPart,
 };
 use exogress_entities::{
-    AccountUniqueId, ConfigId, HandlerName, InstanceId, StaticResponseName, Upstream,
+    AccountUniqueId, ConfigId, HandlerName, InstanceId, MountPointName, StaticResponseName,
+    Upstream,
 };
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use exogress_tunnel::ConnectTarget;
@@ -26,12 +27,14 @@ use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
 use http::header::{
-    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, COOKIE, HOST, LOCATION, SET_COOKIE,
+    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST,
+    LOCATION, SET_COOKIE,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
 use itertools::Itertools;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
+use magick_rust::{magick_wand_genesis, MagickWand};
 use parking_lot::Mutex;
 use smol_str::SmolStr;
 use std::cell::RefCell;
@@ -41,10 +44,14 @@ use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::{Arc, Once};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::task;
 use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
+
+static IMAGE_MAGIC: Once = Once::new();
 
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
@@ -136,10 +143,90 @@ impl RequestsProcessor {
             *res.status_mut() = StatusCode::NOT_FOUND;
         }
 
+        let optimize_result = self.optimize_image(req, res).await;
+        if let Err(e) = optimize_result {
+            warn!("Skipped image optimization due to the error: {}", e);
+        }
+
         self.compress(req, res);
 
         res.headers_mut()
             .insert("server", HeaderValue::from_static("exogress"));
+    }
+
+    async fn optimize_image(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+    ) -> Result<(), anyhow::Error> {
+        // return Ok(());
+        let is_webp_supported = req
+            .headers()
+            .typed_get::<typed_headers::Accept>()?
+            .ok_or_else(|| anyhow!("no accept header"))?
+            .iter()
+            .find(|&item| item.item == mime::Mime::from_str("image/webp").unwrap())
+            .is_some();
+        if !is_webp_supported {
+            return Ok(());
+        }
+        let content_type: mime::Mime = res
+            .headers()
+            .get(CONTENT_TYPE)
+            .ok_or_else(|| anyhow!("no content-type"))?
+            .to_str()?
+            .parse()?;
+        if content_type == mime::IMAGE_JPEG || content_type == mime::IMAGE_PNG {
+            IMAGE_MAGIC.call_once(|| {
+                magick_wand_genesis();
+            });
+
+            let image_body = Arc::new(
+                mem::replace(res.body_mut(), Body::empty())
+                    .try_fold(Vec::new(), |mut data, chunk| async move {
+                        data.extend_from_slice(&chunk);
+                        Ok(data)
+                    })
+                    .await?,
+            );
+
+            let converted_image_result = task::spawn_blocking({
+                shadow_clone!(image_body);
+
+                move || {
+                    let wand = MagickWand::new();
+                    wand.read_image_blob(image_body.as_ref())
+                        .map_err(|e| anyhow!("imagemagick read error: {}", e))?;
+                    let converted_image = wand
+                        .write_image_blob("webp")
+                        .map_err(|e| anyhow!("imagemagick write error: {}", e))?;
+                    Ok::<_, anyhow::Error>(converted_image)
+                }
+            })
+            .await?;
+
+            match converted_image_result {
+                Ok(buf) => {
+                    let buf_len = buf.len();
+                    *res.body_mut() = Body::from(buf);
+                    res.headers_mut().typed_insert::<ContentType>(&ContentType(
+                        mime::Mime::from_str("image/webp").unwrap(),
+                    ));
+                    res.headers_mut()
+                        .insert(CONTENT_LENGTH, HeaderValue::from(buf_len));
+                }
+                Err(e) => {
+                    warn!("error converting image to WebP: {}", e);
+                    assert_eq!(Arc::strong_count(&image_body), 1);
+                    // restore original image body
+                    *res.body_mut() = Body::from(Arc::try_unwrap(image_body).unwrap());
+                }
+            }
+
+            Ok(())
+        } else {
+            Ok(())
+        }
     }
 
     fn compress(&self, req: &Request<Body>, res: &mut Response<Body>) {
@@ -1613,7 +1700,8 @@ impl RequestsProcessor {
             .map(|(k, v)| (k, (None, None, None, v.into())));
 
         // static responses are shared accross different config names
-        let static_responses = Rc::new(RefCell::new(HashMap::new()));
+        let static_responses: Rc<RefCell<HashMap<MountPointName, HashMap<_, _>>>> =
+            Rc::new(RefCell::new(HashMap::new()));
 
         let grouped_mount_points = grouped
             .into_iter()
@@ -1635,10 +1723,14 @@ impl RequestsProcessor {
 
                     let upstreams = &config.upstreams;
 
-                    for (name, static_response) in &config.static_responses {
-                        static_responses
-                            .borrow_mut()
-                            .insert(name.clone(), static_response.clone());
+                    for (static_response_name, static_response) in &config.static_responses {
+                        for mp in config.mount_points.keys() {
+                            static_responses
+                                .borrow_mut()
+                                .entry(mp.clone())
+                                .or_default()
+                                .insert(static_response_name.clone(), static_response.clone());
+                        }
                     }
 
                     config
@@ -1666,23 +1758,27 @@ impl RequestsProcessor {
             .flatten()
             .collect::<Vec<_>>();
 
-        for (_, (_, _, _, mp)) in &grouped_mount_points {
-            for (name, static_response) in &mp.static_responses {
+        for (mp_name, (_, _, _, mp)) in &grouped_mount_points {
+            for (static_response_name, static_response) in &mp.static_responses {
                 static_responses
                     .borrow_mut()
-                    .insert(name.clone(), static_response.clone());
+                    .entry(mp_name.clone())
+                    .or_default()
+                    .insert(static_response_name.clone(), static_response.clone());
             }
         }
 
-        for (name, static_response) in &resp.project_config.static_responses {
-            static_responses
-                .borrow_mut()
-                .insert(name.clone(), static_response.clone());
+        for (static_response_name, static_response) in &resp.project_config.static_responses {
+            for (_, mp_static_responses) in static_responses.borrow_mut().iter_mut() {
+                mp_static_responses.insert(static_response_name.clone(), static_response.clone());
+            }
         }
 
         let mut merged_resolved_handlers = vec![];
 
-        for (_, (config_name, upstreams, instance_ids, mp)) in grouped_mount_points.into_iter() {
+        for (mp_name, (config_name, upstreams, instance_ids, mp)) in
+            grouped_mount_points.into_iter()
+        {
             let mp_rescue = mp.rescue.clone();
 
             shadow_clone!(instance_ids);
@@ -1705,6 +1801,8 @@ impl RequestsProcessor {
                 .into_iter()
                 .map(move |(handler_name, handler)| {
                     let replace_base_path = handler.replace_base_path.clone();
+
+                    let mp_static_responses = &static_responses.borrow()[&mp_name];
 
                     Some(ResolvedHandler {
                         resolved_variant: match handler.variant {
@@ -1786,15 +1884,15 @@ impl RequestsProcessor {
                         priority: handler.priority,
                         handler_rescue: resolve_rescue_items(
                             &handler.rescue,
-                            &*static_responses.borrow(),
+                            mp_static_responses,
                         )?,
                         mount_point_rescue: resolve_rescue_items(
                             &mp_rescue,
-                            &*static_responses.borrow(),
+                            mp_static_responses,
                         )?,
                         project_rescue: resolve_rescue_items(
                             &project_rescue,
-                            &*static_responses.borrow(),
+                            mp_static_responses,
                         )?,
                         resolved_rules: handler
                             .rules
@@ -1809,7 +1907,7 @@ impl RequestsProcessor {
                                             Action::Invoke { rescue } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
                                                 rescue: resolve_rescue_items(
                                                     &rescue,
-                                                    &*static_responses.borrow(),
+                                                    mp_static_responses,
                                                 )?,
                                             }),
                                             Action::NextHandler => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::NextHandler),
@@ -1825,12 +1923,12 @@ impl RequestsProcessor {
                                                     &static_response_name,
                                                     &status_code,
                                                     &data,
-                                                    &*static_responses.borrow(),
+                                                    mp_static_responses,
                                                 )?,
                                                 data: Default::default(), // TODO: what data should be here? argh, need integrateion test suite
                                                 rescue: resolve_rescue_items(
                                                     &rescue,
-                                                    &*static_responses.borrow(),
+                                                    mp_static_responses,
                                                 )?,
                                             }),
                                         },
