@@ -2,7 +2,7 @@ FROM rust:1.48 as builder
 
 RUN rustup component add clippy rustfmt
 RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
-    build-essential clang cmake build-essential imagemagick pkg-config && \
+    build-essential clang cmake build-essential imagemagick libmagickwand-dev pkg-config && \
     apt-get upgrade -y
 
 ADD ci/gcs.json /gcs.json
@@ -38,7 +38,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-assistant"]
 
 FROM base as director
 COPY --from=builder /code/crates/target/release/exogress-director /usr/local/bin/
-RUN apt-get install -y imagemagick pkg-config
+RUN apt-get install -y imagemagick libmagickwand-dev pkg-config
 RUN exogress-director autocompletion bash > /etc/profile.d/exogress-director.sh && \
     echo "source /etc/profile.d/exogress-director.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-director"]
