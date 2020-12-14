@@ -38,6 +38,9 @@ jobs:
             crates/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Install imagemagick
+        run: apt update && apt-get install -y imagemagick pkg-config
+
       - name: Run cargo test
         run: cargo test
         working-directory: ./crates
