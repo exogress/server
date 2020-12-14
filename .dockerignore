@@ -1,2 +1,3 @@
 crates/target
-deps/exogress/target
+deps/**/target
+*.rdb

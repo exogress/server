@@ -1,9 +1,9 @@
-FROM rust:1.48 as builder
+FROM rust:1.48-alpine3.12 as builder
 
 RUN rustup component add clippy rustfmt
-RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
-    build-essential clang cmake build-essential imagemagick libmagickwand-dev pkg-config && \
-    apt-get upgrade -y
+RUN  apk --update add build-base imagemagick imagemagick-dev \
+    libffi-dev openssl-dev libsasl clang cmake \
+    ca-certificates pkgconfig llvm-dev
 
 ADD ci/gcs.json /gcs.json
 ADD ci/sccache /usr/local/bin/sccache
@@ -16,13 +16,11 @@ ENV SCCACHE_GCS_KEY_PATH=/gcs.json
 COPY . /code
 WORKDIR /code/crates
 
-RUN cargo build --release && sccache --show-stats
+RUN RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release && sccache --show-stats
 
-FROM debian:buster as base
+FROM alpine:3.12 as base
 
-RUN apt-get update && \
-    apt-get install -y libssl1.1 libsasl2-dev ca-certificates && \
-    apt-get upgrade -y
+RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc
 
 FROM base as signaler
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
@@ -38,7 +36,6 @@ ENTRYPOINT ["/usr/local/bin/exogress-assistant"]
 
 FROM base as director
 COPY --from=builder /code/crates/target/release/exogress-director /usr/local/bin/
-RUN apt-get install -y imagemagick libmagickwand-dev pkg-config
 RUN exogress-director autocompletion bash > /etc/profile.d/exogress-director.sh && \
     echo "source /etc/profile.d/exogress-director.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-director"]
@@ -46,6 +43,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-director"]
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
+RUN apk --update add imagemagick imagemagick-dev pkgconfig
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]

@@ -33,16 +33,29 @@ jobs:
       - uses: actions/cache@v2
         with:
           path: |
+            /usr/local/lib
+          key: imagemagick
+
+      - name: Install imagemagick
+        run: [ ! -f "/usr/local/lib/libMagickWand-7.Q16HDRI.so.8" ] \
+          && curl https://www.imagemagick.org/download/ImageMagick.tar.gz | tar xz \
+          && cd ImageMagick-7.0* \
+          && ./configure --with-magick-plus-plus=no --with-perl=no \
+          && make \
+          && make install \
+          && cd .. \
+          && rm -r ImageMagick-7.0*
+
+      - uses: actions/cache@v2
+        with:
+          path: |
             ~/.cargo/registry
             ~/.cargo/git
             crates/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install imagemagick
-        run: sudo apt update && sudo apt-get install -y imagemagick pkg-config libmagickwand-dev
-
       - name: Run cargo test
-        run: cargo test
+        run: LD_LIBRARY_PATH=/usr/local/lib cargo test
         working-directory: ./crates
 
   build-images:
