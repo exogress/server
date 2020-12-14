@@ -37,7 +37,8 @@ jobs:
           key: imagemagick
 
       - name: Install imagemagick
-        run: [ ! -f "/usr/local/lib/libMagickWand-7.Q16HDRI.so.8" ] \
+        run: |
+          [ ! -f "/usr/local/lib/libMagickWand-7.Q16HDRI.so.8" ] \
           && curl https://www.imagemagick.org/download/ImageMagick.tar.gz | tar xz \
           && cd ImageMagick-7.0* \
           && ./configure --with-magick-plus-plus=no --with-perl=no \
