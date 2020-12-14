@@ -8,15 +8,16 @@ RUN  apk --update add build-base imagemagick imagemagick-dev \
 ADD ci/gcs.json /gcs.json
 ADD ci/sccache /usr/local/bin/sccache
 
-ENV SCCACHE_GCS_BUCKET=sccache-exogress-jenkinsn
-ENV SCCACHE_GCS_RW_MODE=READ_WRITE
-ENV RUSTC_WRAPPER=/usr/local/bin/sccache
-ENV SCCACHE_GCS_KEY_PATH=/gcs.json
+#ENV SCCACHE_GCS_BUCKET=sccache-exogress-jenkinsn
+#ENV SCCACHE_GCS_RW_MODE=READ_WRITE
+#ENV RUSTC_WRAPPER=/usr/local/bin/sccache
+#ENV SCCACHE_GCS_KEY_PATH=/gcs.json
 
 COPY . /code
 WORKDIR /code/crates
 
-RUN RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release && sccache --show-stats
+RUN RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release
+#&& sccache --show-stats
 
 FROM alpine:3.12 as base
 
