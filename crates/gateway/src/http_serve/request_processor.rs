@@ -1802,7 +1802,7 @@ impl RequestsProcessor {
                 .map(move |(handler_name, handler)| {
                     let replace_base_path = handler.replace_base_path.clone();
 
-                    let mp_static_responses = &static_responses.borrow()[&mp_name];
+                    let mp_static_responses = &static_responses.borrow().get(&mp_name).cloned().unwrap_or_default();
 
                     Some(ResolvedHandler {
                         resolved_variant: match handler.variant {
