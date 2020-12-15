@@ -279,7 +279,7 @@ impl RequestsProcessor {
 
                 Either::Left(async_compression::stream::BrotliEncoder::with_quality(
                     uncompressed_body,
-                    async_compression::Level::Precise(3),
+                    async_compression::Level::Precise(6),
                 ))
             }
             SupportedContentEncoding::Gzip => {
