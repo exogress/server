@@ -22,7 +22,7 @@ use exogress_entities::{
 };
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use exogress_tunnel::ConnectTarget;
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
@@ -47,6 +47,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Once};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
+use tokio_either::Either;
 use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
@@ -270,35 +271,37 @@ impl RequestsProcessor {
             .headers_mut()
             .typed_remove::<typed_headers::ContentLength>();
         let processed_stream = match compression {
-            // SupportedContentEncoding::Brotli => {
-            //     res.headers_mut()
-            //         .typed_insert(&typed_headers::ContentEncoding::from(
-            //             typed_headers::ContentCoding::BROTLI,
-            //         ));
-            //
-            //     Either::Left(async_compression::stream::BrotliEncoder::new(
-            //         uncompressed_body,
-            //     ))
-            // }
+            SupportedContentEncoding::Brotli => {
+                res.headers_mut()
+                    .typed_insert(&typed_headers::ContentEncoding::from(
+                        typed_headers::ContentCoding::BROTLI,
+                    ));
+
+                Either::Left(async_compression::stream::BrotliEncoder::with_quality(
+                    uncompressed_body,
+                    async_compression::Level::Precise(3),
+                ))
+            }
             SupportedContentEncoding::Gzip => {
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(
                         typed_headers::ContentCoding::GZIP,
                     ));
 
-                // Either::Right(Either::Left(
-                async_compression::stream::GzipEncoder::new(uncompressed_body)
-                // ))
-            } // SupportedContentEncoding::Deflate => {
-              //     res.headers_mut()
-              //         .typed_insert(&typed_headers::ContentEncoding::from(
-              //             typed_headers::ContentCoding::DEFLATE,
-              //         ));
-              //
-              //     Either::Right(Either::Right(
-              //         async_compression::stream::DeflateEncoder::new(uncompressed_body),
-              //     ))
-              // }
+                Either::Right(Either::Left(async_compression::stream::GzipEncoder::new(
+                    uncompressed_body,
+                )))
+            }
+            SupportedContentEncoding::Deflate => {
+                res.headers_mut()
+                    .typed_insert(&typed_headers::ContentEncoding::from(
+                        typed_headers::ContentCoding::DEFLATE,
+                    ));
+
+                Either::Right(Either::Right(
+                    async_compression::stream::DeflateEncoder::new(uncompressed_body),
+                ))
+            }
         };
 
         *res.body_mut() = Body::wrap_stream(processed_stream);
@@ -1049,17 +1052,17 @@ lazy_static! {
 
 #[derive(Debug, Clone, Copy)]
 pub enum SupportedContentEncoding {
-    // Brotli,
+    Brotli,
     Gzip,
-    // Deflate,
+    Deflate,
 }
 
 impl SupportedContentEncoding {
     pub fn weight(&self) -> u8 {
         match self {
-            // SupportedContentEncoding::Brotli => 1,
+            SupportedContentEncoding::Brotli => 200,
             SupportedContentEncoding::Gzip => 150,
-            // SupportedContentEncoding::Deflate => 10,
+            SupportedContentEncoding::Deflate => 10,
         }
     }
 }
@@ -1069,9 +1072,9 @@ impl<'a> TryFrom<&'a ContentCoding> for SupportedContentEncoding {
 
     fn try_from(value: &'a ContentCoding) -> Result<Self, Self::Error> {
         match value {
-            // &ContentCoding::BROTLI => Ok(SupportedContentEncoding::Brotli),
-            &ContentCoding::GZIP | &ContentCoding::STAR => Ok(SupportedContentEncoding::Gzip),
-            // &ContentCoding::DEFLATE => Ok(SupportedContentEncoding::Deflate),
+            &ContentCoding::BROTLI | &ContentCoding::STAR => Ok(SupportedContentEncoding::Brotli),
+            &ContentCoding::GZIP => Ok(SupportedContentEncoding::Gzip),
+            &ContentCoding::DEFLATE => Ok(SupportedContentEncoding::Deflate),
             _ => Err(()),
         }
     }
