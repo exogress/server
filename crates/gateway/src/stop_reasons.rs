@@ -1,6 +1,6 @@
 use std::fmt;
 
-use exogress_common_utils::termination::StopSignal;
+use exogress::common_utils::termination::StopSignal;
 use stop_handle::{StopHandle, StopWait};
 
 pub type AppStopHandle = StopHandle<StopReason>;

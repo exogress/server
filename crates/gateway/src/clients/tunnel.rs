@@ -17,7 +17,7 @@ use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys, rsa_pri
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig, Session};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
-use exogress_tunnel::{
+use exogress::tunnel::{
     server_connection, server_framed, TunnelHello, TunnelHelloResponse, ALPN_PROTOCOL,
 };
 
@@ -28,7 +28,7 @@ use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
 use crate::webapp;
-use exogress_entities::{ConfigId, TunnelId};
+use exogress::entities::{ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
 use futures::{SinkExt, Stream, StreamExt, TryStreamExt};
 use std::convert::TryInto;

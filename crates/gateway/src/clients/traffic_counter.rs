@@ -2,7 +2,7 @@
 use bytes::{Buf, BufMut};
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
-use exogress_entities::AccountUniqueId;
+use exogress::entities::AccountUniqueId;
 use futures::ready;
 use parking_lot::Mutex;
 use std::convert::TryInto;
@@ -254,7 +254,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> TrafficCountedStream<I> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use exogress_entities::Ulid;
+    use exogress::entities::Ulid;
     use std::io::Cursor;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

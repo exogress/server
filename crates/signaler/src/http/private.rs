@@ -1,6 +1,6 @@
 use crate::termination::StopReason;
-use exogress_entities::{AccountName, ConfigName, ProjectName};
-use exogress_signaling::{TunnelRequest, TunnelRequestResponse};
+use exogress::entities::{AccountName, ConfigName, ProjectName};
+use exogress::signaling::{TunnelRequest, TunnelRequestResponse};
 use futures::FutureExt;
 use redis::AsyncCommands;
 use std::net::SocketAddr;

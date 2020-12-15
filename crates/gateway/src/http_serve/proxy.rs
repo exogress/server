@@ -1,5 +1,5 @@
 use crate::http_serve::compression::SupportedContentEncoding;
-use exogress_tunnel::ConnectTarget;
+use exogress::tunnel::ConnectTarget;
 use http::header::HeaderName;
 use http::{HeaderValue, Request};
 use hyper::Body;

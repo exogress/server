@@ -6,10 +6,10 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 use tokio::time::timeout;
 
-use exogress_tunnel::{Compression, ConnectTarget, Connector, TunneledConnection};
+use exogress::tunnel::{Compression, ConnectTarget, Connector, TunneledConnection};
 
 use crate::clients::signaling::request_connection;
-use exogress_entities::{ConfigId, InstanceId, TunnelId};
+use exogress::entities::{ConfigId, InstanceId, TunnelId};
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -53,16 +53,16 @@ impl InstanceConnector {
 }
 
 #[inline]
-fn extract_connect_target(uri: Uri) -> Result<ConnectTarget, exogress_tunnel::Error> {
+fn extract_connect_target(uri: Uri) -> Result<ConnectTarget, exogress::tunnel::Error> {
     Ok(uri
         .host()
-        .ok_or(exogress_tunnel::Error::EmptyHost)?
+        .ok_or(exogress::tunnel::Error::EmptyHost)?
         .parse::<ConnectTarget>()?)
 }
 
 impl tower::Service<Uri> for InstanceConnector {
     type Response = TunneledConnection;
-    type Error = exogress_tunnel::Error;
+    type Error = exogress::tunnel::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     // TODO: implement poll_ready?
@@ -71,7 +71,7 @@ impl tower::Service<Uri> for InstanceConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
-        let target_result: Result<ConnectTarget, exogress_tunnel::Error> =
+        let target_result: Result<ConnectTarget, exogress::tunnel::Error> =
             extract_connect_target(dst);
         match target_result {
             Ok(target) => self

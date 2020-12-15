@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use exogress_entities::RateLimiterName;
+use exogress::entities::RateLimiterName;
 use governor::clock::MonotonicClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::Jitter;

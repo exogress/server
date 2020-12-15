@@ -1,10 +1,10 @@
 //! Presence API
-use exogress_config_core::ClientConfig;
-use exogress_entities::{
+use exogress::config_core::ClientConfig;
+use exogress::entities::{
     AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProjectName,
     Upstream,
 };
-use exogress_signaling::ProbeHealthStatus;
+use exogress::signaling::ProbeHealthStatus;
 use hashbrown::HashMap;
 use reqwest::{Identity, Method, StatusCode, Url};
 use serde::de::DeserializeOwned;

@@ -33,7 +33,5 @@ urlencoding = "1.1.1"
 hashbrown = "0.9.1"
 
 exogress-server-common = { path = "../common" }
-exogress-common-utils = { path = "../../deps/exogress/crates/common-utils" }
-exogress-entities = { path = "../../deps/exogress/crates/entities" }
-exogress-config-core = { path = "../../deps/exogress/crates/config-core" }
-exogress-signaling = { path = "../../deps/exogress/crates/signaling" }
+
+exogress = { path = "../../deps/exogress", version = "0.1", features = ["common-utils", "entities", "config-core", "signaling"] }

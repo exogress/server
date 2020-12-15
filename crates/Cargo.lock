@@ -456,16 +456,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console_error_panic_hook"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8d976903543e0c48546a91908f21588a680a8c8f984df9a5d69feccb2b2a211"
-dependencies = [
- "cfg-if 0.1.10",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "const-random"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -567,9 +557,9 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.10.3"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15d658711a12632b5574c8d5b3fc5d2f0d2f87b9fbf9237ee0f759b88bb6bdec"
+checksum = "0d706e75d87e35569db781a9b5e2416cff1236a47ed380831f959382ccd5f858"
 dependencies = [
  "darling_core",
  "darling_macro",
@@ -577,23 +567,23 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
-version = "0.10.3"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16d3514d243331d8acde56bfcf45d0147aabbda853c2f49dce081ea85f9a7220"
+checksum = "f0c960ae2da4de88a91b2d920c2a7233b400bc33cb28453a2987822d8392519b"
 dependencies = [
  "fnv",
  "ident_case",
  "proc-macro2 1.0.24",
  "quote 1.0.7",
- "strsim 0.10.0",
+ "strsim 0.9.3",
  "syn 1.0.54",
 ]
 
 [[package]]
 name = "darling_macro"
-version = "0.10.3"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44f63c369ef0c17ad17585d31d5f2bf10dece2710bf0766e01db57a6f9849a2e"
+checksum = "d9b5a2f4ac4969822c62224815d069952656cadc7084fdca9751e6d959189b72"
 dependencies = [
  "darling_core",
  "quote 1.0.7",
@@ -768,6 +758,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "exogress"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "bs58",
+ "bytes 0.5.6",
+ "clap",
+ "futures",
+ "hashbrown 0.9.1",
+ "hostname",
+ "http 0.2.2",
+ "http-serde",
+ "humantime 2.0.1",
+ "humantime-serde",
+ "hyper",
+ "jsonwebtoken",
+ "lazy_static",
+ "lru_time_cache",
+ "maplit",
+ "num_cpus",
+ "parking_lot 0.11.1",
+ "paste",
+ "percent-encoding 2.1.0",
+ "pin-project 0.4.27",
+ "rand 0.7.3",
+ "regex",
+ "rustls 0.18.1",
+ "rustls-native-certs",
+ "rw-stream-sink",
+ "seahash",
+ "semver 0.10.0",
+ "serde",
+ "serde_yaml",
+ "shadow-clone",
+ "smol_str",
+ "stop-handle",
+ "thiserror",
+ "tokio",
+ "tokio-either",
+ "tokio-rustls 0.14.1",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "trust-dns-resolver",
+ "tungstenite",
+ "ulid",
+ "url",
+ "webpki",
+ "zstd",
+]
+
+[[package]]
 name = "exogress-assistant"
 version = "0.1.0"
 dependencies = [
@@ -775,8 +819,7 @@ dependencies = [
  "bson",
  "chrono",
  "clap",
- "exogress-common-utils",
- "exogress-entities",
+ "exogress",
  "exogress-server-common",
  "futures",
  "hashbrown 0.8.2",
@@ -801,62 +844,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exogress-common-utils"
-version = "0.1.0"
-dependencies = [
- "bs58",
- "clap",
- "exogress-entities",
- "futures",
- "hostname",
- "jsonwebtoken",
- "lazy_static",
- "num_cpus",
- "pin-project 0.4.27",
- "rand 0.7.3",
- "rustls 0.18.1",
- "rustls-native-certs",
- "serde",
- "stop-handle",
- "thiserror",
- "tokio",
- "tokio-either",
- "tokio-rustls 0.14.1",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "trust-dns-resolver",
- "tungstenite",
- "url",
- "webpki",
-]
-
-[[package]]
-name = "exogress-config-core"
-version = "0.1.0"
-dependencies = [
- "bytes 0.5.6",
- "exogress-entities",
- "hashbrown 0.9.1",
- "http 0.2.1",
- "http-serde",
- "humantime 2.0.1",
- "humantime-serde",
- "lazy_static",
- "maplit",
- "percent-encoding 2.1.0",
- "regex",
- "seahash",
- "semver 0.10.0",
- "serde",
- "serde_yaml",
- "smol_str",
- "thiserror",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "exogress-director"
 version = "0.1.0"
 dependencies = [
@@ -865,7 +852,7 @@ dependencies = [
  "bytes 0.5.6",
  "clap",
  "derive_builder",
- "exogress-common-utils",
+ "exogress",
  "exogress-server-common",
  "futures",
  "hashbrown 0.8.2",
@@ -886,21 +873,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exogress-entities"
-version = "0.1.0"
-dependencies = [
- "bytes 0.5.6",
- "paste",
- "rand 0.7.3",
- "serde",
- "shadow-clone",
- "smol_str",
- "thiserror",
- "tracing",
- "ulid",
-]
-
-[[package]]
 name = "exogress-gateway"
 version = "0.1.0"
 dependencies = [
@@ -913,19 +885,15 @@ dependencies = [
  "clap",
  "cookie",
  "dashmap",
- "exogress-common-utils",
- "exogress-config-core",
- "exogress-entities",
+ "exogress",
  "exogress-server-common",
- "exogress-signaling",
- "exogress-tunnel",
  "futures",
  "futures-intrusive",
  "futures-util",
  "globset",
  "handlebars",
  "hashbrown 0.8.2",
- "http 0.2.1",
+ "http 0.2.2",
  "http-serde",
  "httparse",
  "hyper",
@@ -988,9 +956,9 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "exogress-entities",
+ "exogress",
  "futures",
- "http 0.2.1",
+ "http 0.2.2",
  "rustls-native-certs",
  "sentry",
  "serde",
@@ -1011,15 +979,12 @@ dependencies = [
  "anyhow",
  "byteorder",
  "clap",
- "exogress-common-utils",
- "exogress-config-core",
- "exogress-entities",
+ "exogress",
  "exogress-server-common",
- "exogress-signaling",
  "futures",
  "hashbrown 0.9.1",
  "hostname",
- "http 0.2.1",
+ "http 0.2.2",
  "lazy_static",
  "pin-project 0.4.27",
  "rand 0.7.3",
@@ -1039,48 +1004,6 @@ dependencies = [
  "trust-dns-resolver",
  "urlencoding",
  "warp",
-]
-
-[[package]]
-name = "exogress-signaling"
-version = "0.1.0"
-dependencies = [
- "exogress-config-core",
- "exogress-entities",
- "hashbrown 0.9.1",
- "http 0.2.1",
- "http-serde",
- "serde",
-]
-
-[[package]]
-name = "exogress-tunnel"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "bytes 0.5.6",
- "exogress-config-core",
- "exogress-entities",
- "futures",
- "hashbrown 0.9.1",
- "hyper",
- "lazy_static",
- "lru_time_cache",
- "parking_lot 0.11.1",
- "rand 0.7.3",
- "rw-stream-sink",
- "serde",
- "shadow-clone",
- "stop-handle",
- "thiserror",
- "tokio",
- "tokio-util",
- "tower",
- "tracing",
- "trust-dns-resolver",
- "ulid",
- "url",
- "zstd",
 ]
 
 [[package]]
@@ -1373,7 +1296,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
- "http 0.2.1",
+ "http 0.2.2",
  "indexmap",
  "slab",
  "tokio",
@@ -1427,7 +1350,7 @@ dependencies = [
  "bitflags",
  "bytes 0.5.6",
  "headers-core",
- "http 0.2.1",
+ "http 0.2.2",
  "mime",
  "sha-1 0.8.2",
  "time 0.1.44",
@@ -1439,7 +1362,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7f66481bfee273957b1f20485a4ff3362987f85b2c236580d81b4eb7a326429"
 dependencies = [
- "http 0.2.1",
+ "http 0.2.2",
 ]
 
 [[package]]
@@ -1500,9 +1423,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28d569972648b2c512421b5f2a405ad6ac9666547189d0c5477a3f200f3e02f9"
+checksum = "84129d298a6d57d246960ff8eb831ca4af3f96d29e2e28848dae275408658e26"
 dependencies = [
  "bytes 0.5.6",
  "fnv",
@@ -1516,7 +1439,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13d5ff830006f7646652e057693569bfe0d51760c0085a071769d142a205111b"
 dependencies = [
  "bytes 0.5.6",
- "http 0.2.1",
+ "http 0.2.2",
 ]
 
 [[package]]
@@ -1525,7 +1448,7 @@ version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aaa9564ce1decf49edcbd2b8f4f732843b4df64eabb8dcfcf0085ff34dbc76a2"
 dependencies = [
- "http 0.2.1",
+ "http 0.2.2",
  "serde",
 ]
 
@@ -1577,7 +1500,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2",
- "http 0.2.1",
+ "http 0.2.2",
  "http-body",
  "httparse",
  "httpdate",
@@ -1652,9 +1575,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "1.6.0"
+version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55e2e4c765aa53a0424761bf9f41aa7a6ac1efa87238f59560640e27fca028f2"
+checksum = "4fb1fa934250de4de8aef298d81c729a7d33d8c239daa3a7575e6b92bfc7313b"
 dependencies = [
  "autocfg 1.0.1",
  "hashbrown 0.9.1",
@@ -2219,7 +2142,7 @@ dependencies = [
  "failure_derive",
  "futures",
  "http 0.1.21",
- "http 0.2.1",
+ "http 0.2.2",
  "rand 0.7.3",
  "reqwest",
  "serde",
@@ -2912,9 +2835,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.10.9"
+version = "0.10.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb15d6255c792356a0f578d8a645c677904dc02e862bebe2ecc18e0c01b9a0ce"
+checksum = "0718f81a8e14c4dbb3b34cf23dc6aaf9ab8a0dfec160c534b3dbca1aaa21f47c"
 dependencies = [
  "async-compression",
  "base64 0.13.0",
@@ -2922,7 +2845,7 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "futures-util",
- "http 0.2.1",
+ "http 0.2.2",
  "http-body",
  "hyper",
  "hyper-rustls",
@@ -2947,7 +2870,6 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-bindgen-test",
  "web-sys",
  "webpki-roots 0.20.0",
  "winreg 0.7.0",
@@ -3629,6 +3551,12 @@ checksum = "8ea5119cdb4c55b55d432abb513a0429384878c15dde60cc77b1c99de1a95a6a"
 
 [[package]]
 name = "strsim"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6446ced80d6c486436db5c078dde11a9f73d42b57fb273121e160b84f63d894c"
+
+[[package]]
+name = "strsim"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
@@ -4206,7 +4134,7 @@ dependencies = [
  "base64 0.12.3",
  "byteorder",
  "bytes 0.5.6",
- "http 0.2.1",
+ "http 0.2.2",
  "httparse",
  "input_buffer",
  "log",
@@ -4246,7 +4174,7 @@ dependencies = [
  "base64 0.11.0",
  "bytes 0.5.6",
  "chrono",
- "http 0.2.1",
+ "http 0.2.2",
  "mime",
 ]
 
@@ -4413,7 +4341,7 @@ dependencies = [
  "bytes 0.5.6",
  "futures",
  "headers",
- "http 0.2.1",
+ "http 0.2.2",
  "hyper",
  "log",
  "mime",
@@ -4512,30 +4440,6 @@ name = "wasm-bindgen-shared"
 version = "0.2.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e7811dd7f9398f14cc76efd356f98f03aa30419dea46aa810d71e819fc97158"
-
-[[package]]
-name = "wasm-bindgen-test"
-version = "0.3.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0355fa0c1f9b792a09b6dcb6a8be24d51e71e6d74972f9eb4a44c4c004d24a25"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "scoped-tls",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test-macro",
-]
-
-[[package]]
-name = "wasm-bindgen-test-macro"
-version = "0.3.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27e07b46b98024c2ba2f9e83a10c2ef0515f057f2da299c1762a2017de80438b"
-dependencies = [
- "proc-macro2 1.0.24",
- "quote 1.0.7",
-]
 
 [[package]]
 name = "web-sys"

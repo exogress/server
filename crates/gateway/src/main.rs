@@ -43,7 +43,7 @@ use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::notification_listener::AssistantClient;
 use crate::stop_reasons::StopReason;
 use crate::webapp::Client;
-use exogress_common_utils::termination::stop_signal_listener;
+use exogress::common_utils::termination::stop_signal_listener;
 use exogress_server_common::assistant::{
     RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage,
 };
@@ -266,7 +266,7 @@ fn main() {
         );
 
     let spawn_args = exogress_server_common::clap::int_api::add_args(
-        exogress_common_utils::clap::threads::add_args(
+        exogress::common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
                 exogress_server_common::clap::log::add_args(spawn_args),
             ),
@@ -283,10 +283,10 @@ fn main() {
         .subcommand(spawn_args)
         .subcommand(init_individual_certs_args);
 
-    let mut args = exogress_common_utils::clap::autocompletion::add_args(args);
+    let mut args = exogress::common_utils::clap::autocompletion::add_args(args);
 
     let matches = args.clone().get_matches().clone();
-    exogress_common_utils::clap::autocompletion::handle_autocompletion(
+    exogress::common_utils::clap::autocompletion::handle_autocompletion(
         &mut args,
         &matches,
         "exogress-gateway",
@@ -335,7 +335,7 @@ fn main() {
         int_client_cert,
     } = exogress_server_common::clap::int_api::extract_matches(&matches, true, true, true);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
-    let num_threads = exogress_common_utils::clap::threads::extract_matches(&matches);
+    let num_threads = exogress::common_utils::clap::threads::extract_matches(&matches);
 
     let assistant_base_url = assistant_base_url.expect("no assistant_base_url");
     let signaler_base_url = signaler_base_url.expect("no signaler_base_url");

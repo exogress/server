@@ -9,8 +9,3 @@ members = [
 
 [profile.release]
 lto = true
-#debug = true
-
-#[patch.crates-io]
-#hyper = { path = '../deps/hyper' }
-#warp = { path = "../deps/warp" }

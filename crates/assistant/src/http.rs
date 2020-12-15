@@ -1,6 +1,6 @@
 use crate::reporting::MongoDbClient;
 use crate::termination::StopReason;
-use exogress_common_utils::backoff::Backoff;
+use exogress::common_utils::backoff::Backoff;
 use exogress_server_common::assistant::{
     GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
 };

@@ -4,7 +4,7 @@ use crate::http_serve::auth::{
     retrieve_assistant_key, save_assistant_key, AssistantError, CallbackResult, FlowData, JwtEcdsa,
     Oauth2FlowError, Oauth2Provider,
 };
-use exogress_entities::HandlerName;
+use exogress::entities::HandlerName;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use hashbrown::HashMap;
 use oauth2::basic::BasicClient;

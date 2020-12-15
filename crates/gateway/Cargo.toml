@@ -24,7 +24,7 @@ bytes = "0.5"
 warp = { version = "=0.2.5", features = ["websocket", "tls", "compression"] }
 url = "2.1.1"
 lru_time_cache = "0.11.0"
-parking_lot = {version = "0.11", features = [] }
+parking_lot = { version = "0.11", features = [] }
 rand = { version = "0.7" }
 stop-handle = "0.1"
 lazy_static = "1.4.0"
@@ -60,7 +60,7 @@ oauth2 = { version = "3.0.0", default-features = false, features = ["reqwest-010
 jsonwebtoken = "7.2.0"
 typed-headers = "0.2.0"
 mime = "0.3.16"
-async-compression = { version = "0.3.5", features = ["gzip", "futures-write", "stream", "brotli"]}
+async-compression = { version = "0.3.5", features = ["gzip", "futures-write", "stream", "brotli"] }
 handlebars = "3.5.0"
 globset = { version = "0.4.5", features = ["serde1"] }
 maplit = "1.0.2"
@@ -76,8 +76,4 @@ weighted-rs = "0.1.2"
 magick_rust = "0.14.0"
 
 exogress-server-common = { path = "../common", version = "0.1" }
-exogress-common-utils = { path = "../../deps/exogress/crates/common-utils", version = "0.1" }
-exogress-tunnel = { path = "../../deps/exogress/crates/tunnel", version = "0.1" }
-exogress-config-core = { path = "../../deps/exogress/crates/config-core", version = "0.1" }
-exogress-entities = { path = "../../deps/exogress/crates/entities", version = "0.1" }
-exogress-signaling = { path = "../../deps/exogress/crates/signaling", version = "0.1" }
+exogress = { path = "../../deps/exogress", version = "0.1", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"] }

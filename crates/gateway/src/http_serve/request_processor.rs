@@ -11,17 +11,17 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
 use core::{fmt, mem};
-use exogress_config_core::{
+use exogress::config_core::{
     AclEntry, Action, Auth, AuthProvider, CatchAction, CatchMatcher, ClientHandlerVariant,
     Exception, MatchingPath, RescueItem, ResponseBody, StaticDir, StaticResponse, StatusCodeRange,
     TemplateEngine, UpstreamDefinition, UrlPathSegmentOrQueryPart,
 };
-use exogress_entities::{
+use exogress::entities::{
     AccountUniqueId, ConfigId, HandlerName, InstanceId, MountPointName, StaticResponseName,
     Upstream,
 };
+use exogress::tunnel::ConnectTarget;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
-use exogress_tunnel::ConnectTarget;
 use futures::TryStreamExt;
 use globset::Glob;
 use handlebars::Handlebars;
@@ -1610,7 +1610,7 @@ enum RescueableHandleResult {
 
 fn resolve_static_response(
     static_response_name: &StaticResponseName,
-    status_code: &Option<exogress_config_core::StatusCode>,
+    status_code: &Option<exogress::config_core::StatusCode>,
     data: &BTreeMap<SmolStr, SmolStr>,
     static_responses: &HashMap<StaticResponseName, StaticResponse>,
 ) -> Option<ResolvedStaticResponse> {

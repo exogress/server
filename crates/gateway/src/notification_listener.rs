@@ -4,7 +4,7 @@ use crate::clients::ClientTunnels;
 use crate::registry::RequestsProcessorsRegistry;
 use crate::stop_reasons::{AppStopHandle, StopReason};
 use crate::webapp;
-use exogress_common_utils::ws_client::{connect_ws, Error};
+use exogress::ws_client::{connect_ws, Error};
 use exogress_server_common::assistant::{
     Action, GatewayConfigMessage, WsFromGwMessage, WsToGwMessage,
 };
