@@ -22,7 +22,7 @@ use exogress_entities::{
 };
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use exogress_tunnel::ConnectTarget;
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
@@ -1116,7 +1116,7 @@ enum ResolvedFinalizingRuleAction {
         data: HashMap<SmolStr, SmolStr>,
     },
     Respond {
-        static_response: ResolvedStaticResponse,
+        static_response: Option<ResolvedStaticResponse>,
         data: HashMap<SmolStr, SmolStr>,
         rescue: Vec<ResolvedRescueItem>,
     },
@@ -1140,7 +1140,7 @@ impl ResolvedRuleAction {
 #[derive(Debug, Clone)]
 enum ResolvedCatchAction {
     StaticResponse {
-        static_response: ResolvedStaticResponse,
+        static_response: Option<ResolvedStaticResponse>,
         data: HashMap<SmolStr, SmolStr>,
     },
     Throw {
@@ -1373,6 +1373,7 @@ impl ResolvedHandler {
         req: &Request<Body>,
         res: &mut Response<Body>,
         rescueable: &Rescueable<'_>,
+        is_in_exception: bool,
         maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
     ) -> ResolvedHandlerProcessingResult {
         info!("handle rescueable: {:?}", rescueable);
@@ -1423,7 +1424,7 @@ impl ResolvedHandler {
                     res,
                     &static_response,
                     data,
-                    rescueable.is_exception(),
+                    rescueable.is_exception() || is_in_exception,
                     maybe_rule_invoke_catch,
                 );
             }
@@ -1487,7 +1488,7 @@ impl ResolvedHandler {
                 match invocation_result {
                     HandlerInvocationResult::Responded => {
                         let rescueable = Rescueable::StatusCode(res.status());
-                        return self.handle_rescueable(req, res, &rescueable, Some(catch));
+                        return self.handle_rescueable(req, res, &rescueable, false, Some(catch));
                     }
                     HandlerInvocationResult::ToNextHandler => {
                         return ResolvedHandlerProcessingResult::NextHandler;
@@ -1497,7 +1498,7 @@ impl ResolvedHandler {
                             exception: &name,
                             data: &data,
                         };
-                        return self.handle_rescueable(req, res, &rescueable, Some(catch));
+                        return self.handle_rescueable(req, res, &rescueable, false, Some(catch));
                     }
                 }
             }
@@ -1509,7 +1510,7 @@ impl ResolvedHandler {
                 data,
             }) => {
                 let rescueable = Rescueable::Exception { exception, data };
-                return self.handle_rescueable(req, res, &rescueable, None);
+                return self.handle_rescueable(req, res, &rescueable, false, None);
             }
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
                 static_response,
@@ -1535,34 +1536,55 @@ impl ResolvedHandler {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        static_response: &ResolvedStaticResponse,
+        maybe_static_response: &Option<ResolvedStaticResponse>,
         additional_data: HashMap<SmolStr, SmolStr>,
         is_in_exception: bool,
         maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
     ) -> ResolvedHandlerProcessingResult {
         *res = Response::new(Body::empty());
 
-        match static_response.invoke(req, res, additional_data) {
-            Ok(()) => ResolvedHandlerProcessingResult::Processed,
-            Err((exception, data)) => {
-                *res = Response::new(Body::empty());
-                if !is_in_exception {
-                    let rescueable = Rescueable::Exception {
-                        exception: &exception,
-                        data: &data,
-                    };
-                    return self.handle_rescueable(req, res, &rescueable, maybe_rule_invoke_catch);
-                } else {
-                    error!(
-                        "error evaluating static response while in exception handling: {:?}. {:?}",
-                        exception, data
-                    );
-                    *res.body_mut() = Body::from("Internal server error");
-                    *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-
-                    return ResolvedHandlerProcessingResult::Processed;
-                }
+        match maybe_static_response {
+            None => {
+                let rescueable = Rescueable::Exception {
+                    exception: &"static-response-error:not-defined".parse().unwrap(),
+                    data: &additional_data,
+                };
+                return self.handle_rescueable(
+                    req,
+                    res,
+                    &rescueable,
+                    true,
+                    maybe_rule_invoke_catch,
+                );
             }
+            Some(static_response) => match static_response.invoke(req, res, additional_data) {
+                Ok(()) => ResolvedHandlerProcessingResult::Processed,
+                Err((exception, data)) => {
+                    *res = Response::new(Body::empty());
+                    if !is_in_exception {
+                        let rescueable = Rescueable::Exception {
+                            exception: &exception,
+                            data: &data,
+                        };
+                        return self.handle_rescueable(
+                            req,
+                            res,
+                            &rescueable,
+                            false,
+                            maybe_rule_invoke_catch,
+                        );
+                    } else {
+                        error!(
+                                "error evaluating static response while in exception handling: {:?}. {:?}",
+                                exception, data
+                            );
+                        *res.body_mut() = Body::from("Internal server error");
+                        *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+
+                        return ResolvedHandlerProcessingResult::Processed;
+                    }
+                }
+            },
         }
     }
 }
@@ -1572,7 +1594,7 @@ impl ResolvedHandler {
 enum RescueableHandleResult {
     /// Respond with static response
     StaticResponse {
-        static_response: ResolvedStaticResponse,
+        static_response: Option<ResolvedStaticResponse>,
         data: HashMap<SmolStr, SmolStr>,
     },
     /// Move on to next handler
@@ -1640,7 +1662,7 @@ fn resolve_cache_action(
             status_code,
             data,
         } => ResolvedCatchAction::StaticResponse {
-            static_response: resolve_static_response(name, status_code, data, static_responses)?,
+            static_response: resolve_static_response(name, status_code, data, static_responses),
             data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         },
         CatchAction::Throw { exception, data } => ResolvedCatchAction::Throw {
@@ -1702,7 +1724,7 @@ impl RequestsProcessor {
             .into_iter()
             .map(|(k, v)| (k, (None, None, None, v.into())));
 
-        // static responses are shared accross different config names
+        // static responses are shared across different config names
         let static_responses: Rc<RefCell<HashMap<MountPointName, HashMap<_, _>>>> =
             Rc::new(RefCell::new(HashMap::new()));
 
@@ -1927,7 +1949,7 @@ impl RequestsProcessor {
                                                     &status_code,
                                                     &data,
                                                     mp_static_responses,
-                                                )?,
+                                                ),
                                                 data: Default::default(), // TODO: what data should be here? argh, need integrateion test suite
                                                 rescue: resolve_rescue_items(
                                                     &rescue,

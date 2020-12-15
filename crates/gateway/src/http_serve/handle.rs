@@ -782,28 +782,46 @@ pub async fn server(
                     )
                     .expect("FIXME");
 
-                    let handle_result = webapp_client
-                        .resolve_url(matchable_url, tunnels.clone(), individual_hostname.clone())
-                        .await;
+                    let handle_result = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        webapp_client.resolve_url(
+                            matchable_url,
+                            tunnels.clone(),
+                            individual_hostname.clone(),
+                        ),
+                    )
+                    .await;
 
                     match handle_result {
-                        Ok(Some((requests_processor, _mount_point_base_url))) => {
-                            requests_processor
-                                .process(
-                                    &mut req,
-                                    &mut res,
-                                    &requested_url,
-                                    &local_addr,
-                                    &remote_addr,
-                                )
-                                .await;
+                        Ok(Ok(Some((requests_processor, _mount_point_base_url)))) => {
+                            let result = tokio::time::timeout(Duration::from_secs(20), async {
+                                requests_processor
+                                    .process(
+                                        &mut req,
+                                        &mut res,
+                                        &requested_url,
+                                        &local_addr,
+                                        &remote_addr,
+                                    )
+                                    .await;
+                            })
+                            .await;
+                            if let Err(_) = result {
+                                res = Response::new(Body::from("timeout while processing request"));
+                                *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            }
                         }
-                        Ok(None) => {
+                        Ok(Ok(None)) => {
                             *res.status_mut() = StatusCode::NOT_FOUND;
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             error!("Error resolving URL: {:?}", e);
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                        }
+                        Err(_) => {
+                            error!("Timeout retrieving mapping");
+                            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *res.body_mut() = Body::from("timeout while processing request");
                         }
                     }
 
