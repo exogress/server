@@ -1272,6 +1272,7 @@ struct ResolvedHandler {
     handler_rescue: Vec<ResolvedRescueItem>,
 
     mount_point_rescue: Vec<ResolvedRescueItem>,
+    config_rescue: Vec<ResolvedRescueItem>,
     project_rescue: Vec<ResolvedRescueItem>,
 
     resolved_rules: Vec<ResolvedRule>,
@@ -1382,6 +1383,7 @@ impl ResolvedHandler {
             .and_then(|r| Self::find_exception_handler(r, &rescueable))
             .or_else(|| Self::find_exception_handler(&self.handler_rescue, &rescueable))
             .or_else(|| Self::find_exception_handler(&self.mount_point_rescue, &rescueable))
+            .or_else(|| Self::find_exception_handler(&self.config_rescue, &rescueable))
             .or_else(|| Self::find_exception_handler(&self.project_rescue, &rescueable));
 
         let result = match maybe_resolved_exception {
@@ -1722,7 +1724,7 @@ impl RequestsProcessor {
             .project_config
             .mount_points
             .into_iter()
-            .map(|(k, v)| (k, (None, None, None, v.into())));
+            .map(|(k, v)| (k, (None, None, None, None, v.into())));
 
         // static responses are shared across different config names
         let static_responses: Rc<RefCell<HashMap<MountPointName, HashMap<_, _>>>> =
@@ -1758,6 +1760,8 @@ impl RequestsProcessor {
                         }
                     }
 
+                    let client_rescue = config.rescue.clone();
+
                     config
                         .mount_points
                         .clone()
@@ -1769,6 +1773,7 @@ impl RequestsProcessor {
                                     Some(config_name.clone()),
                                     Some(upstreams.clone()),
                                     Some(instance_ids.clone()),
+                                    Some(client_rescue.clone()),
                                     mp,
                                 ),
                             )
@@ -1783,7 +1788,7 @@ impl RequestsProcessor {
             .flatten()
             .collect::<Vec<_>>();
 
-        for (mp_name, (_, _, _, mp)) in &grouped_mount_points {
+        for (mp_name, (_, _, _, _, mp)) in &grouped_mount_points {
             for (static_response_name, static_response) in &mp.static_responses {
                 static_responses
                     .borrow_mut()
@@ -1801,7 +1806,7 @@ impl RequestsProcessor {
 
         let mut merged_resolved_handlers = vec![];
 
-        for (mp_name, (config_name, upstreams, instance_ids, mp)) in
+        for (mp_name, (config_name, upstreams, instance_ids, client_config_rescue, mp)) in
             grouped_mount_points.into_iter()
         {
             let mp_rescue = mp.rescue.clone();
@@ -1913,6 +1918,10 @@ impl RequestsProcessor {
                         )?,
                         mount_point_rescue: resolve_rescue_items(
                             &mp_rescue,
+                            mp_static_responses,
+                        )?,
+                        config_rescue: resolve_rescue_items(
+                            &client_config_rescue.as_ref().expect("[BUG] try to access client_config_rescue on project-level config").clone(),
                             mp_static_responses,
                         )?,
                         project_rescue: resolve_rescue_items(
