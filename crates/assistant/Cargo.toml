@@ -31,4 +31,4 @@ bson = "1.1.0"
 trust-dns-resolver = "0.19.5"
 
 exogress-server-common = { path = "../common" }
-exogress = { path = "../../deps/exogress", version = "0.1", features = ["common-utils", "entities"] }
+exogress = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities"] }

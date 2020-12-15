@@ -76,4 +76,4 @@ weighted-rs = "0.1.2"
 magick_rust = "0.14.0"
 
 exogress-server-common = { path = "../common", version = "0.1" }
-exogress = { path = "../../deps/exogress", version = "0.1", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"] }
+exogress = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"] }
