@@ -783,7 +783,7 @@ pub async fn server(
                     .expect("FIXME");
 
                     let handle_result = tokio::time::timeout(
-                        Duration::from_secs(5),
+                        Duration::from_secs(30),
                         webapp_client.resolve_url(
                             matchable_url,
                             tunnels.clone(),
@@ -818,7 +818,7 @@ pub async fn server(
                             error!("Error resolving URL: {:?}", e);
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                         }
-                        Err(_) => {
+                        Err(e) => {
                             error!("Timeout retrieving mapping");
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                             *res.body_mut() = Body::from("timeout while processing request");
