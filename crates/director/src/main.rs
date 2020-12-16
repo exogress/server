@@ -18,6 +18,7 @@ extern crate quickcheck_macros;
 mod balancer;
 mod forwarder;
 mod termination;
+mod tls;
 
 use crate::balancer::ShardedGateways;
 use crate::termination::StopReason;

@@ -55,7 +55,6 @@ use tokio::runtime::Builder;
 use tokio::time::delay_for;
 use trust_dns_resolver::TokioAsyncResolver;
 
-mod chain;
 pub(crate) mod clients;
 mod config;
 mod dbip;

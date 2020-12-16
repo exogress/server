@@ -1,8 +1,8 @@
 use crate::balancer::ShardedGateways;
+use crate::tls::extract_sni_hostname;
 use anyhow::Context;
 use exogress_server_common::director::SourceInfo;
 use object_pool::Pool;
-use parking_lot::Mutex;
 use std::convert::TryInto;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -72,23 +72,17 @@ async fn forwarder(
     addr: SocketAddr,
     forward_to_port: u16,
     sharded_gateways: Arc<ShardedGateways>,
+    is_tls: bool,
     max_retries: usize,
     initial_buf_pool_size: usize,
 ) -> Result<(), io::Error> {
     info!("listen to {}", addr);
     let buf_pool = Arc::new(Pool::new(initial_buf_pool_size, || [0u8; BUF_SIZE]));
 
-    let policy = Arc::new(Mutex::new(sharded_gateways.policy(
-        123,
-        2,
-        2,
-        Duration::from_secs(10),
-    )));
-
     let mut tcp = TcpListener::bind(addr).await?;
     loop {
         shadow_clone!(buf_pool);
-        shadow_clone!(policy);
+        shadow_clone!(sharded_gateways);
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {
@@ -98,12 +92,66 @@ async fn forwarder(
                 info!("accepted connection from {}", incoming_addr);
                 tokio::spawn({
                     shadow_clone!(sharded_gateways);
-                    shadow_clone!(policy);
 
                     async move {
-                        for _retry in 0..max_retries {
-                            let maybe_dst_addr = policy.lock().next();
+                        let mut consumed_bytes = None;
+                        let mut sni_hostname = None;
 
+                        if is_tls {
+                            let mut header = vec![0u8; 512];
+                            let mut header_bytes_read = 0;
+                            sni_hostname = loop {
+                                let bytes_read =
+                                    incoming.read(&mut header[header_bytes_read..]).await?;
+                                if bytes_read == 0 {
+                                    return Err(anyhow!("connection closed while waiting for SNI"));
+                                }
+
+                                header_bytes_read += bytes_read;
+
+                                let to_parse = header[..header_bytes_read].to_vec();
+
+                                let client_hello_parse_result = extract_sni_hostname(&to_parse[..]);
+
+                                const MAX_CLIENT_HELLO_LEN: usize = 16536;
+
+                                match client_hello_parse_result? {
+                                    None => {
+                                        if header_bytes_read < MAX_CLIENT_HELLO_LEN {
+                                            header.resize(
+                                                std::cmp::min(
+                                                    header.len() * 2,
+                                                    MAX_CLIENT_HELLO_LEN,
+                                                ),
+                                                0,
+                                            );
+                                        } else {
+                                            return Err(anyhow!(
+                                                "could not parse ClientHello: too long"
+                                            ));
+                                        }
+                                    }
+                                    Some(sni_hostname) => {
+                                        break sni_hostname;
+                                    }
+                                };
+                            };
+                            header.truncate(header_bytes_read);
+                            consumed_bytes = Some(header);
+                        };
+
+                        let mut policy = sharded_gateways.policy(
+                            sni_hostname
+                                .as_ref()
+                                .map(|s| seahash::hash(s.as_ref()))
+                                .unwrap_or(1),
+                            2,
+                            2,
+                            Duration::from_secs(10),
+                        )?;
+
+                        for _retry in 0..max_retries {
+                            let maybe_dst_addr = policy.next();
                             if let Some(dst_addr) = maybe_dst_addr {
                                 info!("try proxy to {}", dst_addr);
                                 let try_connect = async {
@@ -117,16 +165,20 @@ async fn forwarder(
                                         Ok(mut forward_to) => {
                                             forward_to.set_nodelay(true)?;
 
-                                            let header = bincode::serialize(&SourceInfo {
+                                            let source_info = bincode::serialize(&SourceInfo {
                                                 local_addr,
                                                 remote_addr: incoming_addr,
+                                                alpn_domain: sni_hostname.clone(),
                                             })
                                             .unwrap();
 
                                             forward_to
-                                                .write_u16(header.len().try_into().unwrap())
+                                                .write_u16(source_info.len().try_into().unwrap())
                                                 .await?;
-                                            forward_to.write_all(&header).await?;
+                                            forward_to.write_all(&source_info).await?;
+                                            if let Some(header) = &consumed_bytes {
+                                                forward_to.write_all(header).await?;
+                                            }
 
                                             let (reusable_buf1, reusable_buf2) = if buf_pool.len()
                                                 > 2
@@ -173,7 +225,7 @@ async fn forwarder(
                                         }
                                         Err(e) => {
                                             warn!("could not connect to gateway: {}", e);
-                                            policy.lock().mark_unhealthy(&dst_addr);
+                                            policy.mark_unhealthy(&dst_addr);
                                         }
                                     }
 
@@ -191,6 +243,8 @@ async fn forwarder(
                                 };
                             }
                         }
+
+                        Ok(())
                     }
                 });
             }
@@ -207,6 +261,7 @@ impl Forwarder {
             self.listen_http,
             self.forward_to_http_port,
             self.sharded_gateways.clone(),
+            false,
             3,
             1024,
         );
@@ -215,6 +270,7 @@ impl Forwarder {
             self.listen_https,
             self.forward_to_https_port,
             self.sharded_gateways.clone(),
+            true,
             3,
             1024,
         );

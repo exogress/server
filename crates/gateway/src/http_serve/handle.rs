@@ -32,72 +32,19 @@ use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::director::SourceInfo;
 use futures::channel::mpsc;
 use hyper::service::{make_service_fn, service_fn};
-use nom::lib::std::mem::MaybeUninit;
 use parking_lot::RwLock;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use smol_str::SmolStr;
 use std::io;
 use std::io::{BufReader, Cursor};
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::time::{delay_for, timeout};
 use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
-
-fn extract_sni_hostname(buf: &[u8]) -> Result<Option<Option<String>>, anyhow::Error> {
-    let parse = tls_parser::parse_tls_plaintext(buf);
-    match parse {
-        Ok((_rem, record)) => Ok(Some(
-            record
-                .msg
-                .into_iter()
-                .filter_map(|msg| {
-                    match msg {
-                        tls_parser::tls::TlsMessage::Handshake(handshake) => match handshake {
-                            tls_parser::tls::TlsMessageHandshake::ClientHello(hello) => {
-                                if let Some(ext) = hello.ext {
-                                    tls_parser::tls_extensions::parse_tls_extensions(ext)
-                                        .ok()
-                                        .and_then(|(_, ext)| {
-                                            ext
-                                                .into_iter()
-                                                .filter_map(|ext| match ext {
-                                                    tls_parser::tls_extensions::TlsExtension::SNI(snis) => snis
-                                                        .into_iter()
-                                                        .filter_map(|(sni_type, value)| {
-                                                            if tls_parser::tls_extensions::SNIType::HostName
-                                                                == sni_type
-                                                            {
-                                                                Some(value)
-                                                            } else {
-                                                                None
-                                                            }
-                                                        })
-                                                        .next(),
-                                                    _ => None,
-                                                })
-                                                .next()
-                                        })
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    }
-                })
-                .next()
-                .and_then(|m| String::from_utf8(m.to_vec()).ok()),
-        )),
-        Err(nom::Err::Incomplete(_needed)) => {
-            Ok(None)
-        }
-        Err(e) => Err(anyhow!("parse error: {}", e)),
-    }
-}
 
 struct HyperAcceptor<F, I>
 where
@@ -251,7 +198,7 @@ pub async fn server(
                         let mut buf = vec![0u8; header_len.try_into().unwrap()];
                         conn.read_exact(&mut buf).await?;
                         let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
-                        let conn = director::Connection::new(conn, source_info);
+                        let conn = director::Connection::new(conn, source_info.clone());
                         incoming_http_connections_tx
                             .send(Ok::<_, io::Error>((conn, source_info)))
                             .await?;
@@ -297,59 +244,14 @@ pub async fn server(
                             conn.read_exact(&mut buf).await?;
                             let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
 
-                            let mut header = vec![0u8; 512];
-                            let mut header_bytes_read = 0;
-                            let sni_hostname = loop {
-                                let bytes_read =
-                                    conn.read(&mut header[header_bytes_read..]).await?;
-                                if bytes_read == 0 {
-                                    return Err(anyhow!("connection closed while waiting for SNI"));
-                                }
-
-                                header_bytes_read += bytes_read;
-
-                                let to_parse = header[..header_bytes_read].to_vec();
-
-                                let client_hello_parse_result = extract_sni_hostname(&to_parse[..]);
-
-                                const MAX_CLIENT_HELLO_LEN: usize = 16536;
-
-                                match client_hello_parse_result? {
-                                    None => {
-                                        if header_bytes_read < MAX_CLIENT_HELLO_LEN {
-                                            header.resize(
-                                                std::cmp::min(
-                                                    header.len() * 2,
-                                                    MAX_CLIENT_HELLO_LEN,
-                                                ),
-                                                0,
-                                            );
-                                        } else {
-                                            return Err(anyhow!(
-                                                "could not parse ClientHello: too long"
-                                            ));
-                                        }
-                                    }
-                                    Some(sni_hostname) => {
-                                        break sni_hostname;
-                                    }
-                                };
-                            };
-
-                            header.truncate(header_bytes_read);
-
-                            Ok::<_, anyhow::Error>((
-                                crate::chain::chain(Cursor::new(header), conn),
-                                sni_hostname,
-                                source_info,
-                            ))
+                            Ok::<_, anyhow::Error>((conn, source_info))
                         };
 
-                        let (conn, sni_hostname, source_info) =
+                        let (conn, source_info) =
                             timeout(Duration::from_secs(10), handshake).await??;
 
-                        let hostname = if let Some(hostname) = sni_hostname {
-                            hostname
+                        let hostname = if let Some(hostname) = &source_info.alpn_domain {
+                            hostname.clone()
                         } else {
                             return Err(anyhow!("no hostname in ClientHello"));
                         };
@@ -479,7 +381,7 @@ pub async fn server(
 
                         let tls_conn = acceptor.accept(metered).await?;
 
-                        let conn = director::Connection::new(tls_conn, source_info);
+                        let conn = director::Connection::new(tls_conn, source_info.clone());
                         incoming_https_connections_tx
                             .send(Ok::<_, io::Error>((conn, source_info)))
                             .await?;

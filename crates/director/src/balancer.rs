@@ -1,4 +1,5 @@
 use core::cmp;
+use core::fmt;
 use itertools::Itertools;
 use lru_time_cache::{LruCache, TimedEntry};
 use rand::RngCore;
@@ -10,13 +11,34 @@ use std::time::Duration;
 
 pub struct GwSelectionPolicy {
     active_idx: usize,
-    main_pool_len: usize,
+    active_pool_len: usize,
     active: Vec<IpAddr>,
     unhealthy: LruCache<IpAddr, ()>,
     main_gateways: BTreeSet<IpAddr>,
     reserved_gateways: BTreeSet<IpAddr>,
 }
 
+impl fmt::Debug for GwSelectionPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GwSelectionPolicy")
+            .field("active_idx", &self.active_idx)
+            .field("active_pool_len", &self.active_pool_len)
+            .field("active", &self.active)
+            .field("main_gateways", &self.main_gateways)
+            .field("reserved_gateways", &self.reserved_gateways)
+            .field(
+                "unhealthy",
+                &self
+                    .unhealthy
+                    .peek_iter()
+                    .map(|(k, _)| k.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 pub struct ShardedGateways {
     shards: Vec<IpAddr>,
     num_of_gateways: usize,
@@ -35,6 +57,12 @@ pub enum Error {
 
     #[error("zero weight detected")]
     ZeroWeightFound,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum GwSelectionPolicyError {
+    #[error("zero-sized active pool")]
+    ZeroActivePool,
 }
 
 impl ShardedGateways {
@@ -101,25 +129,28 @@ impl ShardedGateways {
         max_active_gateways: u16,
         max_reserved_gateways: u16,
         unhealthy_ttl: Duration,
-    ) -> GwSelectionPolicy {
+    ) -> Result<GwSelectionPolicy, GwSelectionPolicyError> {
+        if max_active_gateways == 0 {
+            return Err(GwSelectionPolicyError::ZeroActivePool);
+        }
         let mut rng_seq = Xoshiro256PlusPlus::seed_from_u64(seed);
-        let active_gateways_num = cmp::min(max_active_gateways as usize, self.num_of_gateways);
+        let main_gateways_num = cmp::min(max_active_gateways as usize, self.num_of_gateways);
         let reserved_gateways_num = cmp::min(
             max_reserved_gateways as usize,
-            self.num_of_gateways - active_gateways_num,
+            self.num_of_gateways - main_gateways_num,
         );
 
         let shards_len = self.shards.len();
 
-        let mut active_gateways = BTreeSet::new();
+        let mut main_gateways = BTreeSet::new();
         let mut reserved_gateways = BTreeSet::new();
 
-        if active_gateways_num > 0 {
+        if main_gateways_num > 0 {
             loop {
                 let rnd = rng_seq.next_u32() as usize;
                 let idx = rnd % shards_len;
-                active_gateways.insert(self.shards[idx]);
-                if active_gateways.len() == active_gateways_num {
+                main_gateways.insert(self.shards[idx]);
+                if main_gateways.len() == main_gateways_num {
                     break;
                 }
             }
@@ -130,7 +161,7 @@ impl ShardedGateways {
                 let rnd = rng_seq.next_u32() as usize;
                 let idx = rnd % shards_len;
                 let addr = self.shards[idx];
-                if active_gateways.contains(&addr) {
+                if main_gateways.contains(&addr) {
                     continue;
                 }
                 reserved_gateways.insert(addr);
@@ -140,14 +171,18 @@ impl ShardedGateways {
             }
         }
 
-        GwSelectionPolicy {
+        let mut policy = GwSelectionPolicy {
             active_idx: 0,
-            main_pool_len: active_gateways_num,
-            active: vec![],
+            active: Default::default(),
+            active_pool_len: main_gateways_num,
             unhealthy: LruCache::with_expiry_duration(unhealthy_ttl),
-            main_gateways: active_gateways,
+            main_gateways,
             reserved_gateways,
-        }
+        };
+
+        policy.gen_balancer();
+
+        Ok(policy)
     }
 }
 
@@ -180,20 +215,21 @@ impl GwSelectionPolicy {
     }
 
     fn gen_balancer(&mut self) {
-        let mut main = self.main_gateways.clone();
+        let mut new_active = self.main_gateways.clone();
         for (unhealthy, _) in self.unhealthy.iter() {
-            main.remove(unhealthy);
+            new_active.remove(unhealthy);
         }
         let mut reserved_iter = self.reserved_gateways.iter();
-        while main.len() < self.main_pool_len {
+        while new_active.len() < self.active_pool_len {
             if let Some(reserved) = reserved_iter.next() {
                 if !self.unhealthy.contains_key(reserved) {
-                    main.insert(reserved.clone());
+                    new_active.insert(reserved.clone());
                 }
             } else {
                 break;
             }
         }
+        self.active = new_active.into_iter().collect();
     }
 
     pub fn mark_unhealthy(&mut self, addr: &IpAddr) {
@@ -231,7 +267,7 @@ mod test {
         weighted: Vec<(IpAddr, u8)>,
         num_shards: u16,
         seed: u64,
-        max_active_gateways: u8,
+        max_main_gateways: u8,
         max_reserved_gateways: u8,
     ) -> TestResult {
         if weighted.is_empty()
@@ -250,43 +286,61 @@ mod test {
 
         let sharded = ShardedGateways::new(weighted, num_shards).unwrap();
 
-        let mut policy = sharded.policy(
+        let policy_result = sharded.policy(
             seed,
-            max_active_gateways.into(),
+            max_main_gateways.into(),
             max_reserved_gateways.into(),
             Duration::from_secs(60),
         );
 
+        if policy_result.is_err() && max_main_gateways == 0 {
+            return TestResult::passed();
+        }
+
+        let mut policy = policy_result.unwrap();
+
         let main_gateways_set = policy.main_gateways.clone();
         let reserved_gateways_set = policy.reserved_gateways.clone();
 
-        assert_eq!(main_gateways_set.len(), policy.main_pool_len);
-        assert!(main_gateways_set.len() <= max_active_gateways as usize);
-        assert!(main_gateways_set.len() <= max_active_gateways as usize);
+        assert_eq!(main_gateways_set.len(), policy.active_pool_len);
+        assert!(main_gateways_set.len() <= max_main_gateways as usize);
+        assert!(main_gateways_set.len() <= max_main_gateways as usize);
         assert!(reserved_gateways_set.len() <= max_reserved_gateways as usize);
         assert!(main_gateways_set.len() <= num_gateways);
         assert!(reserved_gateways_set.len() <= num_gateways);
         assert!(reserved_gateways_set.is_disjoint(&main_gateways_set));
 
-        if policy.is_empty() {
+        if policy.is_empty() && max_main_gateways == 0 && max_reserved_gateways == 0 {
             return TestResult::passed();
         }
 
         let unhealthy = *main_gateways_set.iter().next().unwrap();
 
         policy.mark_unhealthy(&unhealthy);
-        let num_loops = policy.main_pool_len * 6;
+        let num_loops = policy.active_pool_len * 6;
+
         for _ in 0..num_loops {
-            let selected = policy.next().unwrap();
-            assert_ne!(selected, unhealthy)
+            let next_gw = policy.next();
+            if (max_main_gateways + max_reserved_gateways == 1 || num_gateways == 1)
+                && next_gw.is_none()
+            {
+                return TestResult::passed();
+            }
+            let selected = next_gw.unwrap();
+            if selected == unhealthy {
+                return TestResult::error("unhealthy gateway returned");
+            }
         }
         policy.mark_healthy(&unhealthy);
-        assert!((0..num_loops)
+        if (0..num_loops)
             .find(|_| {
                 let selected = policy.next().unwrap();
                 selected == unhealthy
             })
-            .is_some());
+            .is_none()
+        {
+            return TestResult::error("gw which become healthy didn't haven't ever returned");
+        }
 
         TestResult::passed()
     }
