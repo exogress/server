@@ -8,6 +8,7 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+use sys_info::mem_info;
 use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -101,7 +102,6 @@ async fn forwarder(
     sticky_sessions: Arc<Mutex<LruCache<IpAddr, IpAddr>>>,
     max_retries: usize,
     initial_buf_pool_size: usize,
-    max_buf_pool_size: usize,
 ) -> Result<(), io::Error> {
     info!("listen to {}", addr);
     let buf_pool = Arc::new(Pool::new(initial_buf_pool_size, || [0u8; BUF_SIZE]));
@@ -161,8 +161,32 @@ async fn forwarder(
                                                 .await?;
                                             forward_to.write_all(&header).await?;
 
-                                            let reusable_buf1 = buf_pool.pull(|| [0; BUF_SIZE]);
-                                            let reusable_buf2 = buf_pool.pull(|| [0; BUF_SIZE]);
+                                            let (reusable_buf1, reusable_buf2) = if buf_pool.len()
+                                                > 2
+                                            {
+                                                (
+                                                    buf_pool.pull(|| [0; BUF_SIZE]),
+                                                    buf_pool.pull(|| [0; BUF_SIZE]),
+                                                )
+                                            } else {
+                                                let mem = mem_info()
+                                                    .expect("could not retrieve memory info");
+                                                let avail_mem = mem.avail as f32;
+                                                let total_mem = mem.total as f32;
+                                                let avail_percent = (1.0
+                                                    - (total_mem - avail_mem) / total_mem)
+                                                    * 100.0;
+                                                if avail_percent < 80.0
+                                                    && avail_mem < 1.0 * 1024.0 * 1024.0
+                                                {
+                                                    return Err(anyhow!("not enough free memory for buffer allocation. only {}% of memory is available ({} bytes)", avail_percent, avail_mem));
+                                                }
+
+                                                (
+                                                    buf_pool.pull(|| [0; BUF_SIZE]),
+                                                    buf_pool.pull(|| [0; BUF_SIZE]),
+                                                )
+                                            };
 
                                             let (_, mut buf1) = reusable_buf1.detach();
                                             let (_, mut buf2) = reusable_buf2.detach();
@@ -186,10 +210,8 @@ async fn forwarder(
                                             )
                                             .await;
 
-                                            if buf_pool.len() < max_buf_pool_size {
-                                                buf_pool.attach(buf1);
-                                                buf_pool.attach(buf2);
-                                            }
+                                            buf_pool.attach(buf1);
+                                            buf_pool.attach(buf2);
 
                                             return r;
                                         }
@@ -243,7 +265,6 @@ impl Forwarder {
             sticky_sessions.clone(),
             3,
             1024,
-            4096,
         );
 
         let https = forwarder(
@@ -253,7 +274,6 @@ impl Forwarder {
             sticky_sessions.clone(),
             3,
             1024,
-            4096,
         );
 
         tokio::select! {

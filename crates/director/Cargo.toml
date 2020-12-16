@@ -26,6 +26,7 @@ object-pool = "0.5.3"
 anyhow = "1.0.33"
 trust-dns-resolver = "0.19.5"
 lru_time_cache = "0.11.0"
+sys-info = "0.7"
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils"] }
