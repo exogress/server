@@ -1920,10 +1920,14 @@ impl RequestsProcessor {
                             &mp_rescue,
                             mp_static_responses,
                         )?,
-                        config_rescue: resolve_rescue_items(
-                            &client_config_rescue.as_ref().expect("[BUG] try to access client_config_rescue on project-level config").clone(),
-                            mp_static_responses,
-                        )?,
+                        config_rescue: if let Some(client_rescue) = &client_config_rescue {
+                            resolve_rescue_items(
+                                client_rescue,
+                                mp_static_responses,
+                            )?
+                        } else {
+                            Default::default()
+                        },
                         project_rescue: resolve_rescue_items(
                             &project_rescue,
                             mp_static_responses,

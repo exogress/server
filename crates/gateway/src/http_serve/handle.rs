@@ -818,7 +818,7 @@ pub async fn server(
                             error!("Error resolving URL: {:?}", e);
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             error!("Timeout retrieving mapping");
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                             *res.body_mut() = Body::from("timeout while processing request");
