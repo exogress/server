@@ -1,43 +1,16 @@
+use crate::balancer::ShardedGateways;
 use anyhow::Context;
 use exogress_server_common::director::SourceInfo;
-use lru_time_cache::LruCache;
 use object_pool::Pool;
 use parking_lot::Mutex;
 use std::convert::TryInto;
-use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use sys_info::mem_info;
 use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use weighted_rs::{SmoothWeight, Weight};
-
-#[derive(Clone)]
-pub struct ForwardingRules {
-    inner: Arc<Mutex<SmoothWeight<IpAddr>>>,
-}
-
-impl fmt::Debug for ForwardingRules {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.inner.lock().all())
-    }
-}
-
-impl ForwardingRules {
-    pub fn add(&self, addr: IpAddr, weight: isize) {
-        self.inner.lock().add(addr, weight);
-    }
-}
-
-impl Default for ForwardingRules {
-    fn default() -> Self {
-        ForwardingRules {
-            inner: Arc::new(Mutex::new(SmoothWeight::new())),
-        }
-    }
-}
 
 #[derive(Builder)]
 pub struct Forwarder {
@@ -45,7 +18,7 @@ pub struct Forwarder {
     listen_https: SocketAddr,
     forward_to_http_port: u16,
     forward_to_https_port: u16,
-    rules: ForwardingRules,
+    sharded_gateways: Arc<ShardedGateways>,
 }
 
 async fn forward(
@@ -98,18 +71,24 @@ const BUF_SIZE: usize = 65536;
 async fn forwarder(
     addr: SocketAddr,
     forward_to_port: u16,
-    rules: ForwardingRules,
-    sticky_sessions: Arc<Mutex<LruCache<IpAddr, IpAddr>>>,
+    sharded_gateways: Arc<ShardedGateways>,
     max_retries: usize,
     initial_buf_pool_size: usize,
 ) -> Result<(), io::Error> {
     info!("listen to {}", addr);
     let buf_pool = Arc::new(Pool::new(initial_buf_pool_size, || [0u8; BUF_SIZE]));
 
+    let policy = Arc::new(Mutex::new(sharded_gateways.policy(
+        123,
+        2,
+        2,
+        Duration::from_secs(10),
+    )));
+
     let mut tcp = TcpListener::bind(addr).await?;
     loop {
         shadow_clone!(buf_pool);
-        shadow_clone!(sticky_sessions);
+        shadow_clone!(policy);
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {
@@ -118,27 +97,15 @@ async fn forwarder(
 
                 info!("accepted connection from {}", incoming_addr);
                 tokio::spawn({
-                    shadow_clone!(rules);
-                    shadow_clone!(sticky_sessions);
+                    shadow_clone!(sharded_gateways);
+                    shadow_clone!(policy);
 
                     async move {
                         for _retry in 0..max_retries {
-                            // At first try to get sticky session
-                            let mut is_sticky_used = false;
-                            let maybe_dst_addr = if let Some(sticky_dst_addr) =
-                                sticky_sessions.lock().get_mut(&incoming_addr.ip())
-                            {
-                                is_sticky_used = true;
-                                Some(*sticky_dst_addr)
-                            } else {
-                                rules.inner.lock().next()
-                            };
+                            let maybe_dst_addr = policy.lock().next();
 
                             if let Some(dst_addr) = maybe_dst_addr {
-                                info!(
-                                    "try proxy to {}. is_sticky = {:?}",
-                                    dst_addr, is_sticky_used
-                                );
+                                info!("try proxy to {}", dst_addr);
                                 let try_connect = async {
                                     let conn_result = TcpStream::connect(SocketAddr::from((
                                         dst_addr,
@@ -191,17 +158,6 @@ async fn forwarder(
                                             let (_, mut buf1) = reusable_buf1.detach();
                                             let (_, mut buf2) = reusable_buf2.detach();
 
-                                            if !is_sticky_used {
-                                                info!(
-                                                    "Set sticky session {} <=> {}",
-                                                    incoming_addr.ip(),
-                                                    dst_addr
-                                                );
-                                                sticky_sessions
-                                                    .lock()
-                                                    .insert(incoming_addr.ip(), dst_addr);
-                                            }
-
                                             let r = forward(
                                                 &mut incoming,
                                                 &mut forward_to,
@@ -217,14 +173,7 @@ async fn forwarder(
                                         }
                                         Err(e) => {
                                             warn!("could not connect to gateway: {}", e);
-                                            if is_sticky_used {
-                                                info!(
-                                                    "Unset sticky session {} <=> {}",
-                                                    incoming_addr.ip(),
-                                                    dst_addr
-                                                );
-                                                sticky_sessions.lock().remove(&incoming_addr.ip());
-                                            }
+                                            policy.lock().mark_unhealthy(&dst_addr);
                                         }
                                     }
 
@@ -252,17 +201,12 @@ async fn forwarder(
     }
 }
 
-const STICKY_TTL: Duration = Duration::from_secs(120);
-
 impl Forwarder {
     pub async fn spawn(self) -> Result<(), io::Error> {
-        let sticky_sessions = Arc::new(Mutex::new(LruCache::with_expiry_duration(STICKY_TTL)));
-
         let http = forwarder(
             self.listen_http,
             self.forward_to_http_port,
-            self.rules.clone(),
-            sticky_sessions.clone(),
+            self.sharded_gateways.clone(),
             3,
             1024,
         );
@@ -270,8 +214,7 @@ impl Forwarder {
         let https = forwarder(
             self.listen_https,
             self.forward_to_https_port,
-            self.rules.clone(),
-            sticky_sessions.clone(),
+            self.sharded_gateways.clone(),
             3,
             1024,
         );

@@ -13,7 +13,6 @@ sentry = "0.21.0"
 hashbrown = { version = "0.8", features = ["serde"] }
 thiserror = "1.0.13"
 parking_lot = "0.11.0"
-weighted-rs = "0.1.2"
 derive_builder = "0.9.0"
 tracing = "0.1"
 tracing-subscriber = "0.2"
@@ -27,6 +26,13 @@ anyhow = "1.0.33"
 trust-dns-resolver = "0.19.5"
 lru_time_cache = "0.11.0"
 sys-info = "0.7"
+rand_xoshiro = "0.4.0"
+rand = "0.7.3"
+itertools = "0.9.0"
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils"] }
+
+[dev-dependencies]
+quickcheck = "0.9.2"
+quickcheck_macros = "0.9"

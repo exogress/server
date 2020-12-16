@@ -9,15 +9,24 @@ extern crate shadow_clone;
 #[macro_use]
 extern crate anyhow;
 
+#[cfg(test)]
+extern crate quickcheck;
+#[cfg(test)]
+#[macro_use(quickcheck)]
+extern crate quickcheck_macros;
+
+mod balancer;
 mod forwarder;
 mod termination;
 
+use crate::balancer::ShardedGateways;
 use crate::termination::StopReason;
 use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
-use forwarder::{ForwarderBuilder, ForwardingRules};
+use forwarder::ForwarderBuilder;
 use std::net::IpAddr;
+use std::sync::Arc;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 use trust_dns_resolver::TokioAsyncResolver;
@@ -132,11 +141,11 @@ fn main() {
 
     rt.spawn(logger_bg);
 
-    let rules = ForwardingRules::default();
+    let mut gateways = Vec::new();
 
     for item in matches.values_of("gateway").expect("no gateways defined") {
         let mut items = item.split(':');
-        let weight: isize = items
+        let weight: u8 = items
             .next()
             .expect("bad gw format")
             .parse()
@@ -146,10 +155,10 @@ fn main() {
             .expect("bad gw format")
             .parse()
             .expect("bad ip address");
-        rules.add(ip, weight);
+        gateways.push((ip, weight));
     }
 
-    info!("gateways: {:?}", rules);
+    let sharded_gateways = ShardedGateways::new(gateways, 4096).expect("Gateways error");
 
     let listen_http = matches
         .value_of("listen_http")
@@ -186,7 +195,7 @@ fn main() {
             .listen_https(listen_https)
             .forward_to_http_port(gw_http_port)
             .forward_to_https_port(gw_https_port)
-            .rules(rules)
+            .sharded_gateways(Arc::new(sharded_gateways))
             .build()
             .unwrap()
             .spawn();
