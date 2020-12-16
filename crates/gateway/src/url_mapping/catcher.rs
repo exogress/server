@@ -1,5 +1,5 @@
-use exogress::config_core::Catch;
-use exogress::entities::ConfigName;
+use exogress_common::config_core::Catch;
+use exogress_common::entities::ConfigName;
 use hashbrown::HashMap;
 
 #[derive(Debug, Hash, Eq, PartialEq)]

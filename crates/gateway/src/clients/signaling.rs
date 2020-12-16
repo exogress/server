@@ -1,6 +1,6 @@
 use crate::clients::tunnel::MAX_ALLOWED_TUNNELS;
-use exogress::entities::ConfigId;
-use exogress::signaling::TunnelRequest;
+use exogress_common::entities::ConfigId;
+use exogress_common::signaling::TunnelRequest;
 use reqwest::Identity;
 use smol_str::SmolStr;
 use std::time::Duration;

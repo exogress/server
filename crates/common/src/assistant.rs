@@ -1,6 +1,6 @@
 use crate::url_prefix::MountPointBaseUrl;
 use chrono::serde::ts_milliseconds;
-use exogress::entities::{AccountUniqueId, ConfigId};
+use exogress_common::entities::{AccountUniqueId, ConfigId};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 

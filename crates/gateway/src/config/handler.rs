@@ -1,4 +1,4 @@
-use exogress::config_core::{Action, ClientHandler, MatchingPath, ProjectHandler, Rule};
+use exogress_common::config_core::{Action, ClientHandler, MatchingPath, ProjectHandler, Rule};
 use url::Url;
 
 pub trait HandlerExt<'a> {
@@ -110,7 +110,7 @@ impl<'a> HandlerExt<'a> for ProjectHandler {
 // #[cfg(test)]
 // mod test {
 //     use super::*;
-//     use exogress::config_core::{Action, ClientHandlerVariant, Filter, MatchPathSegment, StaticDir};
+//     use exogress_common::config_core::{Action, ClientHandlerVariant, Filter, MatchPathSegment, StaticDir};
 //
 //     #[test]
 //     fn test_matching() {

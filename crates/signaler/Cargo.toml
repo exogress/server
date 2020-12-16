@@ -34,4 +34,4 @@ hashbrown = "0.9.1"
 
 exogress-server-common = { path = "../common" }
 
-exogress = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities", "config-core", "signaling"] }
+exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities", "config-core", "signaling"] }

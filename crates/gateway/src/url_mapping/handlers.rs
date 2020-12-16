@@ -1,9 +1,9 @@
-use exogress::config_core::{
+use exogress_common::config_core::{
     Auth, ClientHandler as ClientHandlerConfig, ClientHandler, ClientHandlerVariant,
     UrlPathSegmentOrQueryPart,
 };
-use exogress::entities::{ConfigName, HandlerName, InstanceId};
-use exogress::tunnel::ConnectTarget;
+use exogress_common::entities::{ConfigName, HandlerName, InstanceId};
+use exogress_common::tunnel::ConnectTarget;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use std::path::Path;
@@ -81,8 +81,8 @@ impl HandlersProcessor {
 // #[cfg(test)]
 // mod test {
 //     use super::*;
-//     use exogress::config_core::{Config, Proxy, StaticDir};
-//     use exogress::entities::MountPointName;
+//     use exogress_common::config_core::{Config, Proxy, StaticDir};
+//     use exogress_common::entities::MountPointName;
 //     use std::str::FromStr;
 //
 //     #[test]

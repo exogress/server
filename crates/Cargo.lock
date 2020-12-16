@@ -758,7 +758,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "exogress"
+name = "exogress-assistant"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bson",
+ "chrono",
+ "clap",
+ "exogress-common",
+ "exogress-server-common",
+ "futures",
+ "hashbrown 0.8.2",
+ "mongodb",
+ "pin-project 0.4.27",
+ "rand 0.7.3",
+ "redis",
+ "reqwest",
+ "sentry",
+ "serde",
+ "serde_json",
+ "shadow-clone",
+ "stop-handle",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "trust-dns-resolver",
+ "url",
+ "warp",
+]
+
+[[package]]
+name = "exogress-common"
 version = "0.0.1-beta.1"
 dependencies = [
  "bincode",
@@ -812,38 +844,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exogress-assistant"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bson",
- "chrono",
- "clap",
- "exogress",
- "exogress-server-common",
- "futures",
- "hashbrown 0.8.2",
- "mongodb",
- "pin-project 0.4.27",
- "rand 0.7.3",
- "redis",
- "reqwest",
- "sentry",
- "serde",
- "serde_json",
- "shadow-clone",
- "stop-handle",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-futures",
- "tracing-subscriber",
- "trust-dns-resolver",
- "url",
- "warp",
-]
-
-[[package]]
 name = "exogress-director"
 version = "0.1.0"
 dependencies = [
@@ -852,7 +852,7 @@ dependencies = [
  "bytes 0.5.6",
  "clap",
  "derive_builder",
- "exogress",
+ "exogress-common",
  "exogress-server-common",
  "futures",
  "hashbrown 0.8.2",
@@ -885,7 +885,7 @@ dependencies = [
  "clap",
  "cookie",
  "dashmap",
- "exogress",
+ "exogress-common",
  "exogress-server-common",
  "futures",
  "futures-intrusive",
@@ -956,7 +956,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "exogress",
+ "exogress-common",
  "futures",
  "http 0.2.2",
  "rustls-native-certs",
@@ -979,7 +979,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "clap",
- "exogress",
+ "exogress-common",
  "exogress-server-common",
  "futures",
  "hashbrown 0.9.1",

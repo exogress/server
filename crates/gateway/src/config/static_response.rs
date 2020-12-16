@@ -1,6 +1,6 @@
 use crate::mime_helpers::{is_mime_match, ordered_by_quality};
 use chrono::Utc;
-use exogress::config_core::{RawResponse, RedirectResponse, StaticResponse, TemplateEngine};
+use exogress_common::config_core::{RawResponse, RedirectResponse, StaticResponse, TemplateEngine};
 use handlebars::Handlebars;
 use http::header::LOCATION;
 use http::Response;

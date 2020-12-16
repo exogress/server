@@ -1,4 +1,4 @@
-use exogress::common_utils::termination::StopSignal;
+use exogress_common::common_utils::termination::StopSignal;
 use std::fmt;
 use std::panic::UnwindSafe;
 

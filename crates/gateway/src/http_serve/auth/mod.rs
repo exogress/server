@@ -1,5 +1,5 @@
-use exogress::config_core::AuthProvider;
-use exogress::entities::HandlerName;
+use exogress_common::config_core::AuthProvider;
+use exogress_common::entities::HandlerName;
 use exogress_server_common::assistant::{GetValue, SetValue};
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use http::StatusCode;

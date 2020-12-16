@@ -8,9 +8,9 @@ use crate::urls::matchable_url::MatchableUrl;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use exogress::common_utils::jwt::{jwt_token, JwtError};
-use exogress::config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
-use exogress::entities::{
+use exogress_common::common_utils::jwt::{jwt_token, JwtError};
+use exogress_common::config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
+use exogress_common::entities::{
     AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName,
     Upstream,
 };

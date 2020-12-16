@@ -17,8 +17,8 @@ use redis::Client;
 use stop_handle::stop_handle;
 
 use crate::termination::StopReason;
-use exogress::common_utils::termination::stop_signal_listener;
-use exogress::entities::Ulid;
+use exogress_common::common_utils::termination::stop_signal_listener;
+use exogress_common::entities::Ulid;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
@@ -68,7 +68,7 @@ fn main() {
         );
 
     let spawn_args = exogress_server_common::clap::int_api::add_args(
-        exogress::common_utils::clap::threads::add_args(
+        exogress_common::common_utils::clap::threads::add_args(
             exogress_server_common::clap::sentry::add_args(
                 exogress_server_common::clap::log::add_args(spawn_args),
             ),
@@ -83,10 +83,10 @@ fn main() {
         .author("Exogress Team <team@exogress.com>")
         .subcommand(spawn_args);
 
-    let mut args = exogress::common_utils::clap::autocompletion::add_args(args);
+    let mut args = exogress_common::common_utils::clap::autocompletion::add_args(args);
 
     let matches = args.clone().get_matches().clone();
-    exogress::common_utils::clap::autocompletion::handle_autocompletion(
+    exogress_common::common_utils::clap::autocompletion::handle_autocompletion(
         &mut args,
         &matches,
         "exogress-signaler",
@@ -105,7 +105,7 @@ fn main() {
     } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
 
-    let num_threads = exogress::common_utils::clap::threads::extract_matches(&matches);
+    let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
     let mut rt = Builder::new()
         .threaded_scheduler()
         .enable_all()

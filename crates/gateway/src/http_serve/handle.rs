@@ -27,7 +27,7 @@ use crate::http_serve::{auth, director};
 use crate::stop_reasons::AppStopWait;
 use crate::urls::matchable_url::MatchableUrl;
 use crate::webapp::Client;
-use exogress::entities::Ulid;
+use exogress_common::entities::Ulid;
 use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::director::SourceInfo;
 use futures::channel::mpsc;

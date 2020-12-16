@@ -4,8 +4,8 @@ use futures::{pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
-use exogress::entities::{AccountName, ProjectName};
-use exogress::signaling::{
+use exogress_common::entities::{AccountName, ProjectName};
+use exogress_common::signaling::{
     InstanceConfigMessage, SignalerHandshakeResponse, WsInstanceToCloudMessage,
 };
 use warp::Filter;
@@ -13,7 +13,7 @@ use warp::Filter;
 use crate::presence;
 use crate::presence::{Error, InstanceRegistered, UpstreamHealthReport};
 use crate::termination::StopReason;
-use exogress::common_utils::backoff::Backoff;
+use exogress_common::common_utils::backoff::Backoff;
 use shadow_clone::shadow_clone;
 use stop_handle::{StopHandle, StopWait};
 
