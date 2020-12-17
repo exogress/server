@@ -19,6 +19,7 @@ use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use http::StatusCode;
 use lru_time_cache::LruCache;
+use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
 use reqwest::Identity;
 use smallvec::SmallVec;
@@ -91,8 +92,11 @@ pub enum Error {
     #[error("URL prefix error: `{0}`")]
     Url(#[from] url::ParseError),
 
-    #[error("Could not retrieve URL")]
+    #[error("could not retrieve URL")]
     CouldNotRetrieve,
+
+    #[error("config error")]
+    ConfigError,
 }
 
 #[derive(Debug, Serialize)]
@@ -273,6 +277,7 @@ impl Client {
         info!("No data in cache for {}", matchable_url);
 
         let host = matchable_url.host();
+        let config_error = Arc::new(Mutex::new(None));
 
         // take lock and deal with in_flight queries
         let in_flight_request = self
@@ -280,6 +285,7 @@ impl Client {
             .entry(host.clone().into())
             .or_insert_with({
                 shadow_clone!(matchable_url);
+                shadow_clone!(config_error);
 
                 let base_url = self.webapp_base_url.clone();
                 let reqwest = self.reqwest.clone();
@@ -306,6 +312,7 @@ impl Client {
                         shadow_clone!(maybe_identity);
                         shadow_clone!(public_gw_base_url);
                         shadow_clone!(rules_counters);
+                        shadow_clone!(config_error);
 
                         async move {
                             info!(
@@ -346,17 +353,23 @@ impl Client {
                                                 let generated_at =
                                                     configs_response.generated_at.clone();
 
-                                                let requests_processor = RequestsProcessor::new(
-                                                    configs_response,
-                                                    google_oauth2_client,
-                                                    github_oauth2_client,
-                                                    assistant_base_url,
-                                                    tunnels,
-                                                    rules_counters.clone(),
-                                                    individual_hostname,
-                                                    maybe_identity,
-                                                )
-                                                .expect("FIXME");
+                                                let requests_processor =
+                                                    match RequestsProcessor::new(
+                                                        configs_response,
+                                                        google_oauth2_client,
+                                                        github_oauth2_client,
+                                                        assistant_base_url,
+                                                        tunnels,
+                                                        rules_counters.clone(),
+                                                        individual_hostname,
+                                                        maybe_identity,
+                                                    ) {
+                                                        Ok(rp) => rp,
+                                                        Err(e) => {
+                                                            *config_error.lock() = Some(e);
+                                                            return;
+                                                        }
+                                                    };
 
                                                 requests_processors_registry.upsert(
                                                     &url_prefix,
@@ -398,6 +411,11 @@ impl Client {
             .clone();
 
         let _ = timeout(Duration::from_secs(20), in_flight_request.wait()).await;
+
+        if config_error.lock().is_some() {
+            error!("Error in received config");
+            return Err(Error::ConfigError);
+        }
 
         if let dashmap::mapref::entry::Entry::Occupied(entry) =
             self.retrieve_configs.entry(host.into())

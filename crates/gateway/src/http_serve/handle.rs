@@ -720,10 +720,11 @@ pub async fn server(
                             error!("Error resolving URL: {:?}", e);
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                         }
-                        Err(_e) => {
-                            error!("Timeout retrieving mapping");
+                        Err(e) => {
+                            error!("Error in config: {}", e);
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *res.body_mut() = Body::from("timeout while processing request");
+                            *res.body_mut() =
+                                Body::from(format!("error receiving config: `{}`", e));
                         }
                     }
 
