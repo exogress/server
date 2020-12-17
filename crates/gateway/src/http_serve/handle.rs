@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut};
-use futures::ready;
 use futures::TryFutureExt;
+use futures::{ready, FutureExt};
 use futures_util::sink::SinkExt;
 use futures_util::stream::Stream;
 use hashbrown::HashMap;
@@ -39,6 +39,7 @@ use smol_str::SmolStr;
 use std::io;
 use std::io::{BufReader, Cursor};
 use std::mem::MaybeUninit;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
@@ -558,177 +559,203 @@ pub async fn server(
                 shadow_clone!(maybe_identity);
 
                 async move {
-                    let req_uri = req.uri().to_string();
+                    let handle = AssertUnwindSafe(async move {
+                        let req_uri = req.uri().to_string();
 
-                    let requested_url: Url = if req_uri.starts_with("/") {
-                        if let Some(host) = req.headers_mut().remove(HOST) {
-                            format!("https://{}{}", host.to_str().unwrap(), req.uri())
+                        let requested_url: Url = if req_uri.starts_with("/") {
+                            if let Some(host) = req.headers_mut().remove(HOST) {
+                                format!("https://{}{}", host.to_str().unwrap(), req.uri())
+                            } else {
+                                panic!("fixme")
+                            }
                         } else {
-                            panic!("fixme")
+                            req_uri
                         }
-                    } else {
-                        req_uri
-                    }
-                    .parse()
-                    .expect("FIXME");
+                        .parse()
+                        .expect("FIXME");
 
-                    let mut res = Response::new(Body::empty());
+                        let mut res = Response::new(Body::empty());
 
-                    let host_without_port = if let Some(Host::Domain(s)) = requested_url.host() {
-                        s
-                    } else {
-                        panic!("FIXME not domain")
-                    };
-
-                    if req.uri().host() == public_gw_base_url.host_str() {
-                        let url = requested_url.clone();
-
-                        let path_segments: Vec<_> = url.path_segments().unwrap().collect();
-
-                        if path_segments.len() == 3
-                            && path_segments[0] == "_exg"
-                            && path_segments[2] == "callback"
+                        let host_without_port = if let Some(Host::Domain(s)) = requested_url.host()
                         {
-                            let query_pairs: HashMap<String, String> = url
-                                .query_pairs()
-                                .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                                .collect();
-                            let provider = path_segments[1];
+                            s
+                        } else {
+                            panic!("FIXME not domain")
+                        };
 
-                            let oauth2_result = match provider {
-                                "google" => {
-                                    google_oauth2_client.process_callback(query_pairs).await
-                                }
-                                "github" => {
-                                    github_oauth2_client.process_callback(query_pairs).await
-                                }
-                                _ => {
-                                    *res.status_mut() = StatusCode::NOT_FOUND;
-                                    *res.body_mut() = Body::from("not found");
+                        if req.uri().host() == public_gw_base_url.host_str() {
+                            let url = requested_url.clone();
 
-                                    return Ok(res);
-                                }
-                            };
+                            let path_segments: Vec<_> = url.path_segments().unwrap().collect();
 
-                            match oauth2_result {
-                                Ok(callback_result) => {
-                                    info!("oauth2 callback result: {:?}", callback_result);
-                                    let secret: String =
-                                        thread_rng().sample_iter(&Alphanumeric).take(30).collect();
+                            if path_segments.len() == 3
+                                && path_segments[0] == "_exg"
+                                && path_segments[2] == "callback"
+                            {
+                                let query_pairs: HashMap<String, String> = url
+                                    .query_pairs()
+                                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                                    .collect();
+                                let provider = path_segments[1];
 
-                                    save_assistant_key(
-                                        &assistant_base_url,
-                                        &secret,
-                                        &AuthFinalizer {
-                                            identities: callback_result.identities,
-                                            oauth2_flow_data: callback_result
-                                                .oauth2_flow_data
-                                                .clone(),
-                                        },
-                                        Duration::from_secs(15),
-                                        maybe_identity.clone(),
-                                    )
-                                    .await
-                                    .expect("FIXME");
+                                let oauth2_result = match provider {
+                                    "google" => {
+                                        google_oauth2_client.process_callback(query_pairs).await
+                                    }
+                                    "github" => {
+                                        github_oauth2_client.process_callback(query_pairs).await
+                                    }
+                                    _ => {
+                                        *res.status_mut() = StatusCode::NOT_FOUND;
+                                        *res.body_mut() = Body::from("not found");
 
-                                    let mut redirect_to =
-                                        callback_result.oauth2_flow_data.base_url.to_url();
+                                        return Ok(res);
+                                    }
+                                };
 
-                                    // FIXME: Broken logic here!
-                                    redirect_to
-                                        .set_port(
-                                            callback_result.oauth2_flow_data.requested_url.port(),
+                                match oauth2_result {
+                                    Ok(callback_result) => {
+                                        info!("oauth2 callback result: {:?}", callback_result);
+                                        let secret: String = thread_rng()
+                                            .sample_iter(&Alphanumeric)
+                                            .take(30)
+                                            .collect();
+
+                                        save_assistant_key(
+                                            &assistant_base_url,
+                                            &secret,
+                                            &AuthFinalizer {
+                                                identities: callback_result.identities,
+                                                oauth2_flow_data: callback_result
+                                                    .oauth2_flow_data
+                                                    .clone(),
+                                            },
+                                            Duration::from_secs(15),
+                                            maybe_identity.clone(),
                                         )
-                                        .unwrap();
+                                        .await
+                                        .expect("FIXME");
 
-                                    redirect_to
-                                        .path_segments_mut()
-                                        .unwrap()
-                                        .push("_exg")
-                                        .push("check_auth");
+                                        let mut redirect_to =
+                                            callback_result.oauth2_flow_data.base_url.to_url();
 
-                                    redirect_to.set_query(None);
-                                    redirect_to
-                                        .query_pairs_mut()
-                                        .append_pair("secret", secret.as_str());
+                                        // FIXME: Broken logic here!
+                                        redirect_to
+                                            .set_port(
+                                                callback_result
+                                                    .oauth2_flow_data
+                                                    .requested_url
+                                                    .port(),
+                                            )
+                                            .unwrap();
 
-                                    redirect_to.set_fragment(None);
-                                    redirect_to.set_scheme("https").unwrap();
+                                        redirect_to
+                                            .path_segments_mut()
+                                            .unwrap()
+                                            .push("_exg")
+                                            .push("check_auth");
 
-                                    res.headers_mut()
-                                        .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+                                        redirect_to.set_query(None);
+                                        redirect_to
+                                            .query_pairs_mut()
+                                            .append_pair("secret", secret.as_str());
 
-                                    res.headers_mut().insert(
-                                        LOCATION,
-                                        redirect_to.to_string().try_into().unwrap(),
-                                    );
+                                        redirect_to.set_fragment(None);
+                                        redirect_to.set_scheme("https").unwrap();
 
-                                    *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+                                        res.headers_mut()
+                                            .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+
+                                        res.headers_mut().insert(
+                                            LOCATION,
+                                            redirect_to.to_string().try_into().unwrap(),
+                                        );
+
+                                        *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+                                    }
+                                    Err(e) => {
+                                        warn!("Error from Identity Provider: {:?}", e);
+
+                                        *res.status_mut() = StatusCode::FORBIDDEN;
+                                        *res.body_mut() = Body::from("Forbidden");
+                                    }
                                 }
-                                Err(e) => {
-                                    warn!("Error from Identity Provider: {:?}", e);
 
-                                    *res.status_mut() = StatusCode::FORBIDDEN;
-                                    *res.body_mut() = Body::from("Forbidden");
+                                return Ok(res);
+                            }
+                        }
+
+                        let matchable_url = MatchableUrl::from_components(
+                            host_without_port.as_ref(),
+                            requested_url.path().as_ref(),
+                            requested_url.query().unwrap_or(""),
+                        )
+                        .expect("FIXME");
+
+                        let handle_result = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            webapp_client.resolve_url(
+                                matchable_url,
+                                tunnels.clone(),
+                                individual_hostname.clone(),
+                            ),
+                        )
+                        .await;
+
+                        match handle_result {
+                            Ok(Ok(Some((requests_processor, _mount_point_base_url)))) => {
+                                let result = tokio::time::timeout(Duration::from_secs(20), async {
+                                    requests_processor
+                                        .process(
+                                            &mut req,
+                                            &mut res,
+                                            &requested_url,
+                                            &local_addr,
+                                            &remote_addr,
+                                        )
+                                        .await;
+                                })
+                                .await;
+                                if let Err(_) = result {
+                                    res = Response::new(Body::from(
+                                        "timeout while processing request",
+                                    ));
+                                    *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                                 }
                             }
-
-                            return Ok(res);
-                        }
-                    }
-
-                    let matchable_url = MatchableUrl::from_components(
-                        host_without_port.as_ref(),
-                        requested_url.path().as_ref(),
-                        requested_url.query().unwrap_or(""),
-                    )
-                    .expect("FIXME");
-
-                    let handle_result = tokio::time::timeout(
-                        Duration::from_secs(30),
-                        webapp_client.resolve_url(
-                            matchable_url,
-                            tunnels.clone(),
-                            individual_hostname.clone(),
-                        ),
-                    )
-                    .await;
-
-                    match handle_result {
-                        Ok(Ok(Some((requests_processor, _mount_point_base_url)))) => {
-                            let result = tokio::time::timeout(Duration::from_secs(20), async {
-                                requests_processor
-                                    .process(
-                                        &mut req,
-                                        &mut res,
-                                        &requested_url,
-                                        &local_addr,
-                                        &remote_addr,
-                                    )
-                                    .await;
-                            })
-                            .await;
-                            if let Err(_) = result {
-                                res = Response::new(Body::from("timeout while processing request"));
+                            Ok(Ok(None)) => {
+                                *res.status_mut() = StatusCode::NOT_FOUND;
+                            }
+                            Ok(Err(e)) => {
+                                error!("Error resolving URL: {:?}", e);
                                 *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                             }
+                            Err(e) => {
+                                error!("Error in config: {}", e);
+                                *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                *res.body_mut() =
+                                    Body::from(format!("error receiving config: `{}`", e));
+                            }
                         }
-                        Ok(Ok(None)) => {
-                            *res.status_mut() = StatusCode::NOT_FOUND;
-                        }
-                        Ok(Err(e)) => {
-                            error!("Error resolving URL: {:?}", e);
-                            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                        }
-                        Err(e) => {
-                            error!("Error in config: {}", e);
-                            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *res.body_mut() =
-                                Body::from(format!("error receiving config: `{}`", e));
-                        }
-                    }
 
-                    Ok::<_, anyhow::Error>(res)
+                        Ok::<_, anyhow::Error>(res)
+                    });
+
+                    match handle.catch_unwind().await {
+                        Err(e) => {
+                            let cause = e
+                                .downcast_ref::<String>()
+                                .map(|e| &**e)
+                                .or_else(|| e.downcast_ref::<&'static str>().map(|e| *e))
+                                .unwrap_or("unknown panic error");
+
+                            error!("server error, panic: {}", cause);
+                            let mut res = Response::new(Body::from("Error processing request"));
+                            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            Ok(res)
+                        }
+                        Ok(r) => r,
+                    }
                 }
             }))
         }

@@ -54,6 +54,36 @@ use weighted_rs::{SmoothWeight, Weight};
 
 static IMAGE_MAGIC: Once = Once::new();
 
+macro_rules! try_or_exception {
+    ($expr:expr, $exception:expr) => {
+        match $expr {
+            core::result::Result::Ok(val) => val,
+            core::result::Result::Err(err) => {
+                let mut data: HashMap<SmolStr, SmolStr> = HashMap::new();
+                data.insert("error".into(), err.to_string().into());
+                return HandlerInvocationResult::Exception {
+                    name: $exception.try_into().expect("Bad exception format"),
+                    data,
+                };
+            }
+        }
+    };
+}
+
+macro_rules! try_option_or_exception {
+    ($expr:expr, $exception:expr) => {
+        match $expr {
+            core::option::Option::Some(val) => val,
+            core::option::Option::None => {
+                return HandlerInvocationResult::Exception {
+                    name: $exception.try_into().expect("Bad exception format"),
+                    data: Default::default(),
+                };
+            }
+        }
+    };
+}
+
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
     pub generated_at: DateTime<Utc>,
@@ -446,7 +476,7 @@ impl ResolvedProxy {
         } else if proxy_to.scheme() == "wss" {
             proxy_to.set_scheme("ws").unwrap();
         } else {
-            panic!("FIXME");
+            unreachable!("unknown scheme: {}", proxy_to.scheme());
         }
 
         let mut proxy_req = Request::<Body>::new(Body::empty());
@@ -481,17 +511,21 @@ impl ResolvedProxy {
 
         match selected_instance_id {
             Some(instance_id) => {
-                let http_client = self
-                    .client_tunnels
-                    .retrieve_http_connector(
-                        &self.config_id,
-                        &instance_id,
-                        self.individual_hostname.clone(),
-                    )
-                    .await
-                    .expect("FIXME");
+                let http_client = try_option_or_exception!(
+                    self.client_tunnels
+                        .retrieve_http_connector(
+                            &self.config_id,
+                            &instance_id,
+                            self.individual_hostname.clone(),
+                        )
+                        .await,
+                    "proxy-error:instance-unreachable"
+                );
 
-                let proxy_res = http_client.request(proxy_req).await.expect("FIXME");
+                let proxy_res = try_or_exception!(
+                    http_client.request(proxy_req).await,
+                    "proxy-error:instance-unreachable"
+                );
 
                 copy_headers_from_proxy_res_to_res(&proxy_res, res, true);
 
@@ -506,56 +540,55 @@ impl ResolvedProxy {
                     tokio::spawn(
                         #[allow(unreachable_code)]
                         async move {
-                            match proxy_res.into_body().on_upgrade().await {
-                                Ok(mut proxy_upgraded) => {
-                                    let mut req_upgraded =
-                                        req_body.on_upgrade().await.expect("FIXME");
+                            let mut proxy_upgraded = proxy_res
+                                .into_body()
+                                .on_upgrade()
+                                .await
+                                .with_context(|| "error upgrading proxy connection")?;
+                            let mut req_upgraded = req_body
+                                .on_upgrade()
+                                .await
+                                .with_context(|| "error upgrading connection")?;
 
-                                    let mut buf1 = vec![0u8; 65536];
-                                    let mut buf2 = vec![0u8; 65536];
+                            let mut buf1 = vec![0u8; 65536];
+                            let mut buf2 = vec![0u8; 65536];
 
-                                    loop {
-                                        tokio::select! {
-                                            bytes_read_result = proxy_upgraded.read(&mut buf1) => {
-                                                let bytes_read = bytes_read_result
-                                                    .with_context(|| "error reading from incoming")?;
-                                                if bytes_read == 0 {
-                                                    return Ok(());
-                                                } else {
-                                                    req_upgraded
-                                                        .write_all(&buf1[..bytes_read])
-                                                        .await
-                                                        .with_context(|| "error writing to forwarded")?;
-                                                    req_upgraded.flush().await.with_context(|| "error flushing data to cliet")?;
-                                                }
-                                            },
+                            loop {
+                                tokio::select! {
+                                    bytes_read_result = proxy_upgraded.read(&mut buf1) => {
+                                        let bytes_read = bytes_read_result
+                                            .with_context(|| "error reading from incoming")?;
+                                        if bytes_read == 0 {
+                                            return Ok(());
+                                        } else {
+                                            req_upgraded
+                                                .write_all(&buf1[..bytes_read])
+                                                .await
+                                                .with_context(|| "error writing to forwarded")?;
+                                            req_upgraded.flush().await.with_context(|| "error flushing data to cliet")?;
+                                        }
+                                    },
 
-                                            bytes_read_result = req_upgraded.read(&mut buf2) => {
-                                                let bytes_read = bytes_read_result
-                                                    .with_context(|| "error reading from forwarded")?;
-                                                if bytes_read == 0 {
-                                                    return Ok(());
-                                                } else {
-                                                    proxy_upgraded
-                                                        .write_all(&buf2[..bytes_read])
-                                                        .await
-                                                        .with_context(|| "error writing to incoming")?;
-                                                    proxy_upgraded
-                                                        .flush()
-                                                        .await
-                                                        .with_context(|| "error flushing data to proxy")?;
-                                                }
-                                            }
+                                    bytes_read_result = req_upgraded.read(&mut buf2) => {
+                                        let bytes_read = bytes_read_result
+                                            .with_context(|| "error reading from forwarded")?;
+                                        if bytes_read == 0 {
+                                            return Ok(());
+                                        } else {
+                                            proxy_upgraded
+                                                .write_all(&buf2[..bytes_read])
+                                                .await
+                                                .with_context(|| "error writing to incoming")?;
+                                            proxy_upgraded
+                                                .flush()
+                                                .await
+                                                .with_context(|| "error flushing data to proxy")?;
                                         }
                                     }
-
-                                    Ok::<_, anyhow::Error>(())
-                                }
-                                Err(_) => {
-                                    // raise exception
-                                    panic!("FIXME");
                                 }
                             }
+
+                            Ok::<_, anyhow::Error>(())
                         },
                     );
                 } else {
@@ -643,19 +676,26 @@ impl ResolvedStaticDir {
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
 
-        let instance_id = Weight::next(&mut *self.instance_ids.lock()).expect("FIXME");
+        let instance_id = try_option_or_exception!(
+            Weight::next(&mut *self.instance_ids.lock()),
+            "proxy-error:no-instances"
+        );
 
-        let http_client = self
-            .client_tunnels
-            .retrieve_http_connector(
-                &self.config_id,
-                &instance_id,
-                self.individual_hostname.clone(),
-            )
-            .await
-            .expect("FIXME");
+        let http_client = try_option_or_exception!(
+            self.client_tunnels
+                .retrieve_http_connector(
+                    &self.config_id,
+                    &instance_id,
+                    self.individual_hostname.clone(),
+                )
+                .await,
+            "proxy-error:instance-unreachable"
+        );
 
-        let proxy_res = http_client.request(proxy_req).await.expect("FIXME");
+        let proxy_res = try_or_exception!(
+            http_client.request(proxy_req).await,
+            "proxy-error:instance-unreachable"
+        );
 
         copy_headers_from_proxy_res_to_res(&proxy_res, res, false);
 
@@ -730,7 +770,7 @@ impl ResolvedAuth {
                     let result = (|| {
                         let requested_url: Url = query.get("url")?.parse().ok()?;
                         let handler_name: HandlerName =
-                            query.get("handler")?.as_str().parse().expect("FIXME");
+                            query.get("handler")?.as_str().parse().ok()?;
 
                         let maybe_default_provider: Option<AuthProvider> = query
                             .get("provider")
@@ -783,152 +823,170 @@ impl ResolvedAuth {
                         }
                     }
                 } else if path_segments[path_segments_len - 1] == "check_auth" {
-                    let secret = query.get("secret").expect("FIXME").clone();
+                    match query.get("secret") {
+                        Some(secret) => {
+                            match retrieve_assistant_key::<AuthFinalizer>(
+                                &self.assistant_base_url,
+                                &secret,
+                                self.maybe_identity.clone(),
+                            )
+                            .await
+                            {
+                                Ok(retrieved_flow_data) => {
+                                    let handler_name =
+                                        retrieved_flow_data.oauth2_flow_data.handler_name.clone();
+                                    let used_provider =
+                                        retrieved_flow_data.oauth2_flow_data.provider.clone();
 
-                    match retrieve_assistant_key::<AuthFinalizer>(
-                        &self.assistant_base_url,
-                        &secret,
-                        self.maybe_identity.clone(),
-                    )
-                    .await
-                    {
-                        Ok(retrieved_flow_data) => {
-                            let handler_name =
-                                retrieved_flow_data.oauth2_flow_data.handler_name.clone();
-                            let used_provider =
-                                retrieved_flow_data.oauth2_flow_data.provider.clone();
-
-                            if handler_name != self.handler_name {
-                                return HandlerInvocationResult::ToNextHandler;
-                            }
-
-                            let maybe_auth_definition =
-                                self.config.providers.iter().find(|provider| {
-                                    match (&provider.name, &used_provider) {
-                                        (&AuthProvider::Google, &Oauth2Provider::Google) => true,
-                                        (&AuthProvider::Github, &Oauth2Provider::Github) => true,
-                                        _ => false,
+                                    if handler_name != self.handler_name {
+                                        return HandlerInvocationResult::ToNextHandler;
                                     }
-                                });
 
-                            match maybe_auth_definition {
-                                Some(auth_definition) => {
-                                    let mut acl_allow = false;
+                                    let maybe_auth_definition =
+                                        self.config.providers.iter().find(|provider| {
+                                            match (&provider.name, &used_provider) {
+                                                (
+                                                    &AuthProvider::Google,
+                                                    &Oauth2Provider::Google,
+                                                ) => true,
+                                                (
+                                                    &AuthProvider::Github,
+                                                    &Oauth2Provider::Github,
+                                                ) => true,
+                                                _ => false,
+                                            }
+                                        });
 
-                                    'acl: for acl_entry in &auth_definition.acl {
-                                        for identity in &retrieved_flow_data.identities {
-                                            match acl_entry {
-                                                AclEntry::Allow { identity: pass } => {
-                                                    let is_match = match Glob::new(pass) {
-                                                        Ok(glob) => glob
-                                                            .compile_matcher()
-                                                            .is_match(identity),
-                                                        Err(_) => pass == identity,
-                                                    };
-                                                    if is_match {
-                                                        info!("Pass {} ", identity);
-                                                        acl_allow = true;
-                                                        break 'acl;
-                                                    }
-                                                }
-                                                AclEntry::Deny { identity: deny } => {
-                                                    let is_match = match Glob::new(deny) {
-                                                        Ok(glob) => glob
-                                                            .compile_matcher()
-                                                            .is_match(identity),
-                                                        Err(_) => deny == identity,
-                                                    };
-                                                    if is_match {
-                                                        info!("Deny {} ", identity);
-                                                        acl_allow = false;
-                                                        break 'acl;
+                                    match maybe_auth_definition {
+                                        Some(auth_definition) => {
+                                            let mut acl_allow = false;
+
+                                            'acl: for acl_entry in &auth_definition.acl {
+                                                for identity in &retrieved_flow_data.identities {
+                                                    match acl_entry {
+                                                        AclEntry::Allow { identity: pass } => {
+                                                            let is_match = match Glob::new(pass) {
+                                                                Ok(glob) => glob
+                                                                    .compile_matcher()
+                                                                    .is_match(identity),
+                                                                Err(_) => pass == identity,
+                                                            };
+                                                            if is_match {
+                                                                info!("Pass {} ", identity);
+                                                                acl_allow = true;
+                                                                break 'acl;
+                                                            }
+                                                        }
+                                                        AclEntry::Deny { identity: deny } => {
+                                                            let is_match = match Glob::new(deny) {
+                                                                Ok(glob) => glob
+                                                                    .compile_matcher()
+                                                                    .is_match(identity),
+                                                                Err(_) => deny == identity,
+                                                            };
+                                                            if is_match {
+                                                                info!("Deny {} ", identity);
+                                                                acl_allow = false;
+                                                                break 'acl;
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
+
+                                            if acl_allow {
+                                                res.headers_mut().insert(
+                                                    CACHE_CONTROL,
+                                                    "no-cache".try_into().unwrap(),
+                                                );
+
+                                                res.headers_mut().insert(
+                                                    LOCATION,
+                                                    retrieved_flow_data
+                                                        .oauth2_flow_data
+                                                        .requested_url
+                                                        .to_string()
+                                                        .try_into()
+                                                        .unwrap(),
+                                                );
+
+                                                *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+
+                                                let claims = Claims {
+                                                    idp: serde_json::to_value(
+                                                        retrieved_flow_data
+                                                            .oauth2_flow_data
+                                                            .provider,
+                                                    )
+                                                    .unwrap()
+                                                    .to_string(),
+                                                    exp: (Utc::now() + chrono::Duration::hours(24))
+                                                        .timestamp()
+                                                        .try_into()
+                                                        .unwrap(),
+                                                };
+
+                                                let token = jsonwebtoken::encode(
+                                                    &Header {
+                                                        alg: jsonwebtoken::Algorithm::ES256,
+                                                        ..Default::default()
+                                                    },
+                                                    &claims,
+                                                    &EncodingKey::from_ec_pem(
+                                                        retrieved_flow_data
+                                                            .oauth2_flow_data
+                                                            .jwt_ecdsa
+                                                            .private_key
+                                                            .as_ref(),
+                                                    )
+                                                    .expect(
+                                                        "Could not create encoding key from EC PEM",
+                                                    ),
+                                                )
+                                                .expect("Could no encode JSON web token");
+
+                                                let auth_cookie_name = self.cookie_name();
+
+                                                let set_cookie =
+                                                    Cookie::build(auth_cookie_name, token)
+                                                        .path(
+                                                            retrieved_flow_data
+                                                                .oauth2_flow_data
+                                                                .base_url
+                                                                .path(),
+                                                        )
+                                                        .max_age(time::Duration::hours(24))
+                                                        .http_only(true)
+                                                        .secure(true)
+                                                        .finish();
+
+                                                res.headers_mut().insert(
+                                                    SET_COOKIE,
+                                                    set_cookie.to_string().try_into().unwrap(),
+                                                );
+                                            } else {
+                                                *res.status_mut() = StatusCode::FORBIDDEN;
+                                                *res.body_mut() = Body::from("Access Denied");
+                                            }
+                                        }
+                                        None => {
+                                            info!("could not find provider");
+                                            *res.status_mut() = StatusCode::BAD_REQUEST;
+                                            *res.body_mut() = Body::from("bad request");
                                         }
                                     }
-
-                                    if acl_allow {
-                                        res.headers_mut()
-                                            .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-
-                                        res.headers_mut().insert(
-                                            LOCATION,
-                                            retrieved_flow_data
-                                                .oauth2_flow_data
-                                                .requested_url
-                                                .to_string()
-                                                .try_into()
-                                                .unwrap(),
-                                        );
-
-                                        *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-
-                                        let claims = Claims {
-                                            idp: serde_json::to_value(
-                                                retrieved_flow_data.oauth2_flow_data.provider,
-                                            )
-                                            .unwrap()
-                                            .to_string(),
-                                            exp: (Utc::now() + chrono::Duration::hours(24))
-                                                .timestamp()
-                                                .try_into()
-                                                .unwrap(),
-                                        };
-
-                                        let token = jsonwebtoken::encode(
-                                            &Header {
-                                                alg: jsonwebtoken::Algorithm::ES256,
-                                                ..Default::default()
-                                            },
-                                            &claims,
-                                            &EncodingKey::from_ec_pem(
-                                                retrieved_flow_data
-                                                    .oauth2_flow_data
-                                                    .jwt_ecdsa
-                                                    .private_key
-                                                    .as_ref(),
-                                            )
-                                            .expect("FIXME"),
-                                        )
-                                        .expect("FIXME");
-
-                                        let auth_cookie_name = self.cookie_name();
-
-                                        let set_cookie = Cookie::build(auth_cookie_name, token)
-                                            .path(
-                                                retrieved_flow_data
-                                                    .oauth2_flow_data
-                                                    .base_url
-                                                    .path(),
-                                            )
-                                            .max_age(time::Duration::hours(24))
-                                            .http_only(true)
-                                            .secure(true)
-                                            .finish();
-
-                                        res.headers_mut().insert(
-                                            SET_COOKIE,
-                                            set_cookie.to_string().try_into().unwrap(),
-                                        );
-                                    } else {
-                                        *res.status_mut() = StatusCode::FORBIDDEN;
-                                        *res.body_mut() = Body::from("Access Denied");
-                                    }
                                 }
-                                None => {
-                                    info!("could not find provider");
-                                    *res.status_mut() = StatusCode::BAD_REQUEST;
-                                    *res.body_mut() = Body::from("bad request");
+                                Err(e) => {
+                                    info!("could not retrieve assistant oauth2 key: {}", e);
+                                    *res.status_mut() = StatusCode::UNAUTHORIZED;
+                                    *res.body_mut() = Body::from("error");
                                 }
                             }
                         }
-                        Err(e) => {
-                            info!("could not retrieve assistant oauth2 key: {}", e);
-                            *res.status_mut() = StatusCode::UNAUTHORIZED;
-                            *res.body_mut() = Body::from("error");
+                        None => {
+                            *res.status_mut() = StatusCode::NOT_FOUND;
                         }
-                    }
+                    };
 
                     return HandlerInvocationResult::Responded;
                 }
