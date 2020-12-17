@@ -45,9 +45,10 @@ impl StaticResponseExt for StaticResponse {
                 for (k, v) in &common.headers {
                     http_response.headers_mut().append(k, v.clone());
                 }
-                http_response
-                    .headers_mut()
-                    .insert(LOCATION, destination.as_str().parse()?);
+                http_response.headers_mut().insert(
+                    LOCATION,
+                    destination.to_destiation_string().parse().unwrap(),
+                );
             }
             StaticResponse::Raw(RawResponse {
                 status_code,

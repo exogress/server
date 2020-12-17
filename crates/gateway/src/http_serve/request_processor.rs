@@ -1072,8 +1072,8 @@ impl<'a> TryFrom<&'a ContentCoding> for SupportedContentEncoding {
 
     fn try_from(value: &'a ContentCoding) -> Result<Self, Self::Error> {
         match value {
-            &ContentCoding::BROTLI | &ContentCoding::STAR => Ok(SupportedContentEncoding::Brotli),
-            &ContentCoding::GZIP => Ok(SupportedContentEncoding::Gzip),
+            &ContentCoding::BROTLI => Ok(SupportedContentEncoding::Brotli),
+            &ContentCoding::GZIP | &ContentCoding::STAR => Ok(SupportedContentEncoding::Gzip),
             &ContentCoding::DEFLATE => Ok(SupportedContentEncoding::Deflate),
             _ => Err(()),
         }
@@ -1640,7 +1640,7 @@ fn resolve_static_response(
                 let mut headers = redirect.common.headers.clone();
                 headers.insert(
                     LOCATION,
-                    redirect.destination.as_str().parse().expect("bad URL"),
+                    redirect.destination.to_destiation_string().parse().unwrap(),
                 );
                 headers
             }
