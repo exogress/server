@@ -91,6 +91,7 @@ impl Inner {
             self.lru_storage.remove(&found_url_prefix_string);
             self.from_prefix_lookup_tree
                 .remove(&found_url_prefix_string);
+            crate::statistics::CONFIGS_FORGOTTEN.inc();
         }
     }
 

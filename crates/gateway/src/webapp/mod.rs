@@ -25,7 +25,7 @@ use reqwest::Identity;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::sync::Arc;
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant};
 use url::Url;
 
 #[derive(Clone)]
@@ -77,8 +77,8 @@ pub enum Error {
     #[error("request error: `{0}`")]
     Reqwest(#[from] reqwest::Error),
 
-    #[error("bad response")]
-    BadResponse,
+    #[error("bad response: `{_0}`")]
+    BadResponse(StatusCode),
 
     #[error("not found")]
     NotFound,
@@ -97,6 +97,18 @@ pub enum Error {
 
     #[error("config error")]
     ConfigError,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum CertificateRetrievalError {
+    #[error("request error: `{0}`")]
+    Reqwest(#[from] reqwest::Error),
+
+    #[error("bad response: `{_0}`")]
+    BadResponse(StatusCode),
+
+    #[error("not found")]
+    NotFound,
 }
 
 #[derive(Debug, Serialize)]
@@ -240,7 +252,7 @@ impl Client {
         } else if res.status() == http::StatusCode::NOT_FOUND {
             Err(Error::NotFound)
         } else {
-            Err(Error::BadResponse)
+            Err(Error::BadResponse(res.status()))
         }
     }
 
@@ -262,6 +274,8 @@ impl Client {
             self.requests_processors_registry.resolve(&matchable_url)
         //, tunnels.clone(), external_port, proto)
         {
+            crate::statistics::CONFIGS_CACHE_HIT.inc();
+
             match cached {
                 Some(data) => {
                     // mapping exist
@@ -275,6 +289,7 @@ impl Client {
 
         // no info in cache
         info!("No data in cache for {}", matchable_url);
+        crate::statistics::CONFIGS_CACHE_MISS.inc();
 
         let host = matchable_url.host();
         let config_error = Arc::new(Mutex::new(None));
@@ -315,6 +330,8 @@ impl Client {
                         shadow_clone!(config_error);
 
                         async move {
+                            let retrieval_started_at = Instant::now();
+
                             info!(
                                 "Initiating new request to retrieve mapping for {}",
                                 matchable_url
@@ -340,13 +357,16 @@ impl Client {
 
                             match reqwest.get(url).send().await {
                                 Ok(res) => {
-                                    if res.status().is_success() {
+                                    let status = res.status();
+                                    if status.is_success() {
                                         match res.json::<ConfigsResponse>().await {
                                             Ok(configs_response) => {
                                                 info!(
                                                     "Configs retrieved successfully: `{:?}`",
                                                     configs_response
                                                 );
+
+                                                crate::statistics::CONFIGS_RETRIEVAL_SUCCESS.inc();
 
                                                 let url_prefix =
                                                     configs_response.url_prefix.clone();
@@ -378,19 +398,32 @@ impl Client {
                                                 );
                                             }
                                             Err(e) => {
+                                                crate::statistics::CONFIGS_RETRIEVAL_ERROR
+                                                    .with_label_values(&[
+                                                        crate::statistics::HTTP_ERROR_BAD_RESPONSE,
+                                                        &status.as_u16().to_string(),
+                                                    ])
+                                                    .inc();
                                                 error!(
                                                     "Could not parse retrieved config body: {}",
                                                     e
                                                 );
                                             }
                                         }
-                                    } else if res.status() == StatusCode::NOT_FOUND {
+                                    } else if status == StatusCode::NOT_FOUND {
+                                        crate::statistics::CONFIGS_RETRIEVAL_SUCCESS.inc();
                                         requests_processors_registry.upsert(
                                             &matchable_url.to_url_prefix(),
                                             None,
                                             &Utc::now(), //FIXME: return generated_at in 404 resp
                                         );
                                     } else {
+                                        crate::statistics::CONFIGS_RETRIEVAL_ERROR
+                                            .with_label_values(&[
+                                                crate::statistics::HTTP_ERROR_BAD_STATUS,
+                                                &res.status().as_u16().to_string(),
+                                            ])
+                                            .inc();
                                         error!(
                                             "Bad status on configs retrieving: {}",
                                             res.status()
@@ -398,9 +431,17 @@ impl Client {
                                     }
                                 }
                                 Err(e) => {
+                                    crate::statistics::CONFIGS_RETRIEVAL_ERROR
+                                        .with_label_values(&[
+                                            crate::statistics::HTTP_ERROR_REQUEST_ERROR,
+                                        ])
+                                        .inc();
                                     error!("Error retrieving configs: {}", e);
                                 }
                             }
+
+                            crate::statistics::CONFIGS_RETRIEVAL_TIME_MS
+                                .observe(retrieval_started_at.elapsed().as_millis() as f64);
 
                             ready_event.set();
                         }
@@ -437,6 +478,7 @@ impl Client {
     }
 
     pub fn forget_certificate(&self, domain: String) {
+        crate::statistics::CERTIFICATES_FORGOTTEN.inc();
         self.certificates.lock().remove(&domain);
     }
 
@@ -448,13 +490,16 @@ impl Client {
 
         let reset_event = match cached_cert {
             Some(CertificateRetrievalState::Found(resp)) => {
+                crate::statistics::CERTIFICATES_CACHE_HIT.inc();
                 return Ok(Some(resp));
             }
             Some(CertificateRetrievalState::NotExist) => {
+                crate::statistics::CERTIFICATES_CACHE_HIT.inc();
                 return Ok(None);
             }
             Some(CertificateRetrievalState::InFlight(evt)) => evt,
             None => {
+                crate::statistics::CERTIFICATES_CACHE_MISS.inc();
                 let evt = Arc::new(ManualResetEvent::new(false));
 
                 self.certificates.lock().insert(
@@ -469,19 +514,46 @@ impl Client {
                     let domain = domain.clone();
 
                     async move {
+                        let start_retrieval = Instant::now();
+
                         match client.retrieve_certificate(&domain).await {
                             Ok(certs) => {
+                                crate::statistics::CERTIFICATES_RETRIEVAL_SUCCESS.inc();
+
                                 certificates.lock().insert(
                                     domain,
                                     CertificateRetrievalState::Found(certs.clone()),
                                 );
                             }
-                            Err(_e) => {
+                            Err(e) => {
+                                match e {
+                                    CertificateRetrievalError::NotFound => {
+                                        crate::statistics::CERTIFICATES_RETRIEVAL_SUCCESS.inc();
+                                    }
+                                    CertificateRetrievalError::Reqwest(_) => {
+                                        crate::statistics::CERTIFICATES_RETRIEVAL_ERROR
+                                            .with_label_values(&[
+                                                crate::statistics::HTTP_ERROR_BAD_RESPONSE,
+                                            ])
+                                            .inc();
+                                    }
+                                    CertificateRetrievalError::BadResponse(status) => {
+                                        crate::statistics::CERTIFICATES_RETRIEVAL_ERROR
+                                            .with_label_values(&[
+                                                crate::statistics::HTTP_ERROR_BAD_STATUS,
+                                                &status.as_u16().to_string(),
+                                            ])
+                                            .inc();
+                                    }
+                                }
                                 certificates
                                     .lock()
                                     .insert(domain, CertificateRetrievalState::NotExist);
                             }
                         }
+
+                        crate::statistics::CERTIFICATES_RETRIEVAL_TIME_MS
+                            .observe(start_retrieval.elapsed().as_millis() as f64);
 
                         evt.set();
                     }
@@ -499,7 +571,10 @@ impl Client {
         }
     }
 
-    async fn retrieve_certificate(&self, domain: &str) -> Result<CertificateResponse, Error> {
+    async fn retrieve_certificate(
+        &self,
+        domain: &str,
+    ) -> Result<CertificateResponse, CertificateRetrievalError> {
         let mut url = self.webapp_base_url.clone();
         url.path_segments_mut()
             .unwrap()
@@ -514,9 +589,9 @@ impl Client {
         if res.status().is_success() {
             Ok(res.json().await?)
         } else if res.status() == http::StatusCode::NOT_FOUND {
-            Err(Error::NotFound)
+            Err(CertificateRetrievalError::NotFound)
         } else {
-            Err(Error::BadResponse)
+            Err(CertificateRetrievalError::BadResponse(res.status()))
         }
     }
 
@@ -553,7 +628,7 @@ impl Client {
         } else if res.status() == http::StatusCode::FORBIDDEN {
             Err(Error::Forbidden)
         } else {
-            Err(Error::BadResponse)
+            Err(Error::BadResponse(res.status()))
         }
     }
 }

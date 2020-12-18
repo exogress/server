@@ -5,6 +5,7 @@ use core::{fmt, mem};
 use exogress_common::entities::AccountUniqueId;
 use futures::ready;
 use parking_lot::Mutex;
+use prometheus::IntCounter;
 use std::convert::TryInto;
 use std::io;
 use std::mem::MaybeUninit;
@@ -114,6 +115,8 @@ impl TrafficCounters {
 pub struct TrafficCountedStream<I: AsyncRead + AsyncWrite + Unpin> {
     io: I,
     counters: Arc<TrafficCounters>,
+    sent_counter: IntCounter,
+    recv_counter: IntCounter,
 }
 
 impl<I> fmt::Debug for TrafficCountedStream<I>
@@ -137,14 +140,15 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
     ) -> Poll<io::Result<usize>> {
         let res = (|| {
             let num_bytes = ready!(Pin::new(&mut self.io).poll_read(cx, buf))?;
+            self.recv_counter.inc_by(num_bytes as u64);
             self.counters
                 .bytes_read
-                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
             Poll::Ready(Ok(num_bytes))
         })();
         match res {
             Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
-                self.counters.is_closed.store(true, Ordering::SeqCst);
+                self.counters.is_closed.store(true, Ordering::Relaxed);
             }
             _ => {}
         }
@@ -161,9 +165,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
     {
         let res = (|| {
             let num_bytes = ready!(Pin::new(&mut self.io).poll_read_buf(cx, buf))?;
+            self.recv_counter.inc_by(num_bytes as u64);
             self.counters
                 .bytes_read
-                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
             Poll::Ready(Ok(num_bytes))
         })();
         match res {
@@ -184,9 +189,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TrafficCountedStream<I> {
     ) -> Poll<io::Result<usize>> {
         let res = (|| {
             let num_bytes = ready!(Pin::new(&mut self.io).poll_write(cx, buf))?;
+            self.sent_counter.inc_by(num_bytes as u64);
             self.counters
                 .bytes_written
-                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
             Poll::Ready(Ok(num_bytes))
         })();
         match res {
@@ -230,9 +236,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TrafficCountedStream<I> {
     {
         let res = (|| {
             let num_bytes = ready!(Pin::new(&mut self.io).poll_write_buf(cx, buf))?;
+            self.sent_counter.inc_by(num_bytes as u64);
             self.counters
                 .bytes_written
-                .fetch_add(num_bytes.try_into().unwrap(), Ordering::SeqCst);
+                .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
             Poll::Ready(Ok(num_bytes))
         })();
         match res {
@@ -246,8 +253,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TrafficCountedStream<I> {
 }
 
 impl<I: AsyncRead + AsyncWrite + Unpin> TrafficCountedStream<I> {
-    pub fn new(io: I, counters: Arc<TrafficCounters>) -> Self {
-        TrafficCountedStream { io, counters }
+    pub fn new(
+        io: I,
+        counters: Arc<TrafficCounters>,
+        sent_counter: IntCounter,
+        recv_counter: IntCounter,
+    ) -> Self {
+        TrafficCountedStream {
+            io,
+            counters,
+            sent_counter,
+            recv_counter,
+        }
     }
 }
 

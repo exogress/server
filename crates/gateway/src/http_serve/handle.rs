@@ -354,7 +354,12 @@ pub async fn server(
 
                         let metered = if let Some(account_unique_id) = maybe_account_unique_id {
                             let counters = TrafficCounters::new(account_unique_id.clone());
-                            let counted_stream = TrafficCountedStream::new(conn, counters.clone());
+                            let counted_stream = TrafficCountedStream::new(
+                                conn,
+                                counters.clone(),
+                                crate::statistics::HTTPS_BYTES_SENT.clone(),
+                                crate::statistics::HTTPS_BYTES_RECV.clone(),
+                            );
 
                             let flush_counters = {
                                 async move {

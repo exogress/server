@@ -231,7 +231,12 @@ pub async fn tunnels_acceptor(
                                 };
 
                             let counters = TrafficCounters::new(account_unique_id.clone());
-                            let metered = TrafficCountedStream::new(upgraded, counters.clone());
+                            let metered = TrafficCountedStream::new(
+                                upgraded,
+                                counters.clone(),
+                                crate::statistics::TUNNELS_BYTES_SENT.clone(),
+                                crate::statistics::TUNNELS_BYTES_RECV.clone(),
+                            );
 
                             let (stop_tx, stop_rx) = oneshot::channel();
                             let (bg, connector) = server_connection(server_framed(metered));

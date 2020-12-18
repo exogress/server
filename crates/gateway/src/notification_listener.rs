@@ -148,6 +148,7 @@ impl AssistantClient {
                                                             "invalidate certificate for: {}",
                                                             host
                                                         );
+
                                                         webapp_client.forget_certificate(host);
                                                     }
 
