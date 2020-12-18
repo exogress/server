@@ -282,7 +282,12 @@ mod test {
 
         let counters = TrafficCounters::new(Ulid::new().to_string().parse().unwrap());
 
-        let mut counted_stream = TrafficCountedStream::new(io, counters.clone());
+        let mut counted_stream = TrafficCountedStream::new(
+            io,
+            counters.clone(),
+            crate::statistics::HTTPS_BYTES_SENT.clone(),
+            crate::statistics::HTTPS_BYTES_RECV.clone(),
+        );
         let mut result = Vec::new();
         let read_bytes = counted_stream.read_to_end(&mut result).await.unwrap();
         assert_eq!(read_bytes, 32768);
