@@ -6,7 +6,7 @@ use futures_util::stream::Stream;
 use hashbrown::HashMap;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION};
 use http::status::StatusCode;
-use http::{Request, Response};
+use http::{Request, Response, Version};
 use hyper::Body;
 use memmap::Mmap;
 use std::convert::TryInto;
@@ -565,6 +565,17 @@ pub async fn server(
 
                 async move {
                     let handle = AssertUnwindSafe(async move {
+                        crate::statistics::HTTPS_REQUESTS
+                            .with_label_values(&[match req.version() {
+                                Version::HTTP_09 => "HTTP_09",
+                                Version::HTTP_10 => "HTTP_10",
+                                Version::HTTP_11 => "HTTP_11",
+                                Version::HTTP_2 => "HTTP_2",
+                                Version::HTTP_3 => "HTTP_3",
+                                _ => "unknown",
+                            }])
+                            .inc();
+
                         let req_uri = req.uri().to_string();
 
                         let requested_url: Url = if req_uri.starts_with("/") {

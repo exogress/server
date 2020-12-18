@@ -24,6 +24,11 @@ lazy_static! {
         "Number of successful configs retrieval (incl. not-found)"
     )
     .unwrap();
+    pub static ref CONFIGS_PROCESSING_ERRORS: IntCounter = register_int_counter!(
+        "gw_configs_processing_error",
+        "Number of configs, where response couldn't be properly processed"
+    )
+    .unwrap();
     pub static ref CONFIGS_RETRIEVAL_ERROR: IntCounterVec = register_int_counter_vec!(
         "gw_configs_retrieval_error",
         "Number of erroneous configs retrievals",
@@ -72,6 +77,12 @@ lazy_static! {
     pub static ref HTTPS_BYTES_RECV: IntCounter = register_int_counter!(
         "gw_https_bytes_recv",
         "Bytes received from HTTPS (serving traffic)"
+    )
+    .unwrap();
+    pub static ref HTTPS_REQUESTS: IntCounterVec = register_int_counter_vec!(
+        "gw_https_requests",
+        "Number of HTTPS requests served",
+        &["http_version"]
     )
     .unwrap();
 }

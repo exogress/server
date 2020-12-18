@@ -386,6 +386,7 @@ impl Client {
                                                     ) {
                                                         Ok(rp) => rp,
                                                         Err(e) => {
+                                                            crate::statistics::CONFIGS_PROCESSING_ERRORS.inc();
                                                             *config_error.lock() = Some(e);
                                                             return;
                                                         }
