@@ -435,6 +435,7 @@ impl Client {
                                     crate::statistics::CONFIGS_RETRIEVAL_ERROR
                                         .with_label_values(&[
                                             crate::statistics::HTTP_ERROR_REQUEST_ERROR,
+                                            "",
                                         ])
                                         .inc();
                                     error!("Error retrieving configs: {}", e);
@@ -535,6 +536,7 @@ impl Client {
                                         crate::statistics::CERTIFICATES_RETRIEVAL_ERROR
                                             .with_label_values(&[
                                                 crate::statistics::HTTP_ERROR_BAD_RESPONSE,
+                                                "",
                                             ])
                                             .inc();
                                     }
