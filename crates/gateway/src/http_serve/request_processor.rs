@@ -1774,6 +1774,8 @@ impl RequestsProcessor {
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
     ) -> Result<RequestsProcessor, ()> {
+        crate::statistics::ACTIVE_REQUESTS_PROCESSORS.inc();
+
         let grouped = resp.configs.iter().group_by(|item| &item.config_name);
 
         let project_rescue = resp.project_config.rescue;
@@ -2078,6 +2080,12 @@ impl RequestsProcessor {
             rules_counter,
             account_unique_id,
         })
+    }
+}
+
+impl Drop for RequestsProcessor {
+    fn drop(&mut self) {
+        crate::statistics::ACTIVE_REQUESTS_PROCESSORS.dec();
     }
 }
 

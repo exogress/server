@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
@@ -156,6 +156,8 @@ impl ClientTunnels {
     ) -> Option<hyper::client::Client<InstanceConnector>> {
         let maybe_identity = self.maybe_identity.clone();
 
+        let start_time = Instant::now();
+
         let (maybe_reset_event, should_request) = {
             let mut locked = self.inner.lock();
             let maybe_clients = locked.by_config.get(&config_id);
@@ -180,14 +182,16 @@ impl ClientTunnels {
         };
 
         if should_request {
-            match request_connection(
+            let res = request_connection(
                 self.signaler_base_url.clone(),
                 individual_hostname,
                 config_id.clone(),
                 maybe_identity,
             )
-            .await
-            {
+            .await;
+            crate::statistics::TUNNEL_ESTABLISHMENT_TIME_MS
+                .observe(start_time.elapsed().as_millis() as f64);
+            match res {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Error requesting connection: {}", e);

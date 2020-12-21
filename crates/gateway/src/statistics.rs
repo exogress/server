@@ -19,6 +19,12 @@ lazy_static! {
         API_REQUEST_TIME_HISTOGRAM.clone()
     )
     .unwrap();
+    pub static ref TUNNEL_ESTABLISHMENT_TIME_MS: Histogram = register_histogram!(
+        "gw_tunnel_establishment_time_ms",
+        "Time take to establish tunnels with instances (in milliseconds)",
+        API_REQUEST_TIME_HISTOGRAM.clone()
+    )
+    .unwrap();
     pub static ref CONFIGS_RETRIEVAL_SUCCESS: IntCounter = register_int_counter!(
         "gw_configs_retrieval_success",
         "Number of successful configs retrieval (incl. not-found)"
@@ -83,6 +89,11 @@ lazy_static! {
         "gw_https_requests",
         "Number of HTTPS requests served",
         &["http_version"]
+    )
+    .unwrap();
+    pub static ref ACTIVE_REQUESTS_PROCESSORS: Gauge = register_gauge!(
+        "gw_active_requests_processors",
+        "Number of active requests processors"
     )
     .unwrap();
 }
