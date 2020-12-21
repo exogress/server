@@ -27,8 +27,8 @@ use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
 use http::header::{
-    ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST,
-    LOCATION, SET_COOKIE,
+    HeaderName, ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE,
+    HOST, LOCATION, SET_COOKIE,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
@@ -36,6 +36,8 @@ use itertools::Itertools;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use magick_rust::{magick_wand_genesis, MagickWand};
 use parking_lot::Mutex;
+use s3::command::Command;
+use s3::request_trait::Request as S3Request;
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -359,12 +361,15 @@ impl fmt::Debug for ResolvedProxy {
 }
 
 fn copy_headers_from_proxy_res_to_res(
-    proxy_res: &Response<Body>,
+    proxy_headers: &HeaderMap,
     res: &mut Response<Body>,
     is_upgrade_allowed: bool,
 ) {
-    for (incoming_header_name, incoming_header_value) in proxy_res.headers() {
-        if incoming_header_name == ACCEPT_ENCODING {
+    for (incoming_header_name, incoming_header_value) in proxy_headers.iter() {
+        if incoming_header_name == ACCEPT_ENCODING
+            || incoming_header_name == &HeaderName::from_static("x-amz-id-2")
+            || incoming_header_name == &HeaderName::from_static("x-amz-request-id")
+        {
             continue;
         }
 
@@ -527,7 +532,7 @@ impl ResolvedProxy {
                     "proxy-error:instance-unreachable"
                 );
 
-                copy_headers_from_proxy_res_to_res(&proxy_res, res, true);
+                copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, true);
 
                 res.headers_mut()
                     .append("x-exg-proxied", "1".parse().unwrap());
@@ -697,7 +702,7 @@ impl ResolvedStaticDir {
             "proxy-error:instance-unreachable"
         );
 
-        copy_headers_from_proxy_res_to_res(&proxy_res, res, false);
+        copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, false);
 
         res.headers_mut()
             .append("x-exg-proxied", "1".parse().unwrap());
@@ -1054,6 +1059,7 @@ enum ResolvedHandlerVariant {
     Proxy(ResolvedProxy),
     StaticDir(ResolvedStaticDir),
     Auth(ResolvedAuth),
+    S3Bucket(ResolvedS3Bucket),
 }
 
 #[derive(Debug)]
@@ -1159,6 +1165,9 @@ impl ResolvedHandlerVariant {
                     .await
             }
             ResolvedHandlerVariant::Auth(auth) => auth.invoke(req, res, requested_url).await,
+            ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
+                s3_bucket.invoke(req, res, requested_url).await
+            }
         }
     }
 }
@@ -1968,6 +1977,20 @@ impl RequestsProcessor {
                                     public_hostname: mount_point_base_url.host().into(),
                                 })
                             }
+                            ClientHandlerVariant::S3Bucket(s3_bucket) => {
+                                ResolvedHandlerVariant::S3Bucket(ResolvedS3Bucket {
+                                    bucket: s3::Bucket::new(
+                                        &s3_bucket.bucket,
+                                        s3_bucket.region.into(),
+                                        s3::creds::Credentials {
+                                            access_key: s3_bucket.access_key.map(From::from),
+                                            secret_key: s3_bucket.secret_key.map(From::from),
+                                            security_token: None,
+                                            session_token: None,
+                                        }
+                                    ).expect("FIXME"),
+                                })
+                            }
                         },
                         priority: handler.priority,
                         handler_rescue: resolve_rescue_items(
@@ -2055,6 +2078,36 @@ impl RequestsProcessor {
             rules_counter,
             account_unique_id,
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedS3Bucket {
+    bucket: s3::Bucket,
+}
+
+impl ResolvedS3Bucket {
+    async fn invoke(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &Url,
+    ) -> HandlerInvocationResult {
+        if req.method() != &Method::GET {
+            return HandlerInvocationResult::ToNextHandler;
+        }
+
+        let command = Command::GetObject;
+        let request = s3::request::Reqwest::new(&self.bucket, requested_url.path(), command);
+        let proxy_resp = request.response().await.expect("FIXME");
+
+        copy_headers_from_proxy_res_to_res(proxy_resp.headers(), res, false);
+
+        *res.status_mut() = proxy_resp.status();
+
+        *res.body_mut() = Body::wrap_stream(proxy_resp.bytes_stream());
+
+        HandlerInvocationResult::Responded
     }
 }
 

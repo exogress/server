@@ -72,6 +72,8 @@ rustls-native-certs = "0.4.0"
 smol_str = { version = "0.1.17", features = ["serde"] }
 weighted-rs = "0.1.2"
 magick_rust = "0.14.0"
+rust-s3 = "0.27.0-beta6"
+tame-gcs = "0.8.1"
 
 exogress-server-common = { path = "../common", version = "0.1" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"] }
