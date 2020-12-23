@@ -30,7 +30,7 @@ use crate::webapp::Client;
 use exogress_common::entities::Ulid;
 use exogress_server_common::assistant::GatewayConfigMessage;
 use exogress_server_common::director::SourceInfo;
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use hyper::service::{make_service_fn, service_fn};
 use parking_lot::RwLock;
 use rand::distributions::Alphanumeric;
@@ -44,7 +44,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpListener;
-use tokio::time::{delay_for, timeout};
+use tokio::time::timeout;
 use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
 
 struct HyperAcceptor<F, I>
@@ -361,24 +361,19 @@ pub async fn server(
                                 crate::statistics::HTTPS_BYTES_RECV.clone(),
                             );
 
-                            let flush_counters = {
-                                async move {
-                                    loop {
-                                        delay_for(Duration::from_secs(20)).await;
-                                        if let Ok(Some(stats)) = counters.flush() {
-                                            https_counters_tx.send(stats).await?;
-                                            // info!(
-                                            //     "HTTPS traffic counted statistics on {}: {:?}",
-                                            //     account_name, stats
-                                            // );
-                                        }
-                                    }
+                            let (stop_flusher_tx, stop_flusher_rx) = oneshot::channel();
 
-                                    Ok::<_, anyhow::Error>(())
-                                }
-                            };
+                            let flush_counters = TrafficCounters::spawn_flusher(
+                                counters.clone(),
+                                https_counters_tx,
+                                stop_flusher_rx,
+                            );
 
-                            tokio::spawn(flush_counters);
+                            tokio::spawn(async move {
+                                let _stop_flusher_tx = stop_flusher_tx;
+
+                                flush_counters.await
+                            });
 
                             tokio_either::Either::Left(counted_stream)
                         } else {

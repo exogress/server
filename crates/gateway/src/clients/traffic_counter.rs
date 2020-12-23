@@ -3,7 +3,8 @@ use bytes::{Buf, BufMut};
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
 use exogress_common::entities::AccountUniqueId;
-use futures::ready;
+use futures::channel::{mpsc, oneshot};
+use futures::{ready, SinkExt};
 use parking_lot::Mutex;
 use prometheus::IntCounter;
 use std::convert::TryInto;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use std::task::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::macros::support::Poll;
+use tokio::time::{delay_for, Duration};
 
 pub struct TrafficCounters {
     account_unique_id: AccountUniqueId,
@@ -110,6 +112,34 @@ impl TrafficCounters {
             initiated_at: Mutex::new(Utc::now()),
         })
     }
+
+    pub async fn spawn_flusher(
+        counters: Arc<Self>,
+        mut traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        stop_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        let periodically_flush = async move {
+            loop {
+                delay_for(Duration::from_secs(60)).await;
+                match counters.flush() {
+                    Ok(Some(stats)) => {
+                        traffic_counters_tx.send(stats).await?;
+                    }
+                    Err(()) => {
+                        break;
+                    }
+                    Ok(None) => {}
+                }
+            }
+
+            Ok::<_, anyhow::Error>(())
+        };
+
+        tokio::select! {
+            r = periodically_flush => r,
+            _ = stop_rx => Ok(()),
+        }
+    }
 }
 
 pub struct TrafficCountedStream<I: AsyncRead + AsyncWrite + Unpin> {
@@ -117,6 +147,15 @@ pub struct TrafficCountedStream<I: AsyncRead + AsyncWrite + Unpin> {
     counters: Arc<TrafficCounters>,
     sent_counter: IntCounter,
     recv_counter: IntCounter,
+}
+
+impl<I> TrafficCountedStream<I>
+where
+    I: AsyncRead + AsyncWrite + Unpin,
+{
+    pub fn get_ref(&self) -> &I {
+        &self.io
+    }
 }
 
 impl<I> fmt::Debug for TrafficCountedStream<I>

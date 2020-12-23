@@ -20,7 +20,7 @@ use clap::{crate_version, App, Arg};
 use futures::io::BufWriter;
 use futures_util::io::AsyncWriteExt;
 use mimalloc::MiMalloc;
-use rules_counter::AccountRulesCounters;
+use rules_counter::AccountCounters;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -61,12 +61,12 @@ mod dbip;
 mod http_serve;
 mod int_server;
 mod mime_helpers;
+mod notification_listener;
+mod public_hyper_client;
+mod registry;
 mod rules_counter;
 mod statistics;
 mod stop_reasons;
-// mod url_mapping;
-mod notification_listener;
-mod registry;
 mod urls;
 mod webapp;
 
@@ -605,17 +605,19 @@ fn main() {
             int_client_cert.clone(),
         );
 
-        let account_rules_counters = AccountRulesCounters::new();
+        let account_rules_counters = AccountCounters::new();
 
         let api_client = Client::new(
             cache_ttl,
             account_rules_counters.clone(),
+            tunnel_counters_tx.clone(),
             webapp_base_url,
             google_oauth2_client.clone(),
             github_oauth2_client.clone(),
             assistant_base_url.clone(),
             &public_base_url,
             int_client_cert.clone(),
+            resolver.clone(),
         );
 
         let acceptor = tunnels_acceptor(

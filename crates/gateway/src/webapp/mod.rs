@@ -1,9 +1,10 @@
 use std::time::Duration;
 
+use crate::clients::traffic_counter::RecordedTrafficStatistics;
 use crate::clients::ClientTunnels;
 use crate::http_serve::{auth, RequestsProcessor};
 use crate::registry::RequestsProcessorsRegistry;
-use crate::rules_counter::AccountRulesCounters;
+use crate::rules_counter::AccountCounters;
 use crate::urls::matchable_url::MatchableUrl;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
@@ -15,6 +16,7 @@ use exogress_common::entities::{
     Upstream,
 };
 use exogress_server_common::url_prefix::MountPointBaseUrl;
+use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use http::StatusCode;
@@ -26,6 +28,7 @@ use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use tokio::time::{timeout, Instant};
+use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
 #[derive(Clone)]
@@ -50,7 +53,10 @@ pub struct Client {
 
     public_gw_base_url: Url,
 
-    rules_counters: AccountRulesCounters,
+    rules_counters: AccountCounters,
+
+    traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    resolver: TokioAsyncResolver,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -186,13 +192,15 @@ pub struct ConfigsResponse {
 impl Client {
     pub fn new(
         ttl: Duration,
-        rules_counters: AccountRulesCounters,
+        rules_counters: AccountCounters,
+        traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
         base_url: Url,
         google_oauth2_client: auth::google::GoogleOauth2Client,
         github_oauth2_client: auth::github::GithubOauth2Client,
         assistant_base_url: Url,
         public_gw_base_url: &Url,
         maybe_identity: Option<Vec<u8>>,
+        resolver: TokioAsyncResolver,
     ) -> Self {
         let mut builder = reqwest::ClientBuilder::new()
             .redirect(reqwest::redirect::Policy::none())
@@ -218,6 +226,8 @@ impl Client {
             maybe_identity,
             public_gw_base_url: public_gw_base_url.clone(),
             rules_counters,
+            traffic_counters_tx,
+            resolver,
         }
     }
 
@@ -269,6 +279,9 @@ impl Client {
         )>,
         Error,
     > {
+        let resolver = self.resolver.clone();
+        let traffic_counters_tx = self.traffic_counters_tx.clone();
+
         // Try to read from cache
         if let Some((cached, mount_point_base_path)) =
             self.requests_processors_registry.resolve(&matchable_url)
@@ -383,6 +396,8 @@ impl Client {
                                                         rules_counters.clone(),
                                                         individual_hostname,
                                                         maybe_identity,
+                                                        traffic_counters_tx.clone(),
+                                                        resolver,
                                                     ) {
                                                         Ok(rp) => rp,
                                                         Err(e) => {

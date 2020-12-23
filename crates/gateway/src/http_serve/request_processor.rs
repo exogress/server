@@ -1,3 +1,4 @@
+use crate::clients::traffic_counter::{RecordedTrafficStatistics, TrafficCounters};
 use crate::clients::ClientTunnels;
 use crate::http_serve::auth;
 use crate::http_serve::auth::github::GithubOauth2Client;
@@ -5,7 +6,8 @@ use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::http_serve::auth::{retrieve_assistant_key, AuthFinalizer, JwtEcdsa, Oauth2Provider};
 use crate::http_serve::templates::respond_with_login;
 use crate::mime_helpers::{is_mime_match, ordered_by_quality};
-use crate::rules_counter::AccountRulesCounters;
+use crate::public_hyper_client::MeteredHttpsConnector;
+use crate::rules_counter::AccountCounters;
 use crate::webapp::{ConfigData, ConfigsResponse};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -22,13 +24,14 @@ use exogress_common::entities::{
 };
 use exogress_common::tunnel::ConnectTarget;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
+use futures::channel::{mpsc, oneshot};
 use futures::TryStreamExt;
 use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
 use http::header::{
-    HeaderName, ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE,
-    HOST, LOCATION, SET_COOKIE,
+    HeaderName, ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_DISPOSITION, CONTENT_LENGTH,
+    CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
@@ -36,8 +39,7 @@ use itertools::Itertools;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use magick_rust::{magick_wand_genesis, MagickWand};
 use parking_lot::Mutex;
-use s3::command::Command;
-use s3::request_trait::Request as S3Request;
+use rusty_s3::actions::S3Action;
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -47,9 +49,11 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Once};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
 use tokio_either::Either;
+use trust_dns_resolver::TokioAsyncResolver;
 use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
@@ -94,8 +98,9 @@ pub struct RequestsProcessor {
     pub github_oauth2_client: auth::github::GithubOauth2Client,
     pub assistant_base_url: Url,
     pub maybe_identity: Option<Vec<u8>>,
-    rules_counter: AccountRulesCounters,
+    rules_counter: AccountCounters,
     account_unique_id: AccountUniqueId,
+    _stop_public_counter_tx: oneshot::Sender<()>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1060,6 +1065,7 @@ enum ResolvedHandlerVariant {
     StaticDir(ResolvedStaticDir),
     Auth(ResolvedAuth),
     S3Bucket(ResolvedS3Bucket),
+    GcsBucket(ResolvedGcsBucket),
 }
 
 #[derive(Debug)]
@@ -1167,6 +1173,9 @@ impl ResolvedHandlerVariant {
             ResolvedHandlerVariant::Auth(auth) => auth.invoke(req, res, requested_url).await,
             ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
                 s3_bucket.invoke(req, res, requested_url).await
+            }
+            ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
+                gcs_bucket.invoke(req, res, requested_url).await
             }
         }
     }
@@ -1345,7 +1354,7 @@ struct ResolvedHandler {
     resolved_rules: Vec<ResolvedRule>,
 
     account_unique_id: AccountUniqueId,
-    rules_counter: AccountRulesCounters,
+    rules_counter: AccountCounters,
 }
 
 #[derive(Debug)]
@@ -1770,11 +1779,21 @@ impl RequestsProcessor {
         github_oauth2_client: auth::github::GithubOauth2Client,
         assistant_base_url: Url,
         client_tunnels: ClientTunnels,
-        rules_counter: AccountRulesCounters,
+        rules_counter: AccountCounters,
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
+        traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        resolver: TokioAsyncResolver,
     ) -> Result<RequestsProcessor, ()> {
         crate::statistics::ACTIVE_REQUESTS_PROCESSORS.inc();
+
+        let traffic_counters = TrafficCounters::new(resp.account_unique_id.clone());
+        let (stop_public_counter_tx, stop_public_counter_rx) = oneshot::channel();
+        tokio::spawn(TrafficCounters::spawn_flusher(
+            traffic_counters.clone(),
+            traffic_counters_tx,
+            stop_public_counter_rx,
+        ));
 
         let grouped = resp.configs.iter().group_by(|item| &item.config_name);
 
@@ -1895,6 +1914,14 @@ impl RequestsProcessor {
             shadow_clone!(account_unique_id);
             shadow_clone!(project_name);
             shadow_clone!(rules_counter);
+            shadow_clone!(resolver);
+            shadow_clone!(traffic_counters);
+            let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
+                resolver: resolver.clone(),
+                counters: traffic_counters.clone(),
+                sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
+                recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
+            });
 
             let mut r = mp.handlers
                 .into_iter()
@@ -1981,16 +2008,31 @@ impl RequestsProcessor {
                             }
                             ClientHandlerVariant::S3Bucket(s3_bucket) => {
                                 ResolvedHandlerVariant::S3Bucket(ResolvedS3Bucket {
-                                    bucket: s3::Bucket::new(
-                                        &s3_bucket.bucket,
-                                        s3_bucket.region.into(),
-                                        s3::creds::Credentials {
-                                            access_key: s3_bucket.access_key.map(From::from),
-                                            secret_key: s3_bucket.secret_key.map(From::from),
-                                            security_token: None,
-                                            session_token: None,
-                                        }
+                                    client: public_client.clone(),
+                                    credentials:
+                                    if let (Some(access_key), Some(secret_key)) = (s3_bucket.access_key, s3_bucket.secret_key) {
+                                        Some(rusty_s3::Credentials::new(access_key.into(), secret_key.into()))
+                                    } else {
+                                        None
+                                    },
+                                    bucket: rusty_s3::Bucket::new(
+                                        s3_bucket.region.endpoint(),
+                                        false,
+                                        s3_bucket.bucket.into(),
+                                        s3_bucket.region.to_string(),
                                     ).expect("FIXME"),
+                                })
+                            }
+                            ClientHandlerVariant::GcsBucket(gcs_bucket) => {
+                                ResolvedHandlerVariant::GcsBucket(ResolvedGcsBucket {
+                                    client: public_client.clone(),
+                                    bucket_name: gcs_bucket.bucket,
+                                    auth: tame_oauth::gcp::ServiceAccountAccess::new(
+                                        tame_oauth::gcp::ServiceAccountInfo::deserialize(
+                                            gcs_bucket.credentials.as_str()
+                                        ).expect("FIXME")
+                                    ).expect("FIXME"),
+                                    token: Default::default()
                                 })
                             }
                         },
@@ -2079,6 +2121,7 @@ impl RequestsProcessor {
             maybe_identity,
             rules_counter,
             account_unique_id,
+            _stop_public_counter_tx: stop_public_counter_tx,
         })
     }
 }
@@ -2091,7 +2134,9 @@ impl Drop for RequestsProcessor {
 
 #[derive(Clone, Debug)]
 struct ResolvedS3Bucket {
-    bucket: s3::Bucket,
+    client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
+    credentials: Option<rusty_s3::Credentials>,
+    bucket: rusty_s3::Bucket,
 }
 
 impl ResolvedS3Bucket {
@@ -2105,15 +2150,141 @@ impl ResolvedS3Bucket {
             return HandlerInvocationResult::ToNextHandler;
         }
 
-        let command = Command::GetObject;
-        let request = s3::request::Reqwest::new(&self.bucket, requested_url.path(), command);
-        let proxy_resp = request.response().await.expect("FIXME");
+        let action = rusty_s3::actions::GetObject::new(
+            &self.bucket,
+            self.credentials.as_ref(),
+            requested_url.path(),
+        );
+        let signed_url = action.sign(Duration::from_secs(60));
+
+        let mut proxy_resp = self
+            .client
+            .get(signed_url.as_str().parse().unwrap())
+            .await
+            .expect("FIXME");
 
         copy_headers_from_proxy_res_to_res(proxy_resp.headers(), res, false);
 
         *res.status_mut() = proxy_resp.status();
 
-        *res.body_mut() = Body::wrap_stream(proxy_resp.bytes_stream());
+        *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
+
+        HandlerInvocationResult::Responded
+    }
+}
+
+struct ResolvedGcsBucket {
+    client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
+    bucket_name: SmolStr,
+    auth: tame_oauth::gcp::ServiceAccountAccess,
+    token: Mutex<Option<tame_oauth::Token>>,
+}
+
+impl fmt::Debug for ResolvedGcsBucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedGcsBucket")
+            .field("bucket_name", &self.bucket_name)
+            .finish()
+    }
+}
+
+impl ResolvedGcsBucket {
+    async fn invoke(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &Url,
+    ) -> HandlerInvocationResult {
+        if req.method() != &Method::GET {
+            return HandlerInvocationResult::ToNextHandler;
+        }
+
+        let token_or_req = self
+            .auth
+            .get_token(&[tame_gcs::Scopes::ReadOnly])
+            .expect("FIXME");
+
+        let token = async {
+            if let Some(token) = self.token.lock().clone() {
+                if !token.has_expired() {
+                    return token;
+                }
+            }
+
+            let new_token = match token_or_req {
+                tame_oauth::gcp::TokenOrRequest::Token(token) => token,
+                tame_oauth::gcp::TokenOrRequest::Request {
+                    request,
+                    scope_hash,
+                    ..
+                } => {
+                    let (parts, body) = request.into_parts();
+                    let read_body = Body::from(body);
+                    let auth_req = http::Request::from_parts(parts, read_body);
+
+                    let mut auth_res = self
+                        .client
+                        .request(auth_req)
+                        .await
+                        .context("failed to send token request")
+                        .expect("FIXME");
+
+                    let mut converted_res = Response::new(
+                        mem::replace(auth_res.body_mut(), Body::empty())
+                            .try_fold(Vec::new(), |mut data, chunk| async move {
+                                data.extend_from_slice(&chunk);
+                                Ok(data)
+                            })
+                            .await
+                            .expect("FIXME"),
+                    );
+
+                    *converted_res.headers_mut() = auth_res.headers().clone();
+                    *converted_res.status_mut() = auth_res.status();
+
+                    self.auth
+                        .parse_token_response(scope_hash, converted_res)
+                        .expect("FIXME")
+                }
+            };
+
+            *self.token.lock() = Some(new_token.clone());
+
+            new_token
+        }
+        .await;
+
+        let download_req_empty = tame_gcs::objects::Object::download(
+            &(
+                &tame_gcs::BucketName::try_from(self.bucket_name.as_str().to_string())
+                    .expect("FIXME"),
+                &tame_gcs::ObjectName::try_from(requested_url.path()[1..].to_string())
+                    .expect("FIXME"),
+            ),
+            None,
+        )
+        .expect("FIXME");
+
+        let mut req = Request::new(Body::empty());
+        *req.headers_mut() = download_req_empty.headers().clone();
+        req.headers_mut().insert(
+            http::header::AUTHORIZATION,
+            token.try_into().expect("FIXME"),
+        );
+        *req.uri_mut() = download_req_empty.uri().clone();
+        *req.method_mut() = download_req_empty.method().clone();
+
+        let mut proxy_resp = self.client.request(req).await.expect("FIXME");
+
+        copy_headers_from_proxy_res_to_res(proxy_resp.headers(), res, false);
+
+        *res.status_mut() = proxy_resp.status();
+        res.headers_mut().insert(
+            CONTENT_DISPOSITION,
+            HeaderValue::try_from("inline").unwrap(),
+        );
+
+        *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
 
         HandlerInvocationResult::Responded
     }

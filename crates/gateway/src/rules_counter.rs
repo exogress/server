@@ -13,7 +13,7 @@ struct Counter {
 }
 
 #[derive(Clone, Debug)]
-pub struct AccountRulesCounters {
+pub struct AccountCounters {
     inner: Arc<RwLock<HashMap<AccountUniqueId, Counter>>>,
 }
 
@@ -26,7 +26,7 @@ pub struct RecordedRulesStatistics {
     pub to: DateTime<Utc>,
 }
 
-impl AccountRulesCounters {
+impl AccountCounters {
     pub fn new() -> Self {
         Self::default()
     }
@@ -77,9 +77,9 @@ impl AccountRulesCounters {
     }
 }
 
-impl Default for AccountRulesCounters {
+impl Default for AccountCounters {
     fn default() -> Self {
-        AccountRulesCounters {
+        AccountCounters {
             inner: Arc::new(Default::default()),
         }
     }

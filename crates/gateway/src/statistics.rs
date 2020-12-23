@@ -75,6 +75,16 @@ lazy_static! {
         register_int_counter!("gw_tunnels_bytes_sent", "Bytes sent to tunnels").unwrap();
     pub static ref TUNNELS_BYTES_RECV: IntCounter =
         register_int_counter!("gw_tunnels_bytes_recv", "Bytes received from tunnels").unwrap();
+    pub static ref PUBLIC_ENDPOINT_BYTES_SENT: IntCounter = register_int_counter!(
+        "gw_public_endpoints_bytes_sent",
+        "Bytes sent to public endpoints"
+    )
+    .unwrap();
+    pub static ref PUBLIC_ENDPOINT_BYTES_RECV: IntCounter = register_int_counter!(
+        "gw_public_endpoints_bytes_recv",
+        "Bytes received from public endpoints"
+    )
+    .unwrap();
     pub static ref HTTPS_BYTES_SENT: IntCounter = register_int_counter!(
         "gw_https_bytes_sent",
         "Bytes sent through HTTPS (serving traffic)"
