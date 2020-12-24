@@ -300,6 +300,7 @@ pub async fn tunnels_acceptor(
                                                     storage: tunnels,
                                                     instance_connector: instance_connector.clone(),
                                                     http_client: hyper::Client::builder()
+                                                        .set_host(false)
                                                         .http2_only(false)
                                                         .build::<_, Body>(
                                                             instance_connector.clone(),
@@ -347,6 +348,7 @@ pub async fn tunnels_acceptor(
                                                                 storage: tunnels,
                                                                 http_client:
                                                                     hyper::Client::builder()
+                                                                        .set_host(false)
                                                                         .http2_only(false)
                                                                         .build::<_, Body>(
                                                                             instance_connector
@@ -374,6 +376,7 @@ pub async fn tunnels_acceptor(
                                         let instance_connections = InstanceConnections {
                                             storage: tunnels,
                                             http_client: hyper::Client::builder()
+                                                .set_host(false)
                                                 .http2_only(false)
                                                 .build::<_, Body>(instance_connector.clone()),
                                             instance_connector,

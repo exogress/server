@@ -469,6 +469,8 @@ fn add_forwarded_headers(
 
     req.headers_mut()
         .insert(FORWARDED, forwarded_header.parse().unwrap());
+    req.headers_mut()
+        .insert(HOST, public_hostname.parse().unwrap());
 
     info!("with forwarded headers = {:?}", req.headers());
 }
