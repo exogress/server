@@ -29,6 +29,8 @@ pub async fn server(
     .and(warp::header("authorization"))
     .and(warp::body::json())
     .and_then({
+        shadow_clone!(redis);
+
         move |account: AccountName,
               project: ProjectName,
               config_name: ConfigName,
@@ -69,8 +71,37 @@ pub async fn server(
         }
     });
 
+    let health = warp::path!("int" / "healthcheck")
+        .and(warp::filters::method::get())
+        .and_then({
+            shadow_clone!(redis);
+
+            move || {
+                shadow_clone!(redis);
+
+                async move {
+                    let res: Result<String, redis::RedisError> = async move {
+                        let mut redis_conn = redis.get_async_connection().await?;
+                        let r = redis_conn.set("signaler_healthcheck", "1").await?;
+                        Ok(r)
+                    }
+                    .await;
+
+                    match res {
+                        Ok(_) => Ok::<_, warp::reject::Rejection>(warp::http::StatusCode::OK),
+                        Err(e) => {
+                            error!("health check: redis error: {}", e);
+                            Ok::<_, warp::reject::Rejection>(
+                                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            )
+                        }
+                    }
+                }
+            }
+        });
+
     info!("Spawning...");
-    let (_, server) = warp::serve(tunnels_api.with(warp::trace::request()))
+    let (_, server) = warp::serve(health.or(tunnels_api.with(warp::trace::request())))
         .bind_with_graceful_shutdown(
             listen_addr,
             stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),

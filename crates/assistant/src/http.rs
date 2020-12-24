@@ -369,11 +369,41 @@ pub async fn server(
             }
         });
 
+    let health = warp::path!("int" / "healthcheck")
+        .and(warp::filters::method::get())
+        .and_then({
+            shadow_clone!(redis);
+
+            move || {
+                shadow_clone!(redis);
+
+                async move {
+                    let res: Result<String, redis::RedisError> = async move {
+                        let mut redis_conn = redis.get_async_connection().await?;
+                        let r = redis_conn.set("assistant_healthcheck", "1").await?;
+                        Ok(r)
+                    }
+                    .await;
+
+                    match res {
+                        Ok(_) => Ok::<_, warp::reject::Rejection>(warp::http::StatusCode::OK),
+                        Err(e) => {
+                            error!("health check: redis error: {}", e);
+                            Ok::<_, warp::reject::Rejection>(
+                                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            )
+                        }
+                    }
+                }
+            }
+        });
+
     info!("Spawning...");
     let (_, server) = warp::serve(
         notifications
             .or(save_kv)
             .or(get_kv)
+            .or(health)
             .with(warp::trace::request()),
     )
     .bind_with_graceful_shutdown(
