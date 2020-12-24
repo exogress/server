@@ -435,6 +435,7 @@ fn add_forwarded_headers(
     local_addr: &SocketAddr,
     remote_addr: &SocketAddr,
     public_hostname: &str,
+    force_host_header: Option<&str>,
 ) {
     req.headers_mut()
         .append("x-forwarded-host", public_hostname.parse().unwrap());
@@ -469,8 +470,9 @@ fn add_forwarded_headers(
 
     req.headers_mut()
         .insert(FORWARDED, forwarded_header.parse().unwrap());
-    req.headers_mut()
-        .insert(HOST, public_hostname.parse().unwrap());
+
+    let host_header = force_host_header.unwrap_or(public_hostname);
+    req.headers_mut().insert(HOST, host_header.parse().unwrap());
 
     info!("with forwarded headers = {:?}", req.headers());
 }
@@ -516,6 +518,7 @@ impl ResolvedProxy {
             local_addr,
             remote_addr,
             &self.public_hostname,
+            None,
         );
 
         proxy_req
@@ -696,6 +699,7 @@ impl ResolvedStaticDir {
             local_addr,
             remote_addr,
             &self.public_hostname,
+            Some(proxy_to.host_str().unwrap()),
         );
 
         proxy_req
