@@ -54,6 +54,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
 use tokio_either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
+use typed_headers::http::header::FORWARDED;
 use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
@@ -457,6 +458,19 @@ fn add_forwarded_headers(
         req.headers_mut()
             .append("x-real-ip", remote_addr.ip().to_string().parse().unwrap());
     }
+
+    // FIXME: consider chain of proxies
+    let forwarded_header = format!(
+        "by={};for={};host={};proto=https",
+        local_addr.ip(),
+        remote_addr.ip(),
+        public_hostname
+    );
+
+    req.headers_mut()
+        .insert(FORWARDED, forwarded_header.parse().unwrap());
+
+    info!("with forwarded headers = {:?}", req.headers());
 }
 
 impl ResolvedProxy {
