@@ -1,4 +1,3 @@
-use futures::pin_mut;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::net::SocketAddr;
@@ -30,7 +29,7 @@ use crate::clients::traffic_counter::{
 use crate::webapp;
 use exogress_common::entities::{ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, Stream, StreamExt, TryStreamExt};
+use futures::{SinkExt, Stream, StreamExt};
 use std::convert::TryInto;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -67,14 +66,14 @@ pub const MAX_ALLOWED_TUNNELS: usize = 8;
 
 struct HyperAcceptor<F>
 where
-    F: Stream<Item = Result<TlsStream<TcpStream>, io::Error>> + Unpin + Send,
+    F: Stream<Item = TlsStream<TcpStream>> + Unpin + Send,
 {
     acceptor: F,
 }
 
 impl<F> hyper::server::accept::Accept for HyperAcceptor<F>
 where
-    F: Stream<Item = Result<TlsStream<TcpStream>, io::Error>> + Unpin + Send,
+    F: Stream<Item = TlsStream<TcpStream>> + Unpin + Send,
 {
     type Conn = TlsStream<TcpStream>;
     type Error = io::Error;
@@ -83,7 +82,8 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
-        Pin::new(&mut self.acceptor).poll_next(cx)
+        let res = futures::ready!(Pin::new(&mut self.acceptor).poll_next(cx));
+        Poll::Ready(res.map(Ok))
     }
 }
 
@@ -113,42 +113,63 @@ pub async fn tunnels_acceptor(
     info!("Listening for incoming tunnels on {:?}", addr);
     let mut listener = TcpListener::bind(addr).await?;
 
-    let incoming_tls_stream = listener
-        .incoming()
-        .and_then(move |s| {
+    let (accepted_connection_tx, accepted_connection_rx) = mpsc::channel(4);
+
+    let acceptor = tokio::spawn(async move {
+        shadow_clone!(tls_acceptor);
+
+        while let Some(res) = listener.next().await {
             shadow_clone!(tls_acceptor);
+            shadow_clone!(mut accepted_connection_tx);
 
-            async move {
-                s.set_nodelay(true)?;
+            match res {
+                Ok(tcp_stream) => {
+                    tokio::spawn(async move {
+                        tcp_stream.set_nodelay(true)?;
 
-                let mut tls_conn = tls_acceptor.accept(s).await.map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("error accepting TLS connection: {}", e),
-                    )
-                })?;
+                        let accept_result = tokio::time::timeout(
+                            Duration::from_secs(20),
+                            tls_acceptor.accept(tcp_stream),
+                        )
+                        .await;
 
-                if tls_conn
-                    .get_mut()
-                    .1
-                    .get_alpn_protocol()
-                    .map(|p| {
-                        // info!("provided ALPN: {}", std::str::from_utf8(p).unwrap());
-                        p != *ALPN_PROTOCOL
-                    })
-                    // ALPN not provides should lead to Error as well
-                    .unwrap_or(true)
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("ALPN mismatch"),
-                    ));
+                        let mut tls_conn = match accept_result {
+                            Err(_) => {
+                                warn!("Timeout TLS tunnel connection");
+                                return Ok(());
+                            }
+                            Ok(Err(e)) => {
+                                warn!("Error accepting TLS connection: {}", e);
+                                return Ok(());
+                            }
+                            Ok(Ok(r)) => r,
+                        };
+
+                        if tls_conn
+                            .get_mut()
+                            .1
+                            .get_alpn_protocol()
+                            .map(|p| {
+                                // info!("provided ALPN: {}", std::str::from_utf8(p).unwrap());
+                                p != *ALPN_PROTOCOL
+                            })
+                            // ALPN not provides should lead to Error as well
+                            .unwrap_or(true)
+                        {
+                            warn!("not accepting tunnel connection: ALPN mismatch");
+                        } else {
+                            accepted_connection_tx.send(tls_conn).await.unwrap();
+                        }
+
+                        Ok::<_, anyhow::Error>(())
+                    });
                 }
-
-                Ok(tls_conn)
+                Err(e) => {
+                    warn!("could not accept tunnel TCP connection: {}", e);
+                }
             }
-        })
-        .filter(|s| core::future::ready(s.is_ok()));
+        }
+    });
 
     let make_service = make_service_fn(move |_| {
         shadow_clone!(tunnels);
@@ -449,16 +470,21 @@ pub async fn tunnels_acceptor(
         }
     });
 
-    pin_mut!(incoming_tls_stream);
-
-    Server::builder(HyperAcceptor {
-        acceptor: incoming_tls_stream,
+    let https_server = Server::builder(HyperAcceptor {
+        acceptor: accepted_connection_rx,
     })
     .http1_only(true)
     .http2_only(false)
-    .serve(make_service)
-    .await
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("hyper error: {}", e)))?;
+    .serve(make_service);
+
+    tokio::select! {
+        r = https_server => {
+            error!("tunnel https server stopped: {:?}", r);
+        },
+        r = acceptor => {
+            error!("TLS acceptor stopped: {:?}", r);
+        },
+    }
 
     Ok(())
 }

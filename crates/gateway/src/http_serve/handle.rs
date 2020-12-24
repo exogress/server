@@ -449,53 +449,60 @@ pub async fn server(
                             };
 
                             {
-                                let mut segments = url.path_segments().unwrap();
-                                if segments.next() == Some(".well-known")
-                                    && segments.next() == Some("acme-challenge")
-                                {
-                                    if let Some(token) = segments.next() {
-                                        let hostname = url.host_str().unwrap();
+                                info!(
+                                    "Will read segments of URL: {}. segments: {:?}",
+                                    url,
+                                    url.path_segments()
+                                );
 
-                                        let filename =
-                                            format!(".well-known/acme-challenge/{}", token);
+                                if let Some(mut segments) = url.path_segments() {
+                                    if segments.next() == Some(".well-known")
+                                        && segments.next() == Some("acme-challenge")
+                                    {
+                                        if let Some(token) = segments.next() {
+                                            let hostname = url.host_str().unwrap();
 
-                                        info!(
-                                            "ACME HTTP challenge verification request: {} on {}",
-                                            hostname, filename
-                                        );
+                                            let filename =
+                                                format!(".well-known/acme-challenge/{}", token);
 
-                                        let webapp_result = webapp_client
-                                            .acme_http_challenge_verification(
-                                                hostname,
-                                                filename.as_str(),
-                                            )
-                                            .await;
+                                            info!(
+                                                "ACME HTTP challenge verification request: {} on {}",
+                                                hostname, filename
+                                            );
 
-                                        match webapp_result {
-                                            Ok(info) => {
-                                                info!(
-                                                    "validation request succeeded for host {}",
-                                                    hostname
-                                                );
-                                                res.headers_mut().insert(
-                                                    CONTENT_TYPE,
-                                                    info.content_type.parse().unwrap(),
-                                                );
-                                                *res.body_mut() = Body::from(info.file_content);
-                                                *res.status_mut() = StatusCode::OK;
+                                            let webapp_result = webapp_client
+                                                .acme_http_challenge_verification(
+                                                    hostname,
+                                                    filename.as_str(),
+                                                )
+                                                .await;
 
-                                                return Ok(res);
+                                            match webapp_result {
+                                                Ok(info) => {
+                                                    info!(
+                                                        "validation request succeeded for host {}",
+                                                        hostname
+                                                    );
+                                                    res.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        info.content_type.parse().unwrap(),
+                                                    );
+                                                    *res.body_mut() = Body::from(info.file_content);
+                                                    *res.status_mut() = StatusCode::OK;
+
+                                                    return Ok(res);
+                                                }
+                                                Err(e) => {
+                                                    warn!("error in ACME verification: {}", e);
+                                                    *res.status_mut() = StatusCode::NOT_FOUND;
+
+                                                    return Ok(res);
+                                                }
                                             }
-                                            Err(e) => {
-                                                warn!("error in ACME verification: {}", e);
-                                                *res.status_mut() = StatusCode::NOT_FOUND;
-
-                                                return Ok(res);
-                                            }
+                                        } else {
+                                            *res.status_mut() = StatusCode::NOT_FOUND;
+                                            return Ok(res);
                                         }
-                                    } else {
-                                        *res.status_mut() = StatusCode::NOT_FOUND;
-                                        return Ok(res);
                                     }
                                 }
                             }
