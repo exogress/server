@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use futures::{pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use exogress_common::entities::{AccountName, ProjectName};
 use exogress_common::signaling::{
@@ -48,6 +48,8 @@ pub async fn server(
 
                 ws.on_upgrade({
                     move |mut websocket| async move {
+                        let start_time = Instant::now();
+
                         let wait_first = async move {
                             loop {
                                 let msg = websocket.next().await;
@@ -72,7 +74,6 @@ pub async fn server(
                                 }
                             }
                         };
-
                         match tokio::time::timeout(CONFIG_WAIT_TIMEOUT, wait_first).await {
                             Ok(Ok((
                                 WsInstanceToCloudMessage::InstanceConfig(InstanceConfigMessage {
@@ -102,10 +103,12 @@ pub async fn server(
                                                 "unauthorized",
                                             ))
                                             .await;
+                                        crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                                         return;
                                     }
                                     Err(Error::Forbidden) => {
                                         info!("Closing connection with forbidden message");
+                                        crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 4003u16,
@@ -116,6 +119,8 @@ pub async fn server(
                                     }
                                     Err(Error::Conflict) => {
                                         info!("Closing connection with conflict message");
+                                        crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
+
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 4009u16, "conflict",
@@ -128,6 +133,7 @@ pub async fn server(
                                             "Closing connection with bad request message: {}",
                                             maybe_str.as_ref().unwrap_or(&"".to_string())
                                         );
+                                        crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 4000u16, maybe_str.unwrap_or("{}".to_string()),
@@ -137,6 +143,7 @@ pub async fn server(
                                     }
                                     Err(e) => {
                                         info!("could not set presence: {}", e);
+                                        crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 1011u16,
@@ -159,6 +166,10 @@ pub async fn server(
                                         response
                                     }
                                 };
+
+                                crate::statistics::ACTIVE_CHANNELS.inc();
+                                crate::statistics::CHANELS_ESTABLISHMENT_TIME_MS
+                                    .observe(start_time.elapsed().as_millis() as f64);
 
                                 let r = {
                                     shadow_clone!(presence_client);
@@ -385,21 +396,28 @@ pub async fn server(
                                     {
                                         error!("could not unset presence: {}", e);
                                     } else {
+                                        crate::statistics::ACTIVE_CHANNELS.dec();
+
                                         return;
                                     }
                                     set_offline_backoff.next().await;
                                 }
 
+                                crate::statistics::ACTIVE_CHANNELS.dec();
+
                                 stop_handle.stop(StopReason::SetOfflineError);
                             }
                             Err(_e) => {
                                 info!("timeout waiting for the first config");
+                                crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                             }
                             Ok(Err(e)) => {
                                 info!("config error: {}", e);
+                                crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                             }
                             Ok(Ok(_)) => {
                                 info!("unexpected first message. disconnect");
+                                crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                             }
                         }
                     }

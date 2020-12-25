@@ -100,12 +100,18 @@ pub async fn server(
             }
         });
 
+    let metrics = warp::path!("metrics").map(|| crate::statistics::dump_prometheus());
+
     info!("Spawning...");
-    let (_, server) = warp::serve(health.or(tunnels_api.with(warp::trace::request())))
-        .bind_with_graceful_shutdown(
-            listen_addr,
-            stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),
-        );
+    let (_, server) = warp::serve(
+        health
+            .or(metrics)
+            .or(tunnels_api.with(warp::trace::request())),
+    )
+    .bind_with_graceful_shutdown(
+        listen_addr,
+        stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),
+    );
 
     server.await;
 

@@ -6,6 +6,8 @@ extern crate shadow_clone;
 extern crate tracing;
 #[macro_use]
 extern crate serde;
+#[macro_use]
+extern crate prometheus;
 
 use std::net::SocketAddr;
 use std::panic;
@@ -27,6 +29,7 @@ use trust_dns_resolver::TokioAsyncResolver;
 
 mod http;
 mod presence;
+mod statistics;
 mod termination;
 
 lazy_static! {
