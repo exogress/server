@@ -13,7 +13,9 @@ fn common_find_filter_rule<'a>(
     {
         let mut path_segments = url.path_segments().unwrap();
         while let Some(segment) = path_segments.next() {
-            segments.push(segment.to_string());
+            if !segment.is_empty() {
+                segments.push(segment.to_string());
+            }
         }
     }
 
@@ -106,174 +108,183 @@ impl<'a> HandlerExt<'a> for ProjectHandler {
         common_find_filter_rule(&self.rules, url)
     }
 }
-//
-// #[cfg(test)]
-// mod test {
-//     use super::*;
-//     use exogress_common::config_core::{Action, ClientHandlerVariant, Filter, MatchPathSegment, StaticDir};
-//
-//     #[test]
-//     fn test_matching() {
-//         let handler = ClientHandler {
-//             variant: ClientHandlerVariant::StaticDir(StaticDir {
-//                 dir: "./dir".parse().unwrap(),
-//             }),
-//             base_path: vec![],
-//             replace_base_path: vec![],
-//             rules: vec![
-//                 Rule {
-//                     filter: Filter {
-//                         path: MatchingPath::Root,
-//                     },
-//                     action: Action::Throw {
-//                         exception: "exception".parse().unwrap(),
-//                         data: Default::default(),
-//                     },
-//                 },
-//                 Rule {
-//                     filter: Filter {
-//                         path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Exact(
-//                             "a".parse().unwrap(),
-//                         )]),
-//                     },
-//                     action: Action::Throw {
-//                         exception: "exception2".parse().unwrap(),
-//                         data: Default::default(),
-//                     },
-//                 },
-//                 Rule {
-//                     filter: Filter {
-//                         path: MatchingPath::WildcardRight(vec![MatchPathSegment::Exact(
-//                             "z".parse().unwrap(),
-//                         )]),
-//                     },
-//                     action: Action::Throw {
-//                         exception: "exception3".parse().unwrap(),
-//                         data: Default::default(),
-//                     },
-//                 },
-//                 Rule {
-//                     filter: Filter {
-//                         path: MatchingPath::LeftWildcardRight(
-//                             vec![MatchPathSegment::Exact("b".parse().unwrap())],
-//                             vec![MatchPathSegment::Exact("y".parse().unwrap())],
-//                         ),
-//                     },
-//                     action: Action::Throw {
-//                         exception: "exception4".parse().unwrap(),
-//                         data: Default::default(),
-//                     },
-//                 },
-//                 Rule {
-//                     filter: Filter {
-//                         path: MatchingPath::Strict(vec![
-//                             MatchPathSegment::Exact("c".parse().unwrap()),
-//                             MatchPathSegment::Exact("d".parse().unwrap()),
-//                         ]),
-//                     },
-//                     action: Action::Throw {
-//                         exception: "exception5".parse().unwrap(),
-//                         data: Default::default(),
-//                     },
-//                 },
-//                 Rule {
-//                     filter: Filter {
-//                         path: MatchingPath::Strict(vec![
-//                             MatchPathSegment::Any,
-//                             MatchPathSegment::Exact("e".parse().unwrap()),
-//                         ]),
-//                     },
-//                     action: Action::Throw {
-//                         exception: "exception6".parse().unwrap(),
-//                         data: Default::default(),
-//                     },
-//                 },
-//                 Rule {
-//                     filter: Filter {
-//                         path: MatchingPath::Strict(vec![
-//                             MatchPathSegment::Any,
-//                             MatchPathSegment::Regex("[0-9]{1}.{2}a".parse().unwrap()),
-//                         ]),
-//                     },
-//                     action: Action::Throw {
-//                         exception: "exception7".parse().unwrap(),
-//                         data: Default::default(),
-//                     },
-//                 },
-//             ],
-//             priority: 1,
-//             catch: Default::default(),
-//         };
-//
-//         let found = handler
-//             .find_filter_rule("http://asd/".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception")
-//         );
-//
-//         let found = handler
-//             .find_filter_rule("http://asd/a".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception2")
-//         );
-//         let found = handler
-//             .find_filter_rule("http://asd/a/b/c".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception2")
-//         );
-//         let found = handler
-//             .find_filter_rule("http://asd/1/2/z".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception3")
-//         );
-//         let found = handler
-//             .find_filter_rule("http://asd/z".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception3")
-//         );
-//         let found = handler
-//             .find_filter_rule("http://asd/b/1/2/3/y".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception4")
-//         );
-//         let found = handler
-//             .find_filter_rule("http://asd/b/y".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception4")
-//         );
-//         let not_found = handler
-//             .find_filter_rule("http://asd/b".parse().unwrap())
-//             .next();
-//         assert!(matches!(not_found, None));
-//
-//         let found = handler
-//             .find_filter_rule("http://asd/c/d".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception5")
-//         );
-//         let found = handler
-//             .find_filter_rule("http://asd/aasd/e".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception6")
-//         );
-//         let found = handler
-//             .find_filter_rule("http://asd/asdfsfdg/1hra".parse().unwrap())
-//             .next();
-//         assert!(
-//             matches!(found, Some(Action::Throw { exception, .. }) if exception.as_str() == "exception7")
-//         );
-//         let not_found = handler
-//             .find_filter_rule("http://asd/asdfsfdg/1hsra".parse().unwrap())
-//             .next();
-//         assert!(matches!(not_found, None));
-//     }
-// }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use exogress_common::config_core::{
+        Action, ClientHandlerVariant, Filter, MatchPathSegment, StaticDir,
+    };
+
+    #[test]
+    fn test_matching() {
+        let rules = vec![
+            Rule {
+                filter: Filter {
+                    path: MatchingPath::Root,
+                },
+                action: Action::Throw {
+                    exception: "exception".parse().unwrap(),
+                    data: Default::default(),
+                },
+            },
+            Rule {
+                filter: Filter {
+                    path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Exact(
+                        "a".parse().unwrap(),
+                    )]),
+                },
+                action: Action::Throw {
+                    exception: "exception2".parse().unwrap(),
+                    data: Default::default(),
+                },
+            },
+            Rule {
+                filter: Filter {
+                    path: MatchingPath::WildcardRight(vec![MatchPathSegment::Exact(
+                        "z".parse().unwrap(),
+                    )]),
+                },
+                action: Action::Throw {
+                    exception: "exception3".parse().unwrap(),
+                    data: Default::default(),
+                },
+            },
+            Rule {
+                filter: Filter {
+                    path: MatchingPath::LeftWildcardRight(
+                        vec![MatchPathSegment::Exact("b".parse().unwrap())],
+                        vec![MatchPathSegment::Exact("y".parse().unwrap())],
+                    ),
+                },
+                action: Action::Throw {
+                    exception: "exception4".parse().unwrap(),
+                    data: Default::default(),
+                },
+            },
+            Rule {
+                filter: Filter {
+                    path: MatchingPath::Strict(vec![
+                        MatchPathSegment::Exact("c".parse().unwrap()),
+                        MatchPathSegment::Exact("d".parse().unwrap()),
+                    ]),
+                },
+                action: Action::Throw {
+                    exception: "exception5".parse().unwrap(),
+                    data: Default::default(),
+                },
+            },
+            Rule {
+                filter: Filter {
+                    path: MatchingPath::Strict(vec![
+                        MatchPathSegment::Any,
+                        MatchPathSegment::Exact("e".parse().unwrap()),
+                    ]),
+                },
+                action: Action::Throw {
+                    exception: "exception6".parse().unwrap(),
+                    data: Default::default(),
+                },
+            },
+            Rule {
+                filter: Filter {
+                    path: MatchingPath::Strict(vec![
+                        MatchPathSegment::Any,
+                        MatchPathSegment::Regex("[0-9]{1}.{2}a".parse().unwrap()),
+                    ]),
+                },
+                action: Action::Throw {
+                    exception: "exception7".parse().unwrap(),
+                    data: Default::default(),
+                },
+            },
+        ];
+
+        let found = common_find_filter_rule(&rules, "http://asd/".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception")
+        );
+
+        let found = common_find_filter_rule(&rules, "http://asd/a".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception2")
+        );
+        let found = common_find_filter_rule(&rules, "http://asd/a/b/c".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception2")
+        );
+        let found = common_find_filter_rule(&rules, "http://asd/1/2/z".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception3")
+        );
+        let found = common_find_filter_rule(&rules, "http://asd/z".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception3")
+        );
+        let found = common_find_filter_rule(&rules, "http://asd/b/1/2/3/y".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception4")
+        );
+        let found = common_find_filter_rule(&rules, "http://asd/b/y".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception4")
+        );
+        let not_found = common_find_filter_rule(&rules, "http://asd/b".parse().unwrap()).next();
+        assert!(matches!(not_found, None));
+
+        let found = common_find_filter_rule(&rules, "http://asd/c/d".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception5")
+        );
+        let found = common_find_filter_rule(&rules, "http://asd/aasd/e".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception6")
+        );
+        let found =
+            common_find_filter_rule(&rules, "http://asd/asdfsfdg/1hra".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception7")
+        );
+        let not_found =
+            common_find_filter_rule(&rules, "http://asd/asdfsfdg/1hsra".parse().unwrap()).next();
+        assert!(matches!(not_found, None));
+    }
+
+    #[test]
+    fn test_wildcards() {
+        let rules = vec![Rule {
+            filter: Filter {
+                path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Any]),
+            },
+            action: Action::Throw {
+                exception: "exception8".parse().unwrap(),
+                data: Default::default(),
+            },
+        }];
+
+        let found = common_find_filter_rule(
+            &rules,
+            "http://asd/hfa/asdf/asdf/asd/f/asdf".parse().unwrap(),
+        )
+        .next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception8")
+        );
+        let found = common_find_filter_rule(
+            &rules,
+            "http://asd/hfa/asdf/asdf/asd/f/asdf".parse().unwrap(),
+        )
+        .next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception8")
+        );
+
+        let found = common_find_filter_rule(&rules, "http://asd/hfa/".parse().unwrap()).next();
+        assert!(
+            matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception8")
+        );
+
+        let not_found = common_find_filter_rule(&rules, "http://asd/".parse().unwrap()).next();
+        assert!(matches!(not_found, None));
+    }
+}
