@@ -3,7 +3,7 @@ FROM rust:1.48-alpine3.12 as dirs
 RUN rustup component add clippy rustfmt
 RUN apk --update add build-base imagemagick imagemagick-dev \
     libffi-dev openssl-dev libsasl clang cmake \
-    ca-certificates pkgconfig llvm-dev libgcc
+    ca-certificates pkgconfig llvm-dev libgcc clang-libs
 
 COPY . /code
 WORKDIR /code/crates
@@ -21,7 +21,7 @@ RUN RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release
 
 FROM alpine:3.12 as base
 
-RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc
+RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc clang-libs
 
 FROM base as signaler
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
