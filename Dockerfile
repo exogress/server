@@ -1,21 +1,21 @@
-FROM rust:1.48-alpine3.12 as builder
+FROM rust:1.48-alpine3.12 as dirs
 
 RUN rustup component add clippy rustfmt
-RUN  apk --update add build-base imagemagick imagemagick-dev \
+RUN apk --update add build-base imagemagick imagemagick-dev \
     libffi-dev openssl-dev libsasl clang cmake \
     ca-certificates pkgconfig llvm-dev
 
-ADD ci/gcs.json /gcs.json
-ADD ci/sccache /usr/local/bin/sccache
+COPY . /code
+WORKDIR /code/crates
+
+FROM dirs as builder
+#ADD ci/gcs.json /gcs.json
+#ADD ci/sccache /usr/local/bin/sccache
 
 #ENV SCCACHE_GCS_BUCKET=sccache-exogress-jenkinsn
 #ENV SCCACHE_GCS_RW_MODE=READ_WRITE
 #ENV RUSTC_WRAPPER=/usr/local/bin/sccache
 #ENV SCCACHE_GCS_KEY_PATH=/gcs.json
-
-COPY . /code
-WORKDIR /code/crates
-
 RUN RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release
 #&& sccache --show-stats
 
