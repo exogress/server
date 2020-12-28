@@ -778,6 +778,13 @@ impl ResolvedAuth {
 
         res.headers_mut()
             .insert(LOCATION, auth_redirect_relative_url.try_into().unwrap());
+        res.headers_mut()
+            .typed_insert::<typed_headers::ContentType>(&typed_headers::ContentType(
+                mime::TEXT_HTML_UTF_8,
+            ));
+
+        *res.body_mut() =
+            Body::from("<HTML><BODY>Redirecting to authorization page...</BODY></HTML>");
     }
 
     async fn invoke(
