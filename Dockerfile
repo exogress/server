@@ -3,7 +3,7 @@ FROM rust:1.48-alpine3.12 as dirs
 RUN rustup component add clippy rustfmt
 RUN apk --update add build-base imagemagick imagemagick-dev \
     libffi-dev openssl-dev libsasl clang cmake \
-    ca-certificates pkgconfig llvm-dev
+    ca-certificates pkgconfig llvm-dev libgcc
 
 COPY . /code
 WORKDIR /code/crates
