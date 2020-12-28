@@ -112,9 +112,7 @@ impl<'a> HandlerExt<'a> for ProjectHandler {
 #[cfg(test)]
 mod test {
     use super::*;
-    use exogress_common::config_core::{
-        Action, ClientHandlerVariant, Filter, MatchPathSegment, StaticDir,
-    };
+    use exogress_common::config_core::{Action, Filter, MatchPathSegment};
 
     #[test]
     fn test_matching() {
