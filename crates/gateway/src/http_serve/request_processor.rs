@@ -1270,7 +1270,9 @@ impl ResolvedFilter {
             }
 
             while let Some(segment) = path_segments.next() {
-                segments.push(segment.to_string());
+                if !segment.is_empty() {
+                    segments.push(segment.to_string());
+                }
             }
         }
 
@@ -2421,4 +2423,25 @@ pub struct ResolvedRescueItem {
 struct ResolvedStatusCodeRangeHandler {
     status_codes_range: StatusCodeRange,
     catch: ResolvedCatchAction,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use exogress_common::config_core::MatchPathSegment;
+
+    #[test]
+    fn test_matching() {
+        let url: Url = "https://a.b.c/".parse().unwrap();
+        let url2: Url = "https://a.b.c/a".parse().unwrap();
+        let url3: Url = "https://a.b.c/a/b".parse().unwrap();
+        let matcher = ResolvedFilter {
+            path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Any]),
+            base_path: vec![],
+        };
+
+        assert!(!matcher.is_matches(&url));
+        assert!(matcher.is_matches(&url2));
+        assert!(matcher.is_matches(&url3));
+    }
 }
