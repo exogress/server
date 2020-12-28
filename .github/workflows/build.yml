@@ -31,10 +31,10 @@ jobs:
           submodules: true
 
       - name: Build tests
-        working-directory: ./crates
         run: |
           docker build --pull --target=builder -t server-tests . &&
-          docker run -it server-tests cargo test
+          docker run -it server-tests /bin/bash -c "cd ./crates && cargo test"
+          docker run -it server-tests /bin/bash -c "cd ./deps/exogress && cargo test --all-features"
 
   build-images:
     name: Build Images
