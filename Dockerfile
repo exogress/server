@@ -8,6 +8,8 @@ RUN apk --update add build-base imagemagick imagemagick-dev \
 COPY . /code
 WORKDIR /code/crates
 
+ENV RUSTFLAGS="-Ctarget-feature=-crt-static"
+
 FROM dirs as builder
 #ADD ci/gcs.json /gcs.json
 #ADD ci/sccache /usr/local/bin/sccache
@@ -16,7 +18,8 @@ FROM dirs as builder
 #ENV SCCACHE_GCS_RW_MODE=READ_WRITE
 #ENV RUSTC_WRAPPER=/usr/local/bin/sccache
 #ENV SCCACHE_GCS_KEY_PATH=/gcs.json
-RUN RUSTFLAGS="-Ctarget-feature=-crt-static" cargo build --release
+
+RUN cargo build --release
 #&& sccache --show-stats
 
 FROM alpine:3.12 as base
