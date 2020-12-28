@@ -33,8 +33,7 @@ jobs:
       - name: Build tests
         run: |
           docker build --pull --target=builder -t server-tests . &&
-          docker run -it server-tests /bin/bash -c "cd ./crates && cargo test"
-          docker run -it server-tests /bin/bash -c "cd ./deps/exogress && cargo test --all-features"
+          docker run -it server-tests /bin/bash -c "cd ./crates && cargo test && cd ../deps/exogress && cargo test --all-features"
 
   build-images:
     name: Build Images
