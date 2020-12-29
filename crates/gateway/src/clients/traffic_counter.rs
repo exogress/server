@@ -1,5 +1,4 @@
 ///! Count traffic on AsyncRead/AsyncWrite channels
-use bytes::{Buf, BufMut};
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
 use exogress_common::entities::AccountUniqueId;
@@ -9,14 +8,13 @@ use parking_lot::Mutex;
 use prometheus::IntCounter;
 use std::convert::TryInto;
 use std::io;
-use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::Context;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::macros::support::Poll;
-use tokio::time::{delay_for, Duration};
+use tokio::time::{sleep, Duration};
 
 pub struct TrafficCounters {
     account_unique_id: AccountUniqueId,
@@ -120,7 +118,7 @@ impl TrafficCounters {
     ) -> anyhow::Result<()> {
         let periodically_flush = async move {
             loop {
-                delay_for(Duration::from_secs(60)).await;
+                sleep(Duration::from_secs(60)).await;
                 match counters.flush() {
                     Ok(Some(stats)) => {
                         traffic_counters_tx.send(stats).await?;
@@ -168,54 +166,30 @@ where
 }
 
 impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
-        self.io.prepare_uninitialized_buffer(buf)
-    }
-
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let res = (|| {
-            let num_bytes = ready!(Pin::new(&mut self.io).poll_read(cx, buf))?;
-            self.recv_counter.inc_by(num_bytes as u64);
-            self.counters
-                .bytes_read
-                .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
-            Poll::Ready(Ok(num_bytes))
+            ready!(Pin::new(&mut self.io).poll_read(cx, buf))?;
+            Poll::Ready(Ok(()))
         })();
-        match res {
-            Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
+
+        let num_bytes = buf.filled().len();
+
+        match (&res, num_bytes) {
+            (Poll::Ready(Err(_)), _) | (_, 0) => {
                 self.counters.is_closed.store(true, Ordering::Relaxed);
             }
             _ => {}
         }
-        res
-    }
 
-    fn poll_read_buf<B: BufMut>(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut B,
-    ) -> Poll<io::Result<usize>>
-    where
-        Self: Sized,
-    {
-        let res = (|| {
-            let num_bytes = ready!(Pin::new(&mut self.io).poll_read_buf(cx, buf))?;
-            self.recv_counter.inc_by(num_bytes as u64);
-            self.counters
-                .bytes_read
-                .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
-            Poll::Ready(Ok(num_bytes))
-        })();
-        match res {
-            Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
-                self.counters.is_closed.store(true, Ordering::SeqCst);
-            }
-            _ => {}
-        }
+        self.recv_counter.inc_by(num_bytes as u64);
+        self.counters
+            .bytes_read
+            .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
+
         res
     }
 }
@@ -258,31 +232,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TrafficCountedStream<I> {
         let res = Pin::new(&mut self.io).poll_shutdown(cx);
         match res {
             Poll::Ready(_) => {
-                self.counters.is_closed.store(true, Ordering::SeqCst);
-            }
-            _ => {}
-        }
-        res
-    }
-
-    fn poll_write_buf<B: Buf>(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut B,
-    ) -> Poll<Result<usize, io::Error>>
-    where
-        Self: Sized,
-    {
-        let res = (|| {
-            let num_bytes = ready!(Pin::new(&mut self.io).poll_write_buf(cx, buf))?;
-            self.sent_counter.inc_by(num_bytes as u64);
-            self.counters
-                .bytes_written
-                .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
-            Poll::Ready(Ok(num_bytes))
-        })();
-        match res {
-            Poll::Ready(Err(_)) | Poll::Ready(Ok(0)) => {
                 self.counters.is_closed.store(true, Ordering::SeqCst);
             }
             _ => {}

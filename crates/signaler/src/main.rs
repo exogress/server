@@ -25,7 +25,7 @@ use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use tokio::runtime::Builder;
-use trust_dns_resolver::TokioAsyncResolver;
+use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 mod http;
 mod presence;
@@ -109,17 +109,14 @@ fn main() {
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
 
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
-    let mut rt = Builder::new()
-        .threaded_scheduler()
+    let rt = Builder::new_multi_thread()
         .enable_all()
-        .core_threads(num_threads)
+        .worker_threads(num_threads)
         .thread_name("signaler-reactor")
         .build()
         .unwrap();
 
-    let resolver = rt
-        .block_on(TokioAsyncResolver::from_system_conf(rt.handle().clone()))
-        .unwrap();
+    let resolver = TokioAsyncResolver::from_system_conf(TokioHandle).unwrap();
 
     let logger_bg = rt
         .block_on({

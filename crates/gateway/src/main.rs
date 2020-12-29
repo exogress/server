@@ -52,8 +52,8 @@ use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use tokio::runtime::Builder;
-use tokio::time::delay_for;
-use trust_dns_resolver::TokioAsyncResolver;
+use tokio::time::sleep;
+use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 pub(crate) mod clients;
 mod config;
@@ -310,11 +310,7 @@ fn main() {
 
         info!("Use certbot webroot at {}", webroot.display());
 
-        let mut rt = Builder::new()
-            .threaded_scheduler()
-            .enable_all()
-            .build()
-            .unwrap();
+        let rt = Builder::new_multi_thread().enable_all().build().unwrap();
 
         rt.block_on(acme_server(webroot, listen_http_acme_challenge_addr))
             .expect("acme server error");
@@ -340,17 +336,14 @@ fn main() {
     let signaler_base_url = signaler_base_url.expect("no signaler_base_url");
     let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
 
-    let mut rt = Builder::new()
-        .threaded_scheduler()
+    let rt = Builder::new_multi_thread()
         .enable_all()
-        .core_threads(num_threads)
+        .worker_threads(num_threads)
         .thread_name("gateway-reactor")
         .build()
         .unwrap();
 
-    let resolver = rt
-        .block_on(TokioAsyncResolver::from_system_conf(rt.handle().clone()))
-        .unwrap();
+    let resolver = TokioAsyncResolver::from_system_conf(TokioHandle).unwrap();
 
     let logger_bg = rt
         .block_on({
@@ -455,7 +448,7 @@ fn main() {
         let temp_db_file = NamedTempFile::new().expect("could not create named temp file");
 
         let db_path = if matches.is_present("download_dbip") {
-            use tokio_util::compat::Tokio02AsyncReadCompatExt;
+            use tokio_util::compat::TokioAsyncReadCompatExt;
 
             let (db_file, db_path) = match matches.value_of("dbip_download_dir") {
                 Some(download_dir) => {
@@ -695,7 +688,7 @@ fn main() {
                     statistics_tx.send(batch).await?;
 
                     if should_wait {
-                        delay_for(Duration::from_secs(20)).await;
+                        sleep(Duration::from_secs(20)).await;
                     }
                 }
 
@@ -725,9 +718,9 @@ fn main() {
                         };
 
                         statistics_tx.send(report).await?;
-                        delay_for(Duration::from_secs(60)).await;
+                        sleep(Duration::from_secs(60)).await;
                     } else {
-                        delay_for(Duration::from_secs(10)).await;
+                        sleep(Duration::from_secs(10)).await;
                     }
                 }
 

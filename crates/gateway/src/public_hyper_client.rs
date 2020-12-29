@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task;
 use tokio::io;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::{ClientConfig, Session};
 use tokio_rustls::webpki::{DNSNameRef, InvalidDNSNameError};
@@ -40,10 +40,9 @@ impl AsyncRead for HyperUsableConnection {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        let num_bytes = futures::ready!(Pin::new(&mut self.inner).poll_read(cx, buf))?;
-        Poll::Ready(Ok(num_bytes))
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
 
@@ -100,7 +99,7 @@ pub enum Error {
     InvalidHostname(#[from] InvalidDNSNameError),
 }
 
-impl tower::Service<Uri> for MeteredHttpsConnector {
+impl hyper::service::Service<Uri> for MeteredHttpsConnector {
     type Response = HyperUsableConnection;
     type Error = Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;

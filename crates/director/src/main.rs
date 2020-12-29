@@ -30,7 +30,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
-use trust_dns_resolver::TokioAsyncResolver;
+use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 fn main() {
     let spawn_args = App::new("spawn")
@@ -117,17 +117,14 @@ fn main() {
         int_client_cert, ..
     } = exogress_server_common::clap::int_api::extract_matches(&matches, false, false, false);
 
-    let mut rt = Builder::new()
-        .threaded_scheduler()
+    let rt = Builder::new_multi_thread()
         .enable_all()
-        .core_threads(num_threads)
+        .worker_threads(num_threads)
         .thread_name("director-reactor")
         .build()
         .unwrap();
 
-    let resolver = rt
-        .block_on(TokioAsyncResolver::from_system_conf(rt.handle().clone()))
-        .unwrap();
+    let resolver = TokioAsyncResolver::from_system_conf(TokioHandle).unwrap();
 
     let logger_bg = rt
         .block_on({

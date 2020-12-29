@@ -1,14 +1,13 @@
 use std::time::Duration;
 
 use crate::http_serve::auth::{
-    retrieve_assistant_key, save_assistant_key, AssistantError, CallbackResult, FlowData, JwtEcdsa,
-    Oauth2FlowError, Oauth2Provider,
+    async_http_client, retrieve_assistant_key, save_assistant_key, AssistantError, CallbackResult,
+    FlowData, JwtEcdsa, Oauth2FlowError, Oauth2Provider,
 };
 use exogress_common::entities::HandlerName;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use hashbrown::HashMap;
 use oauth2::basic::BasicClient;
-use oauth2::reqwest::async_http_client;
 use oauth2::{
     AsyncCodeTokenRequest, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, TokenUrl,

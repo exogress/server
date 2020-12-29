@@ -60,7 +60,7 @@ fn extract_connect_target(uri: Uri) -> Result<ConnectTarget, exogress_common::tu
         .parse::<ConnectTarget>()?)
 }
 
-impl tower::Service<Uri> for InstanceConnector {
+impl hyper::service::Service<Uri> for InstanceConnector {
     type Response = TunneledConnection;
     type Error = exogress_common::tunnel::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;

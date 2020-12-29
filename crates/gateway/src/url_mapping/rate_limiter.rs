@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::time::delay_for;
+use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
 pub enum RateLimiterResponse {
@@ -147,7 +147,7 @@ impl RateLimiters {
                                 } else {
                                     resp.increase_last(not_until);
                                 }
-                                delay_for(not_until).await;
+                                sleep(not_until).await;
                             }
                         }
                     }

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
+use futures::channel::mpsc;
 use futures::{pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
-use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 
 use exogress_common::entities::{AccountName, ProjectName};
@@ -177,7 +177,7 @@ pub async fn server(
 
                                     async move {
                                         let mut messages_pubsub =
-                                            redis.get_tokio_connection_tokio().await?.into_pubsub();
+                                            redis.get_tokio_connection().await?.into_pubsub();
                                         let redis_subscription = format!(
                                             "signaler.{}.{}.{}",
                                             channel_connect_params.account,
@@ -188,7 +188,7 @@ pub async fn server(
                                         messages_pubsub.subscribe(redis_subscription).await?;
 
                                         let mut termination_pubsub =
-                                            redis.get_tokio_connection_tokio().await?.into_pubsub();
+                                            redis.get_tokio_connection().await?.into_pubsub();
                                         termination_pubsub
                                             .subscribe(format!(
                                                 "revoke_access_token.{}",
@@ -333,10 +333,11 @@ pub async fn server(
                                         .fuse();
 
                                         let accept_pings = async move {
-                                            use tokio::stream::StreamExt;
+                                            let timeout_stream =
+                                                tokio_stream::StreamExt::timeout(incoming_ping_rx, PING_INTERVAL * 2);
 
-                                            let mut timeout_stream =
-                                                incoming_ping_rx.timeout(PING_INTERVAL * 2);
+                                            pin_mut!(timeout_stream);
+
                                             while let Some(r) =
                                                 futures::StreamExt::next(&mut timeout_stream).await
                                             {
@@ -384,10 +385,12 @@ pub async fn server(
                                     error!("error forwarding WS: {}", e);
                                 }
 
-                                let mut set_offline_backoff = Backoff::new(
+                                let set_offline_backoff = Backoff::new(
                                     Duration::from_millis(100),
                                     Duration::from_secs(1),
                                 );
+
+                                pin_mut!(set_offline_backoff);
 
                                 for _ in 0..10 {
                                     if let Err(e) = presence_client

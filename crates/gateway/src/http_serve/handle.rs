@@ -1,4 +1,3 @@
-use bytes::{Buf, BufMut};
 use futures::TryFutureExt;
 use futures::{ready, FutureExt};
 use futures_util::sink::SinkExt;
@@ -38,14 +37,14 @@ use rand::{thread_rng, Rng};
 use smol_str::SmolStr;
 use std::io;
 use std::io::{BufReader, Cursor};
-use std::mem::MaybeUninit;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
+use tokio_util::either::Either;
 
 struct HyperAcceptor<F, I>
 where
@@ -77,27 +76,12 @@ impl<I> AsyncRead for AcceptedIo<I>
 where
     I: AsyncRead + AsyncWrite + Send + Unpin,
 {
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
-        self.inner.prepare_uninitialized_buffer(buf)
-    }
-
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-
-    fn poll_read_buf<B: BufMut>(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut B,
-    ) -> Poll<io::Result<usize>>
-    where
-        Self: Sized,
-    {
-        Pin::new(&mut self.inner).poll_read_buf(cx, buf)
     }
 }
 
@@ -122,17 +106,6 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-
-    fn poll_write_buf<B: Buf>(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut B,
-    ) -> Poll<Result<usize, io::Error>>
-    where
-        Self: Sized,
-    {
-        Pin::new(&mut self.inner).poll_write_buf(cx, buf)
     }
 }
 
@@ -185,7 +158,7 @@ pub async fn server(
     let http_acceptor = tokio::spawn(
         #[allow(unreachable_code)]
         async move {
-            let mut listener = TcpListener::bind(listen_http_addr).await?;
+            let listener = TcpListener::bind(listen_http_addr).await?;
             loop {
                 let (mut conn, _director_addr) = listener.accept().await?;
 
@@ -220,7 +193,7 @@ pub async fn server(
 
         #[allow(unreachable_code)]
         async move {
-            let mut listener = TcpListener::bind(listen_https_addr).await?;
+            let listener = TcpListener::bind(listen_https_addr).await?;
             loop {
                 shadow_clone!(tls_gw_common);
                 shadow_clone!(incoming_https_connections_tx);
@@ -375,9 +348,9 @@ pub async fn server(
                                 flush_counters.await
                             });
 
-                            tokio_either::Either::Left(counted_stream)
+                            Either::Left(counted_stream)
                         } else {
-                            tokio_either::Either::Right(conn)
+                            Either::Right(conn)
                         };
 
                         let tls_conn = acceptor.accept(metered).await?;
@@ -634,10 +607,13 @@ pub async fn server(
                                 match oauth2_result {
                                     Ok(callback_result) => {
                                         info!("oauth2 callback result: {:?}", callback_result);
-                                        let secret: String = thread_rng()
-                                            .sample_iter(&Alphanumeric)
-                                            .take(30)
-                                            .collect();
+                                        let secret: String = String::from_utf8(
+                                            thread_rng()
+                                                .sample_iter(&Alphanumeric)
+                                                .take(30)
+                                                .collect(),
+                                        )
+                                        .unwrap();
 
                                         save_assistant_key(
                                             &assistant_base_url,

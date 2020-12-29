@@ -52,7 +52,7 @@ use std::sync::{Arc, Once};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task;
-use tokio_either::Either;
+use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
 use typed_headers::http::header::FORWARDED;
 use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
@@ -315,9 +315,11 @@ impl RequestsProcessor {
                         typed_headers::ContentCoding::BROTLI,
                     ));
 
-                Either::Left(async_compression::stream::BrotliEncoder::with_quality(
-                    uncompressed_body,
-                    async_compression::Level::Precise(6),
+                Either::Left(tokio_util::io::ReaderStream::new(
+                    async_compression::tokio::bufread::BrotliEncoder::with_quality(
+                        tokio_util::io::StreamReader::new(uncompressed_body),
+                        async_compression::Level::Precise(6),
+                    ),
                 ))
             }
             SupportedContentEncoding::Gzip => {
@@ -326,8 +328,10 @@ impl RequestsProcessor {
                         typed_headers::ContentCoding::GZIP,
                     ));
 
-                Either::Right(Either::Left(async_compression::stream::GzipEncoder::new(
-                    uncompressed_body,
+                Either::Right(Either::Left(tokio_util::io::ReaderStream::new(
+                    async_compression::tokio::bufread::GzipEncoder::new(
+                        tokio_util::io::StreamReader::new(uncompressed_body),
+                    ),
                 )))
             }
             SupportedContentEncoding::Deflate => {
@@ -336,9 +340,11 @@ impl RequestsProcessor {
                         typed_headers::ContentCoding::DEFLATE,
                     ));
 
-                Either::Right(Either::Right(
-                    async_compression::stream::DeflateEncoder::new(uncompressed_body),
-                ))
+                Either::Right(Either::Right(tokio_util::io::ReaderStream::new(
+                    async_compression::tokio::bufread::DeflateEncoder::new(
+                        tokio_util::io::StreamReader::new(uncompressed_body),
+                    ),
+                )))
             }
         };
 
@@ -551,7 +557,7 @@ impl ResolvedProxy {
                     "proxy-error:instance-unreachable"
                 );
 
-                let proxy_res = try_or_exception!(
+                let mut proxy_res = try_or_exception!(
                     http_client.request(proxy_req).await,
                     "proxy-error:instance-unreachable"
                 );
@@ -565,17 +571,15 @@ impl ResolvedProxy {
 
                 if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
                     let req_body = mem::replace(req.body_mut(), Body::empty());
+                    let req_for_upgrade = Request::new(req_body);
 
                     tokio::spawn(
                         #[allow(unreachable_code)]
                         async move {
-                            let mut proxy_upgraded = proxy_res
-                                .into_body()
-                                .on_upgrade()
+                            let mut proxy_upgraded = hyper::upgrade::on(&mut proxy_res)
                                 .await
                                 .with_context(|| "error upgrading proxy connection")?;
-                            let mut req_upgraded = req_body
-                                .on_upgrade()
+                            let mut req_upgraded = hyper::upgrade::on(req_for_upgrade)
                                 .await
                                 .with_context(|| "error upgrading connection")?;
 

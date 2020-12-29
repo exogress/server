@@ -4,6 +4,8 @@ use exogress_common::common_utils::backoff::Backoff;
 use exogress_server_common::assistant::{
     GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
 };
+use futures::channel::mpsc;
+use futures::pin_mut;
 use futures::{FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
 use redis::AsyncCommands;
@@ -13,8 +15,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use stop_handle::{StopHandle, StopWait};
 use tokio::io::AsyncReadExt;
-use tokio::sync::mpsc;
-use tokio::time::{delay_for, Duration};
+use tokio::time::{sleep, Duration};
 use tracing_futures::Instrument;
 use warp::Filter;
 
@@ -101,7 +102,10 @@ pub async fn server(
 
                                     #[allow(unreachable_code)]
                                         let ensure_pong_received = async move {
-                                        let mut timeout_stream = tokio::stream::StreamExt::timeout(pong_rx, Duration::from_secs(30));
+                                        let timeout_stream = tokio_stream::StreamExt::timeout(pong_rx, Duration::from_secs(30));
+
+                                        pin_mut!(timeout_stream);
+
                                         while let Some(r) = timeout_stream.next().await {
                                             r?;
                                         }
@@ -213,7 +217,7 @@ pub async fn server(
 
                                                             async move {
                                                                 loop {
-                                                                    delay_for(Duration::from_secs(15)).await;
+                                                                    sleep(Duration::from_secs(15)).await;
 
                                                                     tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
                                                                         .send(warp::filters::ws::Message::ping("")))
@@ -266,8 +270,10 @@ pub async fn server(
                                         },
                                     };
 
-                                    let mut set_offline_backoff =
+                                    let set_offline_backoff =
                                         Backoff::new(Duration::from_millis(100), Duration::from_secs(1));
+
+                                    pin_mut!(set_offline_backoff);
 
                                     for _ in 0..10 {
                                         if let Err(e) = presence_client

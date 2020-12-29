@@ -9,16 +9,17 @@ use exogress_server_common::assistant::{
     Action, GatewayConfigMessage, WsFromGwMessage, WsToGwMessage,
 };
 use futures::channel::mpsc;
+use futures::pin_mut;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::time::delay_for;
-use tokio_either::Either;
+use tokio::time::sleep;
 use tokio_rustls::client::TlsStream;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::http::Method;
-use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::{tungstenite, WebSocketStream};
+use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
@@ -189,8 +190,10 @@ impl AssistantClient {
 
         #[allow(unreachable_code)]
         let ensure_pong_received = async move {
-            let mut timeout_stream =
-                tokio::stream::StreamExt::timeout(pong_rx, Duration::from_secs(30));
+            let timeout_stream = tokio_stream::StreamExt::timeout(pong_rx, Duration::from_secs(30));
+
+            pin_mut!(timeout_stream);
+
             while let Some(r) = timeout_stream.next().await {
                 r?;
             }
@@ -223,7 +226,7 @@ impl AssistantClient {
 
             async move {
                 loop {
-                    delay_for(Duration::from_secs(15)).await;
+                    sleep(Duration::from_secs(15)).await;
 
                     tokio::time::timeout(
                         Duration::from_secs(5),

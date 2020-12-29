@@ -11,7 +11,7 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode, Version};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{delay_for, timeout};
+use tokio::time::{sleep, timeout};
 use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig, Session};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
@@ -29,7 +29,7 @@ use crate::clients::traffic_counter::{
 use crate::webapp;
 use exogress_common::entities::{ConfigId, TunnelId};
 use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, Stream, StreamExt};
+use futures::{SinkExt, Stream};
 use std::convert::TryInto;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -111,63 +111,54 @@ pub async fn tunnels_acceptor(
 
     let tls_acceptor = TlsAcceptor::from(Arc::new(config));
     info!("Listening for incoming tunnels on {:?}", addr);
-    let mut listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr).await?;
 
     let (accepted_connection_tx, accepted_connection_rx) = mpsc::channel(4);
 
     let acceptor = tokio::spawn(async move {
         shadow_clone!(tls_acceptor);
 
-        while let Some(res) = listener.next().await {
+        while let Ok((tcp_stream, _)) = listener.accept().await {
             shadow_clone!(tls_acceptor);
             shadow_clone!(mut accepted_connection_tx);
 
-            match res {
-                Ok(tcp_stream) => {
-                    tokio::spawn(async move {
-                        tcp_stream.set_nodelay(true)?;
+            tokio::spawn(async move {
+                tcp_stream.set_nodelay(true)?;
 
-                        let accept_result = tokio::time::timeout(
-                            Duration::from_secs(20),
-                            tls_acceptor.accept(tcp_stream),
-                        )
+                let accept_result =
+                    tokio::time::timeout(Duration::from_secs(20), tls_acceptor.accept(tcp_stream))
                         .await;
 
-                        let mut tls_conn = match accept_result {
-                            Err(_) => {
-                                warn!("Timeout TLS tunnel connection");
-                                return Ok(());
-                            }
-                            Ok(Err(e)) => {
-                                warn!("Error accepting TLS connection: {}", e);
-                                return Ok(());
-                            }
-                            Ok(Ok(r)) => r,
-                        };
+                let mut tls_conn = match accept_result {
+                    Err(_) => {
+                        warn!("Timeout TLS tunnel connection");
+                        return Ok(());
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Error accepting TLS connection: {}", e);
+                        return Ok(());
+                    }
+                    Ok(Ok(r)) => r,
+                };
 
-                        if tls_conn
-                            .get_mut()
-                            .1
-                            .get_alpn_protocol()
-                            .map(|p| {
-                                // info!("provided ALPN: {}", std::str::from_utf8(p).unwrap());
-                                p != *ALPN_PROTOCOL
-                            })
-                            // ALPN not provides should lead to Error as well
-                            .unwrap_or(true)
-                        {
-                            warn!("not accepting tunnel connection: ALPN mismatch");
-                        } else {
-                            accepted_connection_tx.send(tls_conn).await.unwrap();
-                        }
+                if tls_conn
+                    .get_mut()
+                    .1
+                    .get_alpn_protocol()
+                    .map(|p| {
+                        // info!("provided ALPN: {}", std::str::from_utf8(p).unwrap());
+                        p != *ALPN_PROTOCOL
+                    })
+                    // ALPN not provides should lead to Error as well
+                    .unwrap_or(true)
+                {
+                    warn!("not accepting tunnel connection: ALPN mismatch");
+                } else {
+                    accepted_connection_tx.send(tls_conn).await.unwrap();
+                }
 
-                        Ok::<_, anyhow::Error>(())
-                    });
-                }
-                Err(e) => {
-                    warn!("could not accept tunnel TCP connection: {}", e);
-                }
-            }
+                Ok::<_, anyhow::Error>(())
+            });
         }
     });
 
@@ -178,7 +169,7 @@ pub async fn tunnels_acceptor(
 
         async move {
             Ok::<_, hyper::Error>(service_fn({
-                move |req: Request<Body>| {
+                move |mut req: Request<Body>| {
                     shadow_clone!(tunnels);
                     shadow_clone!(webapp);
                     shadow_clone!(mut tunnel_counters_tx);
@@ -191,7 +182,7 @@ pub async fn tunnels_acceptor(
                         let mut res = Response::new(Body::empty());
 
                         tokio::spawn(async move {
-                            let mut upgraded = match req.into_body().on_upgrade().await {
+                            let mut upgraded = match hyper::upgrade::on(&mut req).await {
                                 Ok(upgraded) => upgraded,
                                 Err(e) => {
                                     bail!("upgrade error: {}", e);
@@ -243,7 +234,7 @@ pub async fn tunnels_acceptor(
                                         warn!("error on TLS tunnel: {}. Closing connection", e);
                                         return Err(e.into());
                                     }
-                                    Err(tokio::time::Elapsed { .. }) => {
+                                    Err(tokio::time::error::Elapsed { .. }) => {
                                         warn!(
                                         "no initial connection data received. Closing connection"
                                     );
@@ -393,7 +384,7 @@ pub async fn tunnels_acceptor(
                             #[allow(unreachable_code)]
                             let flush_counters = async move {
                                 loop {
-                                    delay_for(Duration::from_secs(60)).await;
+                                    sleep(Duration::from_secs(60)).await;
                                     match counters.flush() {
                                         Ok(Some(stats)) => {
                                             tunnel_counters_tx.send(stats).await?;

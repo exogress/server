@@ -79,7 +79,7 @@ async fn forwarder(
     info!("listen to {}", addr);
     let buf_pool = Arc::new(Pool::new(initial_buf_pool_size, || [0u8; BUF_SIZE]));
 
-    let mut tcp = TcpListener::bind(addr).await?;
+    let tcp = TcpListener::bind(addr).await?;
     loop {
         shadow_clone!(buf_pool);
         shadow_clone!(sharded_gateways);
