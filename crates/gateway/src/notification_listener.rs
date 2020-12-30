@@ -114,6 +114,7 @@ impl AssistantClient {
         #[allow(unreachable_code)]
         let consume = {
             shadow_clone!(stop_handle);
+            shadow_clone!(mut ch_ws_tx);
 
             async move {
                 while let Some(msg) = ws_rx.next().await {
@@ -172,7 +173,7 @@ impl AssistantClient {
                             }
                         }
                         Ok(msg) if msg.is_ping() => {
-                            // pong is sent automatically
+                            ch_ws_tx.send(tungstenite::Message::Pong(vec![])).await?;
                         }
                         Ok(msg) if msg.is_pong() => {
                             pong_tx.send(()).await?;
