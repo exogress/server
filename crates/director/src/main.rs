@@ -90,7 +90,7 @@ fn main() {
                 .value_name("WEIGHT:IP")
                 .required(true)
                 .multiple(true)
-                .help("Gateway address in form weigth:ip")
+                .help("Gateway address in form weight:ip")
                 .takes_value(true),
         );
 

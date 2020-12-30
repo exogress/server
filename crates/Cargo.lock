@@ -758,7 +758,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
- "trust-dns-resolver 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-dns-resolver 0.20.0",
  "url",
  "warp",
 ]
@@ -809,7 +809,7 @@ dependencies = [
  "tokio-util 0.6.0",
  "tracing",
  "tracing-subscriber",
- "trust-dns-resolver 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-dns-resolver 0.20.0",
  "tungstenite",
  "ulid",
  "url",
@@ -854,7 +854,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
- "trust-dns-resolver 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-dns-resolver 0.20.0",
  "warp",
 ]
 
@@ -929,7 +929,7 @@ dependencies = [
  "tokio-util 0.6.0",
  "tracing",
  "tracing-subscriber",
- "trust-dns-resolver 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-dns-resolver 0.20.0",
  "typed-headers",
  "url",
  "warp",
@@ -955,7 +955,7 @@ dependencies = [
  "tracing",
  "tracing-gelf",
  "tracing-subscriber",
- "trust-dns-resolver 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-dns-resolver 0.20.0",
  "url",
 ]
 
@@ -990,7 +990,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
- "trust-dns-resolver 0.20.0 (git+https://github.com/bluejekyll/trust-dns.git?branch=main)",
+ "trust-dns-resolver 0.20.0",
  "urlencoding",
  "warp",
 ]
@@ -3049,7 +3049,7 @@ dependencies = [
  "tokio-native-tls",
  "tokio-rustls 0.22.0",
  "tokio-util 0.6.0",
- "trust-dns-resolver 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-dns-resolver 0.20.0",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -4268,29 +4268,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "trust-dns-proto"
-version = "0.20.0"
-source = "git+https://github.com/bluejekyll/trust-dns.git?branch=main#fc58a4fe20da679727a3d9137a7ce833faa60dd0"
-dependencies = [
- "async-trait",
- "cfg-if 1.0.0",
- "data-encoding",
- "enum-as-inner",
- "futures-channel",
- "futures-io",
- "futures-util",
- "idna",
- "ipnet",
- "lazy_static",
- "log",
- "rand 0.8.0",
- "smallvec 1.5.1",
- "thiserror",
- "tokio 1.0.1",
- "url",
-]
-
-[[package]]
 name = "trust-dns-resolver"
 version = "0.19.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4327,26 +4304,7 @@ dependencies = [
  "smallvec 1.5.1",
  "thiserror",
  "tokio 1.0.1",
- "trust-dns-proto 0.20.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "trust-dns-resolver"
-version = "0.20.0"
-source = "git+https://github.com/bluejekyll/trust-dns.git?branch=main#fc58a4fe20da679727a3d9137a7ce833faa60dd0"
-dependencies = [
- "cfg-if 1.0.0",
- "futures-util",
- "ipconfig",
- "lazy_static",
- "log",
- "lru-cache",
- "parking_lot 0.11.1",
- "resolv-conf",
- "smallvec 1.5.1",
- "thiserror",
- "tokio 1.0.1",
- "trust-dns-proto 0.20.0 (git+https://github.com/bluejekyll/trust-dns.git?branch=main)",
+ "trust-dns-proto 0.20.0",
 ]
 
 [[package]]
