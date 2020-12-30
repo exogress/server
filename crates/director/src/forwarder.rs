@@ -35,6 +35,8 @@ async fn forward(
                 if bytes_read == 0 {
                     return Ok(());
                 } else {
+                    crate::statistics::BUF_FILL_BYTES.observe(bytes_read as f64);
+
                     forward_to
                         .write_all(&buf1[..bytes_read])
                         .await

@@ -5,7 +5,7 @@ authors = ["Gleb Pomykalov <gleb@exogress.com>"]
 edition = "2018"
 
 [dependencies]
-bytes = "0.5"
+bytes = "1.0"
 clap = "2.33.3"
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 futures = "0.3"
@@ -27,12 +27,15 @@ lru_time_cache = "0.11.0"
 sys-info = "0.7"
 rand_xoshiro = "0.6.0"
 rand = "0.8"
-itertools = "0.9.0"
+itertools = "0.10.0"
 tls-parser = "0.9.2"
 nom = "^5.0"
 seahash = { git = "https://gitlab.redox-os.org/redox-os/seahash.git" }
-
-trust-dns-resolver = {  git = "https://github.com/bluejekyll/trust-dns.git", branch = "main" }
+prometheus = "0.11.0"
+lazy_static = "1.4.0"
+trust-dns-resolver = "0.20"
+mimalloc = "0.1.22"
+warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio", features =["websocket", "tls", "compression"] }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils"], default-features = false }

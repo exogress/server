@@ -17,6 +17,7 @@ extern crate quickcheck_macros;
 
 mod balancer;
 mod forwarder;
+mod statistics;
 mod termination;
 mod tls;
 
@@ -26,11 +27,15 @@ use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use forwarder::ForwarderBuilder;
-use std::net::IpAddr;
+use mimalloc::MiMalloc;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
     let spawn_args = App::new("spawn")
@@ -68,6 +73,15 @@ fn main() {
                 .default_value("0.0.0.0:4443")
                 .required(true)
                 .help("Set websocket listen address")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("listen_int_http")
+                .long("listen-int-http")
+                .value_name("SOCKET_ADDR")
+                .default_value("127.0.0.1:22710")
+                .required(true)
+                .help("Set int HTTP listen address")
                 .takes_value(true),
         )
         .arg(
@@ -117,6 +131,14 @@ fn main() {
         int_client_cert, ..
     } = exogress_server_common::clap::int_api::extract_matches(&matches, false, false, false);
 
+    let listen_int_http_addr = matches
+        .value_of("listen_int_http")
+        .map(|r| {
+            r.parse::<SocketAddr>()
+                .expect("Failed to parse listen int HTTP address (ip:port)")
+        })
+        .unwrap();
+
     let rt = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(num_threads)
@@ -138,6 +160,8 @@ fn main() {
         .expect("could not initialize logger");
 
     rt.spawn(logger_bg);
+
+    rt.spawn(crate::statistics::spawn(listen_int_http_addr));
 
     let mut gateways = Vec::new();
 

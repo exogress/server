@@ -13,7 +13,7 @@ thiserror = "1.0.13"
 sentry = "0.21.0"
 rand = { version = "0.8" }
 stop-handle = "0.1"
-pin-project = "0.4"
+pin-project = "1.0"
 redis = {version = "0.19.0", default-features = false, features = ["tokio", "tokio-comp", "connection-manager"]}
 clap = "2.33.3"
 anyhow = "1.0.31"
@@ -28,7 +28,7 @@ bson = "1.1.0"
 tokio-stream = { version = "0.1.0" }
 
 mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "master" }
-trust-dns-resolver = {  git = "https://github.com/bluejekyll/trust-dns.git", branch = "main" }
+trust-dns-resolver = "0.20"
 reqwest = { git = "https://github.com/messense/reqwest.git", branch = "tokio-0-3", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
 warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio" }
 
