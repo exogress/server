@@ -54,7 +54,7 @@ pub async fn server(
     redis: redis::Client,
     webapp_client: crate::webapp::Client,
     presence_client: crate::presence::Client,
-    clickhouse_client: MongoDbClient,
+    db_client: MongoDbClient,
     stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<StopReason>,
 ) {
@@ -65,14 +65,14 @@ pub async fn server(
         .and(warp::filters::ws::ws())
         .map({
             shadow_clone!(redis);
-            shadow_clone!(clickhouse_client);
+            shadow_clone!(db_client);
             shadow_clone!(webapp_client);
             shadow_clone!(presence_client);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
                 shadow_clone!(mut redis);
                 shadow_clone!(common_gw_tls_config);
-                shadow_clone!(clickhouse_client);
+                shadow_clone!(db_client);
                 shadow_clone!(webapp_client);
                 shadow_clone!(presence_client);
                 shadow_clone!(stop_handle);
@@ -128,12 +128,13 @@ pub async fn server(
                                                     info!("received GW: {:?}", msg);
                                                     match msg {
                                                         WsFromGwMessage::Statistics { report } => {
-                                                            clickhouse_client.register_statistics_report(report, &gw_hostname, &gw_location).await?;
+                                                            db_client.register_statistics_report(report, &gw_hostname, &gw_location).await?;
                                                         }
                                                         _ => {},
                                                     }
                                                 } else if msg.is_ping() {
-                                                    // pong is sent automatically
+                                                    // better to react only on pongs. it's here until warp supports sending pongs
+                                                    pong_tx.send(()).await?;
                                                 } else if msg.is_pong() {
                                                     pong_tx.send(()).await?;
                                                 } else {
