@@ -68,7 +68,7 @@ async fn forward(
     }
 }
 
-const BUF_SIZE: usize = 65536;
+const BUF_SIZE: usize = 1024;
 
 async fn forwarder(
     addr: SocketAddr,
@@ -152,7 +152,11 @@ async fn forwarder(
                             Duration::from_secs(10),
                         )?;
 
-                        for _retry in 0..max_retries {
+                        let mut is_any_gw_connected = false;
+                        let mut retry = 0;
+
+                        while retry < max_retries {
+                            retry += 1;
                             let maybe_dst_addr = policy.next();
                             if let Some(dst_addr) = maybe_dst_addr {
                                 info!("try proxy to {}", dst_addr);
@@ -212,6 +216,15 @@ async fn forwarder(
                                             let (_, mut buf1) = reusable_buf1.detach();
                                             let (_, mut buf2) = reusable_buf2.detach();
 
+                                            is_any_gw_connected = true;
+                                            crate::statistics::NUM_PROXIED_REQUESTS
+                                                .with_label_values(&[
+                                                    retry.to_string().as_str(),
+                                                    max_retries.to_string().as_str(),
+                                                    "1",
+                                                ])
+                                                .inc();
+
                                             let r = forward(
                                                 &mut incoming,
                                                 &mut forward_to,
@@ -244,6 +257,16 @@ async fn forwarder(
                                     }
                                 };
                             }
+                        }
+
+                        if !is_any_gw_connected {
+                            crate::statistics::NUM_PROXIED_REQUESTS
+                                .with_label_values(&[
+                                    "",
+                                    max_retries.to_string().as_str(),
+                                    retry.to_string().as_str(),
+                                ])
+                                .inc();
                         }
 
                         Ok(())

@@ -1,5 +1,8 @@
 use lazy_static::lazy_static;
-use prometheus::{register_histogram, Encoder, Histogram, TextEncoder};
+use prometheus::{
+    linear_buckets, register_histogram, register_int_counter_vec, Encoder, Histogram,
+    IntCounterVec, TextEncoder,
+};
 use std::net::SocketAddr;
 use warp::Filter;
 
@@ -7,10 +10,13 @@ lazy_static! {
     pub static ref BUF_FILL_BYTES: Histogram = register_histogram!(
         "director_buf_filling_bytes",
         "Number of bytes filled in the TCP forwarded buffer",
-        vec![
-            8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0, 8192.0, 16536.0,
-            32768.0, 65536.0
-        ]
+        linear_buckets(50.0, 50.0, 30).unwrap()
+    )
+    .unwrap();
+    pub static ref NUM_PROXIED_REQUESTS: IntCounterVec = register_int_counter_vec!(
+        "director_requests",
+        "Number of requests processed",
+        &["successful_retry", "max_retries", "retries"]
     )
     .unwrap();
 }
