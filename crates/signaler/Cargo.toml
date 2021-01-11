@@ -32,7 +32,7 @@ prometheus = "0.11.0"
 tokio-stream = { version = "0.1.0" }
 
 trust-dns-resolver = "0.20"
-reqwest = { git = "https://github.com/messense/reqwest.git", branch = "tokio-0-3", features = ["rustls-tls", "json", "trust-dns"] }
+reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns"] }
 warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio" }
 
 exogress-server-common = { path = "../common" }
