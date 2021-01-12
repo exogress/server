@@ -36,6 +36,7 @@ use url::Url;
 
 use crate::clients::{tunnels_acceptor, ClientTunnels};
 
+use crate::cache::Cache;
 use crate::clients::traffic_counter::OneOfTrafficStatistics;
 use crate::http_serve::acme::acme_server;
 use crate::http_serve::auth::github::GithubOauth2Client;
@@ -55,6 +56,7 @@ use tokio::runtime::Builder;
 use tokio::time::sleep;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
+mod cache;
 pub(crate) mod clients;
 mod config;
 mod dbip;
@@ -229,6 +231,14 @@ fn main() {
                 .takes_value(true)
         )
         .arg(
+            Arg::with_name("cache_dir")
+                .long("cache-dir")
+                .value_name("PATH")
+                .required(true)
+                .help("Set cache dir")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("dbip_download_dir")
                 .long("dbip-download-dir")
                 .env("DBIP_DOWNLOAD_DIR")
@@ -335,6 +345,12 @@ fn main() {
     let assistant_base_url = assistant_base_url.expect("no assistant_base_url");
     let signaler_base_url = signaler_base_url.expect("no signaler_base_url");
     let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
+
+    let cache_dir: PathBuf = matches
+        .value_of("cache_dir")
+        .expect("no cache dir provided")
+        .parse()
+        .unwrap();
 
     let rt = Builder::new_multi_thread()
         .enable_all()
@@ -554,6 +570,10 @@ fn main() {
             dbip
         });
 
+        let cache = Cache::new(cache_dir)
+            .await
+            .expect("Failed to initialize cache");
+
         tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
         info!("Listening int HTTPS on https://{}", listen_int_https_addr);
@@ -610,6 +630,7 @@ fn main() {
             assistant_base_url.clone(),
             &public_base_url,
             int_client_cert.clone(),
+            cache,
             resolver.clone(),
         );
 

@@ -1,3 +1,4 @@
 crates/target
 deps/**/target
 *.rdb
+cache-storage

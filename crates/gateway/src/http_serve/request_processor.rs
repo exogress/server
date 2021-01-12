@@ -1,3 +1,4 @@
+use crate::cache::{Cache, HandlerChecksum};
 use crate::clients::traffic_counter::{RecordedTrafficStatistics, TrafficCounters};
 use crate::clients::ClientTunnels;
 use crate::http_serve::auth;
@@ -10,6 +11,7 @@ use crate::public_hyper_client::MeteredHttpsConnector;
 use crate::rules_counter::AccountCounters;
 use crate::webapp::{ConfigData, ConfigsResponse};
 use anyhow::Context;
+use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
 use core::{fmt, mem};
@@ -19,13 +21,13 @@ use exogress_common::config_core::{
     TemplateEngine, UpstreamDefinition, UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
-    AccountUniqueId, ConfigId, HandlerName, InstanceId, MountPointName, StaticResponseName,
-    Upstream,
+    AccountUniqueId, ConfigId, HandlerName, InstanceId, MountPointName, ProjectName,
+    StaticResponseName, Upstream,
 };
 use exogress_common::tunnel::ConnectTarget;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::{mpsc, oneshot};
-use futures::TryStreamExt;
+use futures::{SinkExt, StreamExt, TryStreamExt};
 use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
@@ -41,6 +43,7 @@ use magick_rust::{magick_wand_genesis, MagickWand};
 use parking_lot::Mutex;
 use rusty_s3::actions::S3Action;
 use smol_str::SmolStr;
+use sodiumoxide::crypto::secretstream::xchacha20poly1305;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
@@ -94,14 +97,18 @@ macro_rules! try_option_or_exception {
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
     pub generated_at: DateTime<Utc>,
-    // pub health: HealthStorage,
     pub google_oauth2_client: auth::google::GoogleOauth2Client,
     pub github_oauth2_client: auth::github::GithubOauth2Client,
     pub assistant_base_url: Url,
     pub maybe_identity: Option<Vec<u8>>,
     rules_counter: AccountCounters,
-    account_unique_id: AccountUniqueId,
+    pub account_unique_id: AccountUniqueId,
     _stop_public_counter_tx: oneshot::Sender<()>,
+    cache: Cache,
+    project_name: ProjectName,
+    mount_point_name: MountPointName,
+    xchacha20poly1305_secret_key: xchacha20poly1305::Key,
+    max_pop_cache_size_bytes: Byte,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,10 +127,61 @@ impl RequestsProcessor {
         remote_addr: &SocketAddr,
     ) {
         self.rules_counter.register_request(&self.account_unique_id);
-        let mut is_processed = false;
+
+        let mut processed_by = None;
         for handler in &self.ordered_handlers {
             // create new response for each handler, avoid using dirty data from the previous handler
             *res = Response::new(Body::empty());
+
+            if req.method() == &Method::GET || req.method() == &Method::HEAD {
+                // eligible for caching
+                // lookup for cache response and respond if exists
+
+                let accept = req
+                    .headers()
+                    .typed_get()
+                    .unwrap_or_else(|_e| Some(typed_headers::Accept(vec![])))
+                    .unwrap_or_else(|| typed_headers::Accept(vec![]));
+                let accept_encoding = req
+                    .headers()
+                    .typed_get()
+                    .unwrap_or_else(|_e| Some(typed_headers::AcceptEncoding(vec![])))
+                    .unwrap_or_else(|| typed_headers::AcceptEncoding(vec![]));
+                let cached_response = self
+                    .cache
+                    .read_from_cache(
+                        &self.account_unique_id,
+                        &self.project_name,
+                        &self.mount_point_name,
+                        &handler.handler_name,
+                        &handler.handler_checksum,
+                        &accept,
+                        &accept_encoding,
+                        req.method(),
+                        req.uri().path_and_query().expect("FIXME").as_str(),
+                        &self.xchacha20poly1305_secret_key,
+                    )
+                    .await;
+
+                if let Ok(Some(resp)) = cached_response {
+                    info!("found data in cache");
+                    // never actually respond from cache for now, just save
+                    if false && resp.status().is_success() {
+                        // respond from cache only if success response
+
+                        *res = resp;
+
+                        res.headers_mut()
+                            .insert("x-exg-edge-cached", "1".parse().unwrap());
+
+                        info!(
+                            "serve {:?} bytes from cache!",
+                            res.headers().typed_get::<typed_headers::ContentLength>()
+                        );
+                        return;
+                    }
+                }
+            }
 
             let mut replaced_url = requested_url.clone();
             {
@@ -169,7 +227,7 @@ impl RequestsProcessor {
             match result {
                 ResolvedHandlerProcessingResult::Processed => {
                     info!("handle successfully finished. exit from handlers loop");
-                    is_processed = true;
+                    processed_by = Some(handler);
                     break;
                 }
                 ResolvedHandlerProcessingResult::FiltersNotMatched => {}
@@ -177,20 +235,146 @@ impl RequestsProcessor {
             };
         }
 
-        if !is_processed {
-            *res = Response::new(Body::from("Not found"));
-            *res.status_mut() = StatusCode::NOT_FOUND;
+        match processed_by {
+            None => {
+                *res = Response::new(Body::from("Not found"));
+                *res.status_mut() = StatusCode::NOT_FOUND;
+            }
+            Some(handler) => {
+                let optimize_result = self.optimize_image(req, res).await;
+                if let Err(e) = optimize_result {
+                    warn!("Skipped image optimization due to the error: {}", e);
+                }
+
+                self.compress(req, res);
+
+                res.headers_mut()
+                    .insert("server", HeaderValue::from_static("exogress"));
+
+                self.save_to_cache(req, res, handler);
+            }
+        }
+    }
+
+    fn save_to_cache(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        handler: &ResolvedHandler,
+    ) {
+        if req.method() != &Method::GET && req.method() != &Method::HEAD {
+            return;
+        };
+
+        if !res.status().is_success() {
+            return;
         }
 
-        let optimize_result = self.optimize_image(req, res).await;
-        if let Err(e) = optimize_result {
-            warn!("Skipped image optimization due to the error: {}", e);
+        let path_and_query = req.uri().path_and_query().expect("FIXME").to_string();
+
+        if !path_and_query.ends_with(".ts") {
+            // FIXME
+            return;
         }
 
-        self.compress(req, res);
+        let cache = self.cache.clone();
+        let account_unique_id = self.account_unique_id.clone();
+        let project_name = self.project_name.clone();
+        let mount_point_name = self.mount_point_name.clone();
+        let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
+        let xchacha20poly1305_secret_key = self.xchacha20poly1305_secret_key.clone();
 
-        res.headers_mut()
-            .insert("server", HeaderValue::from_static("exogress"));
+        let accept = req
+            .headers()
+            .typed_get()
+            .unwrap_or_else(|_e| Some(typed_headers::Accept(vec![])))
+            .unwrap_or_else(|| typed_headers::Accept(vec![]));
+        let accept_encoding = req
+            .headers()
+            .typed_get()
+            .unwrap_or_else(|_e| Some(typed_headers::AcceptEncoding(vec![])))
+            .unwrap_or_else(|| typed_headers::AcceptEncoding(vec![]));
+
+        let method = req.method().clone();
+        let headers = res.headers().clone();
+        let status = res.status().clone();
+        let handler_name = handler.handler_name.clone();
+        let handler_checksum = handler.handler_checksum;
+
+        let (mut resp_tx, resp_rx) = mpsc::channel(1);
+
+        let mut original_body_stream = mem::replace(res.body_mut(), Body::empty());
+
+        tokio::spawn(async move {
+            let tempdir = tokio::task::spawn_blocking(|| tempfile::tempdir())
+                .await
+                .expect("FIXME")
+                .expect("FIXME");
+
+            let tempfile_path = tempdir.path().to_owned().join("req");
+            let mut original_file_size = 0;
+            let mut tempfile = tokio::fs::File::create(&tempfile_path)
+                .await
+                .expect("FIXME");
+
+            let (mut enc_stream, header) =
+                sodiumoxide::crypto::secretstream::Stream::init_push(&xchacha20poly1305_secret_key)
+                    .map_err(|_| anyhow!("could not init encryption"))?;
+
+            while let Some(item_result) = original_body_stream.next().await {
+                let item = item_result?;
+                original_file_size += item.len();
+
+                let mut result_vec = enc_stream
+                    .push(
+                        item.as_ref(),
+                        None,
+                        sodiumoxide::crypto::secretstream::Tag::Message,
+                    )
+                    .unwrap();
+
+                let mut v = u32::try_from(result_vec.len())
+                    .unwrap()
+                    .to_be_bytes()
+                    .to_vec();
+                v.append(&mut result_vec);
+                tempfile.write_all(&v).await.unwrap();
+
+                resp_tx
+                    .send(item)
+                    .await
+                    .map_err(|_e| anyhow!("error sending to client"))?;
+            }
+
+            info!("Body successfully sent. Saving temp file to cache storage");
+
+            let cached_response = cache
+                .save_content(
+                    &account_unique_id,
+                    &project_name,
+                    &mount_point_name,
+                    &handler_name,
+                    &handler_checksum,
+                    &accept,
+                    &accept_encoding,
+                    &method,
+                    &headers,
+                    status,
+                    path_and_query.as_str(),
+                    original_file_size.try_into().unwrap(),
+                    header,
+                    max_pop_cache_size_bytes,
+                    Utc::now() + chrono::Duration::minutes(2),
+                    tempfile_path,
+                )
+                .await;
+
+            info!("cached save result = {:?}", cached_response);
+
+            Ok::<_, anyhow::Error>(())
+        });
+
+        *res.body_mut() = Body::wrap_stream(resp_rx.map(Ok::<_, hyper::Error>));
     }
 
     async fn optimize_image(
@@ -583,8 +767,8 @@ impl ResolvedProxy {
                                 .await
                                 .with_context(|| "error upgrading connection")?;
 
-                            let mut buf1 = vec![0u8; 65536];
-                            let mut buf2 = vec![0u8; 65536];
+                            let mut buf1 = vec![0u8; 1024];
+                            let mut buf2 = vec![0u8; 1024];
 
                             loop {
                                 tokio::select! {
@@ -1373,6 +1557,9 @@ impl ResolvedRule {
 }
 
 struct ResolvedHandler {
+    handler_name: HandlerName,
+    handler_checksum: HandlerChecksum,
+
     resolved_variant: ResolvedHandlerVariant,
 
     base_path: Vec<UrlPathSegmentOrQueryPart>,
@@ -1816,10 +2003,16 @@ impl RequestsProcessor {
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
         traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        cache: Cache,
         resolver: TokioAsyncResolver,
-    ) -> Result<RequestsProcessor, ()> {
+    ) -> anyhow::Result<RequestsProcessor> {
+        let xchacha20poly1305_secret_key =
+            xchacha20poly1305::Key::from_slice(&hex::decode(&resp.xchacha20poly1305_secret_key)?)
+                .ok_or_else(|| anyhow!("could not parse xchacha20poly1305 secret key"))?;
+
         crate::statistics::ACTIVE_REQUESTS_PROCESSORS.inc();
 
+        let max_pop_cache_size_bytes = resp.max_pop_cache_size_bytes;
         let traffic_counters = TrafficCounters::new(resp.account_unique_id.clone());
         let (stop_public_counter_tx, stop_public_counter_rx) = oneshot::channel();
         tokio::spawn(TrafficCounters::spawn_flusher(
@@ -1909,6 +2102,8 @@ impl RequestsProcessor {
             .flatten()
             .collect::<Vec<_>>();
 
+        let mount_point_name = grouped_mount_points.iter().next().expect("FIXME").0.clone();
+
         for (mp_name, (_, _, _, _, mp)) in &grouped_mount_points {
             for (static_response_name, static_response) in &mp.static_responses {
                 static_responses
@@ -1964,6 +2159,18 @@ impl RequestsProcessor {
                     let mp_static_responses = &static_responses.borrow().get(&mp_name).cloned().unwrap_or_default();
 
                     Some(ResolvedHandler {
+                        handler_name: handler_name.clone(),
+                        handler_checksum: {
+                            use std::hash::{Hash, Hasher};
+
+                            // FIXME
+                            let mut s = seahash::SeaHasher::new();
+                            handler.hash(&mut s);
+                            handler_name.hash(&mut s);
+                            let checksum = s.finish();
+
+                            checksum.into()
+                        },
                         resolved_variant: match handler.variant {
                             ClientHandlerVariant::Auth(auth) => {
                                 ResolvedHandlerVariant::Auth(ResolvedAuth {
@@ -2138,7 +2345,7 @@ impl RequestsProcessor {
                     })
                 })
                 .collect::<Option<Vec<_>>>()
-                .ok_or(())?;
+                .ok_or_else(|| anyhow!("failed to build processor"))?;
 
             merged_resolved_handlers.append(&mut r);
         }
@@ -2155,6 +2362,11 @@ impl RequestsProcessor {
             rules_counter,
             account_unique_id,
             _stop_public_counter_tx: stop_public_counter_tx,
+            cache,
+            project_name,
+            mount_point_name,
+            xchacha20poly1305_secret_key,
+            max_pop_cache_size_bytes,
         })
     }
 }

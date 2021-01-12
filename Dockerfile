@@ -24,7 +24,7 @@ RUN cargo build --release
 
 FROM alpine:3.12 as base
 
-RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc clang-libs
+RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc clang-libs sqlite-dev sqlite
 
 FROM base as signaler
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
@@ -47,7 +47,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-director"]
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
-RUN apk --update add imagemagick imagemagick-dev pkgconfig
+RUN apk --update add imagemagick imagemagick-dev pkgconfig sqlite-dev sqlite
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]

@@ -1,11 +1,11 @@
-use std::time::Duration;
-
+use crate::cache::Cache;
 use crate::clients::traffic_counter::RecordedTrafficStatistics;
 use crate::clients::ClientTunnels;
 use crate::http_serve::{auth, RequestsProcessor};
 use crate::registry::RequestsProcessorsRegistry;
 use crate::rules_counter::AccountCounters;
 use crate::urls::matchable_url::MatchableUrl;
+use byte_unit::Byte;
 use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -27,6 +27,7 @@ use reqwest::Identity;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::time::{timeout, Instant};
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
@@ -56,6 +57,7 @@ pub struct Client {
     rules_counters: AccountCounters,
 
     traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    cache: Cache,
     resolver: TokioAsyncResolver,
 }
 
@@ -187,6 +189,8 @@ pub struct ConfigsResponse {
     pub project_config: ProjectConfig,
     pub configs: SmallVec<[ConfigData; 8]>,
     pub jwt_ecdsa: JwtEcdsaResponse,
+    pub xchacha20poly1305_secret_key: String,
+    pub max_pop_cache_size_bytes: Byte,
 }
 
 impl Client {
@@ -200,6 +204,7 @@ impl Client {
         assistant_base_url: Url,
         public_gw_base_url: &Url,
         maybe_identity: Option<Vec<u8>>,
+        cache: Cache,
         resolver: TokioAsyncResolver,
     ) -> Self {
         let mut builder = reqwest::ClientBuilder::new()
@@ -227,6 +232,7 @@ impl Client {
             public_gw_base_url: public_gw_base_url.clone(),
             rules_counters,
             traffic_counters_tx,
+            cache,
             resolver,
         }
     }
@@ -279,6 +285,7 @@ impl Client {
         )>,
         Error,
     > {
+        let cache = self.cache.clone();
         let resolver = self.resolver.clone();
         let traffic_counters_tx = self.traffic_counters_tx.clone();
 
@@ -341,6 +348,7 @@ impl Client {
                         shadow_clone!(public_gw_base_url);
                         shadow_clone!(rules_counters);
                         shadow_clone!(config_error);
+                        shadow_clone!(cache);
 
                         async move {
                             let retrieval_started_at = Instant::now();
@@ -397,10 +405,12 @@ impl Client {
                                                         individual_hostname,
                                                         maybe_identity,
                                                         traffic_counters_tx.clone(),
+                                                        cache,
                                                         resolver,
                                                     ) {
                                                         Ok(rp) => rp,
                                                         Err(e) => {
+                                                            error!("Error creating RequestsProcessor: {}", e);
                                                             crate::statistics::CONFIGS_PROCESSING_ERRORS.inc();
                                                             *config_error.lock() = Some(e);
                                                             return;
