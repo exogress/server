@@ -26,6 +26,7 @@ use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 mod http;
 mod presence;
 mod reporting;
+mod statistics;
 mod termination;
 mod webapp;
 

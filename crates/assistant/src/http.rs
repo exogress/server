@@ -18,6 +18,7 @@ use tokio::io::AsyncReadExt;
 use tokio::time::{sleep, Duration};
 use tracing_futures::Instrument;
 use warp::Filter;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayCommonTlsConfig {
@@ -79,6 +80,7 @@ pub async fn server(
 
                 let gw_location = query.get("location").unwrap().clone();
 
+                let start_time = Instant::now();
                 ws.on_upgrade(move |websocket| {
                     {
                         shadow_clone!(gw_hostname);
@@ -124,10 +126,15 @@ pub async fn server(
                                         async move {
                                             while let Some(report) = mongo_saver_rx.next().await {
                                                 info!("Start saving to mongodb");
+                                                let start_time = Instant::now();
+
                                                 tokio::time::timeout(
                                                     Duration::from_secs(5),
                                                     db_client.register_statistics_report(report, &gw_hostname, &gw_location)
                                                 ).await??;
+
+                                                crate::statistics::STATISTICS_REPORT_SAVE_TIME_MS
+                                                    .observe(start_time.elapsed().as_millis() as f64);
                                             }
 
                                             Ok::<_, anyhow::Error>(())
@@ -280,6 +287,10 @@ pub async fn server(
                                         Ok::<_, anyhow::Error>(())
                                     };
 
+                                    crate::statistics::ACTIVE_CHANNELS.inc();
+                                    crate::statistics::CHANELS_ESTABLISHMENT_TIME_MS
+                                        .observe(start_time.elapsed().as_millis() as f64);
+
                                     tokio::select! {
                                         r = notifier => {
                                             warn!("WS connection closed: {:?}", r);
@@ -311,6 +322,7 @@ pub async fn server(
                                             error!("could not unset presence: {}", e);
                                         } else {
                                             info!("unset gw presence successfully");
+                                            crate::statistics::ACTIVE_CHANNELS.inc();
                                             return;
                                         }
                                         set_offline_backoff.next().await;
@@ -432,11 +444,14 @@ pub async fn server(
             }
         });
 
+    let metrics = warp::path!("metrics").map(|| crate::statistics::dump_prometheus());
+
     info!("Spawning...");
     let (_, server) = warp::serve(
         notifications
             .or(save_kv)
             .or(get_kv)
+            .or(metrics)
             .or(health)
             .with(warp::trace::request()),
     )

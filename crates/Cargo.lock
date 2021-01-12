@@ -731,8 +731,10 @@ dependencies = [
  "exogress-server-common",
  "futures",
  "hashbrown",
+ "lazy_static",
  "mongodb",
  "pin-project 1.0.4",
+ "prometheus",
  "rand 0.8.1",
  "redis",
  "reqwest 0.11.0",
@@ -795,7 +797,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite",
- "tokio-util 0.6.0",
+ "tokio-util 0.6.1",
  "tracing",
  "tracing-subscriber",
  "trust-dns-resolver",
@@ -922,7 +924,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite",
- "tokio-util 0.6.0",
+ "tokio-util 0.6.1",
  "tracing",
  "tracing-subscriber",
  "trust-dns-resolver",
@@ -1315,7 +1317,7 @@ dependencies = [
  "indexmap",
  "slab",
  "tokio 1.0.1",
- "tokio-util 0.6.0",
+ "tokio-util 0.6.1",
  "tracing",
  "tracing-futures",
 ]
@@ -2947,7 +2949,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite 0.2.4",
  "tokio 1.0.1",
- "tokio-util 0.6.0",
+ "tokio-util 0.6.1",
  "url",
 ]
 
@@ -3071,7 +3073,7 @@ dependencies = [
  "tokio 1.0.1",
  "tokio-native-tls",
  "tokio-rustls",
- "tokio-util 0.6.0",
+ "tokio-util 0.6.1",
  "trust-dns-resolver",
  "url",
  "wasm-bindgen",
@@ -4121,9 +4123,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36135b7e7da911f5f8b9331209f7fab4cc13498f3fff52f72a710c78187e3148"
+checksum = "12ae4751faa60b9f96dd8344d74592e5a17c0c9a220413dbc6942d14139bbfcc"
 dependencies = [
  "bytes 1.0.1",
  "futures-core",
@@ -4195,7 +4197,7 @@ dependencies = [
  "serde_json",
  "tokio 1.0.1",
  "tokio-rustls",
- "tokio-util 0.6.0",
+ "tokio-util 0.6.1",
  "tracing-core",
  "tracing-subscriber",
 ]
@@ -4532,7 +4534,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite",
- "tokio-util 0.6.0",
+ "tokio-util 0.6.1",
  "tower-service",
  "tracing",
  "tracing-futures",

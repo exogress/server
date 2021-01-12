@@ -26,6 +26,8 @@ chrono = { version = "0.4.11", features = ["serde"] }
 url = "2.1.1"
 bson = "1.1.0"
 tokio-stream = { version = "0.1.0" }
+prometheus = "0.11.0"
+lazy_static = "1.4.0"
 
 mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "master" }
 trust-dns-resolver = "0.20"
