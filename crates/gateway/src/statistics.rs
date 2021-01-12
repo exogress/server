@@ -106,6 +106,11 @@ lazy_static! {
         "Number of active requests processors"
     )
     .unwrap();
+    pub static ref UPTIME_SECS: Gauge = register_gauge!(
+        "gw_uptime_secs",
+        "Number of seconds since gateway was spawned"
+    )
+    .unwrap();
 }
 
 pub fn dump_prometheus() -> String {

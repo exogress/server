@@ -576,6 +576,17 @@ fn main() {
 
         tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
+        let spawned_at = chrono::Utc::now();
+
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(1)).await;
+                let passed_secs = (chrono::Utc::now() - spawned_at).num_seconds();
+
+                crate::statistics::UPTIME_SECS.set(passed_secs as f64);
+            }
+        });
+
         info!("Listening int HTTPS on https://{}", listen_int_https_addr);
         tokio::spawn(int_server::spawn(
             listen_int_https_addr,
