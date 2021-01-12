@@ -29,10 +29,12 @@ tokio-stream = { version = "0.1.0" }
 prometheus = "0.11.0"
 lazy_static = "1.4.0"
 
-mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "master" }
+#mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "master" }
+mongodb = { path = "../../deps/mongo-rust-driver" }
+
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
-warp = { path = '../../deps/warp' }
+warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio" }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }

@@ -176,7 +176,7 @@ impl AssistantClient {
                             }
                         }
                         Ok(msg) if msg.is_ping() => {
-                            ch_ws_tx.send(tungstenite::Message::Pong(vec![])).await?;
+                            //     pongs are automatic
                         }
                         Ok(msg) if msg.is_pong() => {
                             pong_tx.send(()).await?;

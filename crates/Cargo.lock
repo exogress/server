@@ -2058,7 +2058,6 @@ dependencies = [
 [[package]]
 name = "mongodb"
 version = "1.1.1"
-source = "git+https://github.com/rupansh/mongo-rust-driver.git?branch=master#0e4d9bb4b50ebc25de8fc1f18de90590c2eed11a"
 dependencies = [
  "async-trait",
  "base64 0.11.0",
@@ -4075,9 +4074,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-stream"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4cdeb73537e63f98adcd73138af75e3f368ccaecffaa29d7eb61b9f5a440457"
+checksum = "76066865172052eb8796c686f0b441a93df8b08d40a950b062ffb9a426f00edd"
 dependencies = [
  "futures-core",
  "pin-project-lite 0.2.4",
@@ -4513,8 +4512,8 @@ dependencies = [
 [[package]]
 name = "warp"
 version = "0.2.5"
+source = "git+https://github.com/aknuds1/warp.git?branch=chore/upgrade-tokio#5ac7a6254ca4000def32dc14824281b24c252832"
 dependencies = [
- "async-compression",
  "bytes 1.0.1",
  "futures",
  "headers",
@@ -4531,7 +4530,6 @@ dependencies = [
  "serde_json",
  "serde_urlencoded 0.7.0",
  "tokio 1.0.1",
- "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite",
  "tokio-util 0.6.1",

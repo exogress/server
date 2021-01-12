@@ -33,7 +33,7 @@ tokio-stream = { version = "0.1.0" }
 
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns"] }
-warp = { path = '../../deps/warp' }
+warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio" }
 
 exogress-server-common = { path = "../common" }
 

@@ -13,12 +13,12 @@ use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Instant;
 use stop_handle::{StopHandle, StopWait};
 use tokio::io::AsyncReadExt;
 use tokio::time::{sleep, Duration};
 use tracing_futures::Instrument;
 use warp::Filter;
-use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayCommonTlsConfig {
@@ -163,9 +163,7 @@ pub async fn server(
                                                         _ => {},
                                                     }
                                                 } else if msg.is_ping() {
-                                                    ch_ws_tx
-                                                        .send(warp::filters::ws::Message::pong(""))
-                                                        .await?;
+                                                    //     pongs are automatic
                                                 } else if msg.is_pong() {
                                                     pong_tx.send(()).await?;
                                                 } else {

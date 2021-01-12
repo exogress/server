@@ -10,9 +10,14 @@ impl MongoDbClient {
         let mongodb_client_options = mongodb::options::ClientOptions::parse(&url)
             .await
             .expect("mongodb init error");
+
+        info!("mongodb_client_options = {:?}", mongodb_client_options);
         let mongodb_client = mongodb::Client::with_options(mongodb_client_options)?;
 
         let db = mongodb_client.database(db);
+
+        let collections = db.list_collection_names(None).await;
+        info!("collections = {:?}", collections);
 
         Ok(MongoDbClient { db })
     }
