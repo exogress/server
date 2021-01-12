@@ -132,7 +132,17 @@ pub async fn server(
                                                     info!("received GW: {:?}", msg);
                                                     match msg {
                                                         WsFromGwMessage::Statistics { report } => {
-                                                            db_client.register_statistics_report(report, &gw_hostname, &gw_location).await?;
+                                                            info!("Will save statistics report to mongodb");
+                                                            tokio::spawn({
+                                                                shadow_clone!(db_client);
+                                                                shadow_clone!(gw_location);
+                                                                shadow_clone!(gw_hostname);
+
+                                                                async move {
+                                                                    let save_result = db_client.register_statistics_report(report, &gw_hostname, &gw_location).await;
+                                                                    info!("statistics report save result = {:?}", save_result);
+                                                                }
+                                                            });
                                                         }
                                                         _ => {},
                                                     }
