@@ -4514,6 +4514,7 @@ name = "warp"
 version = "0.2.5"
 source = "git+https://github.com/aknuds1/warp.git?branch=chore/upgrade-tokio#5ac7a6254ca4000def32dc14824281b24c252832"
 dependencies = [
+ "async-compression",
  "bytes 1.0.1",
  "futures",
  "headers",
@@ -4530,6 +4531,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded 0.7.0",
  "tokio 1.0.1",
+ "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite",
  "tokio-util 0.6.1",
