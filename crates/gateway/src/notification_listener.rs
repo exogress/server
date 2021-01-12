@@ -99,7 +99,7 @@ impl AssistantClient {
 
         let forward_to_ws = async move {
             while let Some(msg) = ch_ws_rx.next().await {
-                info!("Send to WS: {:?}", msg);
+                // info!("Send to WS: {:?}", msg);
                 ws_tx.send(msg).await?;
             }
 
@@ -119,7 +119,7 @@ impl AssistantClient {
 
             async move {
                 while let Some(msg) = ws_rx.next().await {
-                    info!("Received from WS: {:?}", msg);
+                    // info!("Received from WS: {:?}", msg);
 
                     match msg {
                         Err(e) => {

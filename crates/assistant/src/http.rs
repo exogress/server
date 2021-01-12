@@ -94,7 +94,7 @@ pub async fn server(
 
                                     let forward_to_ws = async move {
                                         while let Some(msg) = ch_ws_rx.next().await {
-                                            info!("send to WS: {:?}", msg);
+                                            // info!("send to WS: {:?}", msg);
                                             ws_tx.send(msg).await?;
                                         }
 
@@ -108,23 +108,41 @@ pub async fn server(
                                         pin_mut!(timeout_stream);
 
                                         while let Some(r) = timeout_stream.next().await {
-                                            info!("New pong received. Will wait next 30 seconds until the next one");
+                                            // info!("New pong received. Will wait next 30 seconds until the next one");
                                             r?;
                                         }
 
                                         Ok::<_, anyhow::Error>(())
                                     };
 
-                                    let msg_receiver = {
+                                    let (mut mongo_saver_tx, mut mongo_saver_rx) = mpsc::channel(128);
+
+                                    let mongo_saver = tokio::spawn({
                                         shadow_clone!(gw_hostname);
+                                        shadow_clone!(gw_location);
+
+                                        async move {
+                                            while let Some(report) = mongo_saver_rx.next().await {
+                                                info!("Start saving to mongodb");
+                                                tokio::time::timeout(
+                                                    Duration::from_secs(5),
+                                                    db_client.register_statistics_report(report, &gw_hostname, &gw_location)
+                                                ).await??;
+                                            }
+
+                                            Ok::<_, anyhow::Error>(())
+                                        }
+                                    });
+
+                                    let msg_receiver = {
                                         shadow_clone!(mut ch_ws_tx);
-                                        shadow_clone!(stop_handle);
+                                        shadow_clone!(gw_hostname);
 
                                         async move {
                                             while let Some(Ok(msg)) = ws_rx.next().await {
                                                 shadow_clone!(gw_hostname);
 
-                                                info!("received from WS: {:?}", msg);
+                                                // info!("received from WS: {:?}", msg);
 
                                                 if msg.is_text() {
                                                     let txt = msg.to_str().unwrap();
@@ -133,16 +151,7 @@ pub async fn server(
                                                     match msg {
                                                         WsFromGwMessage::Statistics { report } => {
                                                             info!("Will save statistics report to mongodb");
-                                                            tokio::spawn({
-                                                                shadow_clone!(db_client);
-                                                                shadow_clone!(gw_location);
-                                                                shadow_clone!(gw_hostname);
-
-                                                                async move {
-                                                                    let save_result = db_client.register_statistics_report(report, &gw_hostname, &gw_location).await;
-                                                                    info!("statistics report save result = {:?}", save_result);
-                                                                }
-                                                            });
+                                                            mongo_saver_tx.send(report).await?;
                                                         }
                                                         _ => {},
                                                     }
@@ -280,6 +289,9 @@ pub async fn server(
                                         },
                                         r = forward_to_ws => {
                                             warn!("WS forward_to_ws stopped: {:?}", r);
+                                        },
+                                        r = mongo_saver => {
+                                            warn!("mongo_saver stopped: {:?}", r);
                                         },
                                         r = ensure_pong_received => {
                                             warn!("WS ensure_pong_received stopped: {:?}", r);
