@@ -35,7 +35,7 @@ prometheus = "0.11.0"
 lazy_static = "1.4.0"
 trust-dns-resolver = "0.20"
 mimalloc = "0.1.22"
-warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio", features =["websocket", "tls", "compression"] }
+warp = { path = '../../deps/warp', features =["websocket", "tls", "compression"] }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils"], default-features = false }

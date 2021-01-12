@@ -30,7 +30,7 @@ tokio-stream = { version = "0.1.0" }
 mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "master" }
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
-warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio" }
+warp = { path = '../../deps/warp' }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }

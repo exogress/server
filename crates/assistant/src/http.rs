@@ -133,8 +133,9 @@ pub async fn server(
                                                         _ => {},
                                                     }
                                                 } else if msg.is_ping() {
-                                                    // better to react only on pongs. it's here until warp supports sending pongs
-                                                    pong_tx.send(()).await?;
+                                                    ch_ws_tx
+                                                        .send(warp::filters::ws::Message::pong(""))
+                                                        .await?;
                                                 } else if msg.is_pong() {
                                                     pong_tx.send(()).await?;
                                                 } else {
