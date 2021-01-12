@@ -47,12 +47,15 @@ impl Cache {
     pub async fn new(cache_dir: PathBuf) -> Result<Cache, anyhow::Error> {
         let cache_dir = tokio::fs::canonicalize(&cache_dir).await?;
 
+        info!("use cache-dir: {:?}", cache_dir);
+
         let mut sqlite_db_path = cache_dir.clone();
         sqlite_db_path.push("db");
         tokio::fs::create_dir_all(&sqlite_db_path)
             .await
             .expect("Error initializing cache DB");
         sqlite_db_path.push("cache.db3");
+        info!("sqlite path: {:?}", sqlite_db_path);
 
         let mut cache_files_dir = cache_dir.clone();
         cache_files_dir.push("files");

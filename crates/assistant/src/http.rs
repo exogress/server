@@ -94,6 +94,7 @@ pub async fn server(
 
                                     let forward_to_ws = async move {
                                         while let Some(msg) = ch_ws_rx.next().await {
+                                            info!("send to WS: {:?}", msg);
                                             ws_tx.send(msg).await?;
                                         }
 
@@ -113,7 +114,7 @@ pub async fn server(
                                         Ok::<_, anyhow::Error>(())
                                     };
 
-                                    let statistics_saver = {
+                                    let msg_receiver = {
                                         shadow_clone!(gw_hostname);
                                         shadow_clone!(mut ch_ws_tx);
                                         shadow_clone!(stop_handle);
@@ -121,6 +122,8 @@ pub async fn server(
                                         async move {
                                             while let Some(Ok(msg)) = ws_rx.next().await {
                                                 shadow_clone!(gw_hostname);
+
+                                                info!("received from WS: {:?}", msg);
 
                                                 if msg.is_text() {
                                                     let txt = msg.to_str().unwrap();
@@ -261,7 +264,7 @@ pub async fn server(
                                         r = notifier => {
                                             warn!("WS connection closed: {:?}", r);
                                         },
-                                        r = statistics_saver => {
+                                        r = msg_receiver => {
                                             warn!("WS statistics_saver closed: {:?}", r);
                                         },
                                         r = forward_to_ws => {
