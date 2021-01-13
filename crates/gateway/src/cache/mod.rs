@@ -30,8 +30,6 @@ pub struct Meta {
     headers: http::HeaderMap,
     #[serde(with = "http_serde::status_code")]
     status: http::StatusCode,
-
-    encryption_header: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,15 +81,17 @@ impl Cache {
 
         sqlite.execute(
             "CREATE TABLE IF NOT EXISTS  files (
-                  id                  INTEGER PRIMARY KEY,
-                  account_unique_id   TEXT NOT NULL,
-                  filename            TEXT NOT NULL,
-                  original_file_size  INT4 NOT NULL,
-                  file_size           INT4 NOT NULL,
-                  expires_at          INT4 NOT NULL,
-                  last_used_at        INT4 NOT NULL,
-                  meta                TEXT NOT NULL,
-                  used_times          INT4 NOT NULL
+                  id                       INTEGER PRIMARY KEY,
+                  account_unique_id        TEXT NOT NULL,
+                  filename                 TEXT NOT NULL,
+                  body_encryption_header   TEXT NOT NULL,
+                  meta_encryption_header   TEXT NOT NULL,
+                  original_file_size       INT4 NOT NULL,
+                  file_size                INT4 NOT NULL,
+                  expires_at               INT4 NOT NULL,
+                  last_used_at             INT4 NOT NULL,
+                  meta                     TEXT NOT NULL,
+                  used_times               INT4 NOT NULL
             )",
             params![],
         )?;
@@ -378,9 +378,13 @@ impl Cache {
             .unwrap_or(0u32)
         };
 
-        info!("account space used = {:?}", space_used);
+        let bytes_used = Byte::from_bytes(space_used.into());
+        info!(
+            "account space used = {}",
+            bytes_used.get_appropriate_unit(true)
+        );
 
-        Ok(Byte::from_bytes(space_used.into()))
+        Ok(bytes_used)
     }
 
     async fn add_file_without_checks(
@@ -388,11 +392,12 @@ impl Cache {
         account_unique_id: &AccountUniqueId,
         headers: &HeaderMap,
         status: StatusCode,
-        encryption_header: Header,
+        body_encryption_header: Header,
         valid_till: DateTime<Utc>,
         original_file_size: u32,
         temp_file_path: PathBuf,
         file_name: &str,
+        xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
     ) -> anyhow::Result<()> {
         let storage_path = self.storage_path(account_unique_id, file_name);
 
@@ -401,11 +406,21 @@ impl Cache {
         let meta = Meta {
             headers: headers.clone(),
             status: status.clone(),
-            encryption_header: hex::encode(encryption_header.as_ref()),
         };
 
-        let meta_json =
-            serde_json::to_string_pretty(&meta).expect("Serialization should never fail");
+        let meta_json = serde_json::to_vec(&meta).expect("Serialization should never fail");
+
+        let (mut enc_stream, meta_encryption_header) =
+            sodiumoxide::crypto::secretstream::Stream::init_push(xchacha20poly1305_secret_key)
+                .map_err(|_| anyhow!("could not init encryption"))?;
+
+        let encrypted_meta_json = enc_stream
+            .push(
+                meta_json.as_ref(),
+                None,
+                sodiumoxide::crypto::secretstream::Tag::Message,
+            )
+            .unwrap();
 
         {
             let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
@@ -425,8 +440,10 @@ impl Cache {
                                       expires_at,
                                       last_used_at,
                                       meta,
-                                      used_times
-                                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                                      used_times,
+                                      body_encryption_header,
+                                      meta_encryption_header
+                                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                                     ON CONFLICT(account_unique_id, filename) DO 
                                         UPDATE SET 
                                             file_size=?3,
@@ -434,7 +451,9 @@ impl Cache {
                                             expires_at=?5,
                                             last_used_at=?6,
                                             meta=?7,
-                                            used_times=?8;"
+                                            used_times=?8,
+                                            body_encryption_header=?9,
+                                            meta_encryption_header=?10;"
                                 .into(),
                             params![
                                 account_unique_id.to_string(),
@@ -443,8 +462,10 @@ impl Cache {
                                 original_file_size,
                                 valid_till.timestamp(),
                                 Utc::now().timestamp(),
-                                meta_json,
-                                0
+                                base64::encode(encrypted_meta_json),
+                                0,
+                                base64::encode(body_encryption_header.as_ref()),
+                                base64::encode(meta_encryption_header.as_ref()),
                             ],
                         )?,
                     )
@@ -511,6 +532,7 @@ impl Cache {
         encryption_header: Header,
         max_account_cache_size: Byte,
         valid_till: DateTime<Utc>,
+        xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
         temp_file_path: PathBuf,
     ) -> anyhow::Result<()> {
         // TODO: ensure GET/HEAD and success resp
@@ -570,6 +592,7 @@ impl Cache {
                     original_file_size,
                     temp_file_path,
                     file_name.as_str(),
+                    xchacha20poly1305_secret_key,
                 )
                 .await?;
 
@@ -585,7 +608,7 @@ impl Cache {
         }
     }
 
-    pub async fn read_from_cache(
+    pub async fn serve_from_cache(
         &self,
         account_unique_id: &AccountUniqueId,
         project_name: &ProjectName,
@@ -609,88 +632,118 @@ impl Cache {
             path_and_query,
         );
 
-        let (expires_at, meta, original_file_size) = {
+        let maybe_query_result = {
             let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
             shadow_clone!(account_unique_id);
             shadow_clone!(file_name);
+            shadow_clone!(xchacha20poly1305_secret_key);
 
             tokio::task::spawn_blocking(move || {
                 let conn = locked_sqlite_pool.get()?;
                 let mut stmt = conn.prepare(
-                    "SELECT expires_at, meta, original_file_size
+                    "SELECT expires_at, meta, original_file_size, body_encryption_header, meta_encryption_header
                     FROM files 
                     WHERE filename = ?1 AND account_unique_id = ?2;",
                 )?;
 
-                let (ts, meta_json, original_file_size) = stmt
+                if let Some((ts, encrypted_meta_json, original_file_size, encoded_body_encryption_header, encoded_meta_encryption_header)) = stmt
                     .query_row(params![file_name, account_unique_id.to_string()], |row| {
-                        Ok((row.get(0)?, row.get::<_, String>(1)?, row.get::<_, u32>(2)?))
-                    })?;
+                        Ok(
+                            (
+                                row.get(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, u32>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                            )
+                        )
+                    })
+                    .optional()? {
+                    let expires_at = Utc.timestamp(ts, 0);
+                    let body_encryption_header = sodiumoxide::crypto::secretstream::Header::from_slice(
+                        &base64::decode(encoded_body_encryption_header)?
+                    ).ok_or_else(|| anyhow!("failed to read encryption header"))?;
+                    let meta_encryption_header = sodiumoxide::crypto::secretstream::Header::from_slice(
+                        &base64::decode(encoded_meta_encryption_header)?
+                    ).ok_or_else(|| anyhow!("failed to read encryption header"))?;
 
-                let expires_at = Utc.timestamp(ts, 0);
-                let meta = serde_json::from_str::<Meta>(meta_json.as_str())?;
+                    let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
+                        &meta_encryption_header,
+                        &xchacha20poly1305_secret_key,
+                    )
+                        .map_err(|_| anyhow!("could not init decryption"))?;
 
-                Ok::<_, anyhow::Error>((expires_at, meta, original_file_size))
+                    let decrypted = dec_stream
+                        .pull(base64::decode(encrypted_meta_json)?.as_ref(), None)
+                        .map_err(|_| anyhow!("could not decrypt meta data"))?
+                        .0;
+
+                    let meta = serde_json::from_slice::<Meta>(decrypted.as_ref())?;
+
+                    Ok::<_, anyhow::Error>(Some((expires_at, meta, original_file_size, body_encryption_header)))
+                } else {
+                    return Ok(None);
+                }
             })
             .await??
         };
 
-        let now = Utc::now();
-        if expires_at < now {
-            return Ok(None);
-        }
-
-        self.mark_lru_used(account_unique_id, file_name.as_str())
-            .await?;
-
-        let storage_path = self.storage_path(account_unique_id, file_name.as_ref());
-
-        let header = sodiumoxide::crypto::secretstream::Header::from_slice(&hex::decode(
-            &meta.encryption_header,
-        )?)
-        .ok_or_else(|| anyhow!("failed to read encryption header"))?;
-
-        let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
-            &header,
-            xchacha20poly1305_secret_key,
-        )
-        .map_err(|_| anyhow!("could not init decryption"))?;
-
-        let reader = tokio::fs::File::open(&storage_path).await?;
-
-        let framed_reader = LengthDelimitedCodec::builder().new_read(reader);
-
-        let body = framed_reader
-            .map_ok(move |encrypted_frame| {
-                Ok::<Vec<u8>, io::Error>(
-                    dec_stream
-                        .pull(&encrypted_frame, None)
-                        .map_err(|_| {
-                            io::Error::new(
-                                io::ErrorKind::Other,
-                                "failed to decoded encrypted frame",
-                            )
-                        })?
-                        .0,
-                )
-            })
-            .take_while(|r| {
-                if let Err(e) = r {
-                    error!("Could not decode encrypted frame from storage: {}", e);
+        match maybe_query_result {
+            Some((expires_at, meta, original_file_size, body_encryption_header)) => {
+                let now = Utc::now();
+                if expires_at < now {
+                    return Ok(None);
                 }
-                futures::future::ready(r.is_ok())
-            })
-            .map(|r| r.unwrap());
 
-        let mut resp = Response::new(hyper::Body::wrap_stream(body));
-        *resp.status_mut() = meta.status;
-        *resp.headers_mut() = meta.headers;
-        if original_file_size > 0 {
-            resp.headers_mut()
-                .typed_insert::<typed_headers::ContentLength>(&typed_headers::ContentLength(
-                    original_file_size.into(),
-                ));
+                self.mark_lru_used(account_unique_id, file_name.as_str())
+                    .await?;
+
+                let storage_path = self.storage_path(account_unique_id, file_name.as_ref());
+
+                let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
+                    &body_encryption_header,
+                    xchacha20poly1305_secret_key,
+                )
+                .map_err(|_| anyhow!("could not init decryption"))?;
+
+                let reader = tokio::fs::File::open(&storage_path).await?;
+
+                let framed_reader = LengthDelimitedCodec::builder().new_read(reader);
+
+                let body = framed_reader
+                    .map_ok(move |encrypted_frame| {
+                        Ok::<Vec<u8>, io::Error>(
+                            dec_stream
+                                .pull(&encrypted_frame, None)
+                                .map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::Other,
+                                        "failed to decoded encrypted frame",
+                                    )
+                                })?
+                                .0,
+                        )
+                    })
+                    .take_while(|r| {
+                        if let Err(e) = r {
+                            error!("Could not decode encrypted frame from storage: {}", e);
+                        }
+                        futures::future::ready(r.is_ok())
+                    })
+                    .map(|r| r.unwrap());
+
+                let mut resp = Response::new(hyper::Body::wrap_stream(body));
+                *resp.status_mut() = meta.status;
+                *resp.headers_mut() = meta.headers;
+                if original_file_size > 0 {
+                    resp.headers_mut()
+                        .typed_insert::<typed_headers::ContentLength>(
+                            &typed_headers::ContentLength(original_file_size.into()),
+                        );
+                }
+                Ok(Some(resp))
+            }
+            None => Ok(None),
         }
-        Ok(Some(resp))
     }
 }

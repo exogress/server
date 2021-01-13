@@ -68,13 +68,14 @@ tame-oauth = "0.4.5"
 tokio-stream = { version = "0.1.0" }
 failure = "0.1.8"
 seahash = { git = "https://gitlab.redox-os.org/redox-os/seahash.git" }
-bs58 = "0.3.1"
+bs58 = "0.4"
 byte-unit = { version = "4.0.9", features = ["serde"] }
 sodiumoxide = "0.2.6"
 hex = "0.4.2"
 rusqlite = "0.24.2"
 r2d2 = "0.8.9"
 r2d2_sqlite = "0.17.0"
+base64 = "0.13.0"
 
 rustls-native-certs = "0.5"
 async-compression = { version = "0.3.7", features = ["gzip", "futures-write", "brotli", "deflate"] }

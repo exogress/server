@@ -149,7 +149,7 @@ impl RequestsProcessor {
                     .unwrap_or_else(|| typed_headers::AcceptEncoding(vec![]));
                 let cached_response = self
                     .cache
-                    .read_from_cache(
+                    .serve_from_cache(
                         &self.account_unique_id,
                         &self.project_name,
                         &self.mount_point_name,
@@ -163,22 +163,36 @@ impl RequestsProcessor {
                     )
                     .await;
 
-                if let Ok(Some(resp)) = cached_response {
-                    info!("found data in cache");
-                    // never actually respond from cache for now, just save
-                    if false && resp.status().is_success() {
-                        // respond from cache only if success response
+                match cached_response {
+                    Ok(Some(resp)) => {
+                        info!("found data in cache");
+                        // never actually respond from cache for now, just save
+                        if false && resp.status().is_success() {
+                            // respond from cache only if success response
 
-                        *res = resp;
+                            *res = resp;
 
-                        res.headers_mut()
-                            .insert("x-exg-edge-cached", "1".parse().unwrap());
+                            res.headers_mut()
+                                .insert("x-exg-edge-cached", "1".parse().unwrap());
 
-                        info!(
-                            "serve {:?} bytes from cache!",
-                            res.headers().typed_get::<typed_headers::ContentLength>()
-                        );
-                        return;
+                            let byte = Byte::from(
+                                res.headers()
+                                    .typed_get::<typed_headers::ContentLength>()
+                                    .unwrap()
+                                    .unwrap()
+                                    .0,
+                            );
+
+                            info!(
+                                "serve {} bytes from cache!",
+                                byte.get_appropriate_unit(true)
+                            );
+                            return;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!("Error reading data from cache: {}", e);
                     }
                 }
             }
@@ -365,6 +379,7 @@ impl RequestsProcessor {
                     header,
                     max_pop_cache_size_bytes,
                     Utc::now() + chrono::Duration::minutes(2),
+                    &xchacha20poly1305_secret_key,
                     tempfile_path,
                 )
                 .await;
