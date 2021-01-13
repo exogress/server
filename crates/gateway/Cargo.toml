@@ -76,6 +76,7 @@ rusqlite = "0.24.2"
 r2d2 = "0.8.9"
 r2d2_sqlite = "0.17.0"
 base64 = "0.13.0"
+etag = "2.0.5"
 
 rustls-native-certs = "0.5"
 async-compression = { version = "0.3.7", features = ["gzip", "futures-write", "brotli", "deflate"] }

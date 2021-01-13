@@ -155,6 +155,7 @@ impl RequestsProcessor {
                         &self.mount_point_name,
                         &handler.handler_name,
                         &handler.handler_checksum,
+                        req.headers(),
                         &accept,
                         &accept_encoding,
                         req.method(),
@@ -167,7 +168,10 @@ impl RequestsProcessor {
                     Ok(Some(resp)) => {
                         info!("found data in cache");
                         // never actually respond from cache for now, just save
-                        if false && resp.status().is_success() {
+                        if false
+                            && (resp.status().is_success()
+                                || resp.status() == StatusCode::NOT_MODIFIED)
+                        {
                             // respond from cache only if success response
 
                             *res = resp;
@@ -175,18 +179,16 @@ impl RequestsProcessor {
                             res.headers_mut()
                                 .insert("x-exg-edge-cached", "1".parse().unwrap());
 
-                            let byte = Byte::from(
-                                res.headers()
-                                    .typed_get::<typed_headers::ContentLength>()
-                                    .unwrap()
-                                    .unwrap()
-                                    .0,
-                            );
+                            if let Ok(Some(len)) =
+                                res.headers().typed_get::<typed_headers::ContentLength>()
+                            {
+                                let byte = Byte::from(len.0);
 
-                            info!(
-                                "serve {} bytes from cache!",
-                                byte.get_appropriate_unit(true)
-                            );
+                                info!(
+                                    "serve {} bytes from cache!",
+                                    byte.get_appropriate_unit(true)
+                                );
+                            }
                             return;
                         }
                     }

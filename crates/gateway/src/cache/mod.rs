@@ -1,8 +1,10 @@
 use byte_unit::Byte;
 use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashSet;
+use etag::EntityTag;
 use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
 use futures::{StreamExt, TryStreamExt};
+use http::header::{ETAG, IF_NONE_MATCH, LAST_MODIFIED};
 use http::{HeaderMap, Response, StatusCode};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, OptionalExtension};
@@ -91,6 +93,9 @@ impl Cache {
                   expires_at               INT4 NOT NULL,
                   last_used_at             INT4 NOT NULL,
                   meta                     TEXT NOT NULL,
+                  etag                     TEXT,
+                  is_weak_etag             BOOL,
+                  last_modified            INT8,
                   used_times               INT4 NOT NULL
             )",
             params![],
@@ -109,7 +114,7 @@ impl Cache {
             params![],
         )?;
         sqlite.execute(
-            "CREATE INDEX IF NOT EXISTS  expired_files ON files(account_unique_id, last_used_at);",
+            "CREATE INDEX IF NOT EXISTS expired_files ON files(account_unique_id, last_used_at);",
             params![],
         )?;
 
@@ -422,6 +427,19 @@ impl Cache {
             )
             .unwrap();
 
+        let etag: Option<EntityTag> = headers
+            .get(ETAG)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok());
+
+        let last_modified = headers.get(LAST_MODIFIED).and_then(|date| {
+            Some(
+                DateTime::parse_from_rfc2822(date.to_str().ok()?)
+                    .ok()?
+                    .timestamp(),
+            )
+        });
+
         {
             let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
 
@@ -442,8 +460,11 @@ impl Cache {
                                       meta,
                                       used_times,
                                       body_encryption_header,
-                                      meta_encryption_header
-                                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                      meta_encryption_header,
+                                      etag,
+                                      is_weak_etag,
+                                      last_modified
+                                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                                     ON CONFLICT(account_unique_id, filename) DO 
                                         UPDATE SET 
                                             file_size=?3,
@@ -453,7 +474,10 @@ impl Cache {
                                             meta=?7,
                                             used_times=?8,
                                             body_encryption_header=?9,
-                                            meta_encryption_header=?10;"
+                                            meta_encryption_header=?10,
+                                            etag=?11,
+                                            is_weak_etag=?12,
+                                            last_modified=?13;"
                                 .into(),
                             params![
                                 account_unique_id.to_string(),
@@ -466,6 +490,9 @@ impl Cache {
                                 0,
                                 base64::encode(body_encryption_header.as_ref()),
                                 base64::encode(meta_encryption_header.as_ref()),
+                                etag.as_ref().map(|e| e.tag().to_string()),
+                                etag.as_ref().map(|e| e.weak),
+                                last_modified,
                             ],
                         )?,
                     )
@@ -615,6 +642,7 @@ impl Cache {
         mount_point_name: &MountPointName,
         handler_name: &HandlerName,
         handler_checksum: &HandlerChecksum,
+        request_headers: &HeaderMap,
         accept: &typed_headers::Accept,
         accept_encoding: &typed_headers::AcceptEncoding,
         method: &http::Method,
@@ -641,37 +669,60 @@ impl Cache {
             tokio::task::spawn_blocking(move || {
                 let conn = locked_sqlite_pool.get()?;
                 let mut stmt = conn.prepare(
-                    "SELECT expires_at, meta, original_file_size, body_encryption_header, meta_encryption_header
+                    "SELECT
+                        expires_at,
+                        meta,
+                        original_file_size,
+                        body_encryption_header,
+                        meta_encryption_header,
+                        etag,
+                        is_weak_etag,
+                        last_modified
                     FROM files 
                     WHERE filename = ?1 AND account_unique_id = ?2;",
                 )?;
 
-                if let Some((ts, encrypted_meta_json, original_file_size, encoded_body_encryption_header, encoded_meta_encryption_header)) = stmt
+                if let Some((
+                    ts,
+                    encrypted_meta_json,
+                    original_file_size,
+                    encoded_body_encryption_header,
+                    encoded_meta_encryption_header,
+                    etag,
+                    is_weak_etag,
+                    last_modified,
+                )) = stmt
                     .query_row(params![file_name, account_unique_id.to_string()], |row| {
-                        Ok(
-                            (
-                                row.get(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, u32>(2)?,
-                                row.get::<_, String>(3)?,
-                                row.get::<_, String>(4)?,
-                            )
-                        )
+                        Ok((
+                            row.get(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u32>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, Option<bool>>(6)?,
+                            row.get::<_, Option<i64>>(7)?,
+                        ))
                     })
-                    .optional()? {
+                    .optional()?
+                {
                     let expires_at = Utc.timestamp(ts, 0);
-                    let body_encryption_header = sodiumoxide::crypto::secretstream::Header::from_slice(
-                        &base64::decode(encoded_body_encryption_header)?
-                    ).ok_or_else(|| anyhow!("failed to read encryption header"))?;
-                    let meta_encryption_header = sodiumoxide::crypto::secretstream::Header::from_slice(
-                        &base64::decode(encoded_meta_encryption_header)?
-                    ).ok_or_else(|| anyhow!("failed to read encryption header"))?;
+                    let body_encryption_header =
+                        sodiumoxide::crypto::secretstream::Header::from_slice(&base64::decode(
+                            encoded_body_encryption_header,
+                        )?)
+                        .ok_or_else(|| anyhow!("failed to read encryption header"))?;
+                    let meta_encryption_header =
+                        sodiumoxide::crypto::secretstream::Header::from_slice(&base64::decode(
+                            encoded_meta_encryption_header,
+                        )?)
+                        .ok_or_else(|| anyhow!("failed to read encryption header"))?;
 
                     let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
                         &meta_encryption_header,
                         &xchacha20poly1305_secret_key,
                     )
-                        .map_err(|_| anyhow!("could not init decryption"))?;
+                    .map_err(|_| anyhow!("could not init decryption"))?;
 
                     let decrypted = dec_stream
                         .pull(base64::decode(encrypted_meta_json)?.as_ref(), None)
@@ -680,7 +731,21 @@ impl Cache {
 
                     let meta = serde_json::from_slice::<Meta>(decrypted.as_ref())?;
 
-                    Ok::<_, anyhow::Error>(Some((expires_at, meta, original_file_size, body_encryption_header)))
+                    let stored_etag = match (is_weak_etag, etag) {
+                        (Some(true), Some(tag)) => Some(EntityTag::weak(&tag)),
+                        (Some(false), Some(tag)) => Some(EntityTag::strong(&tag)),
+                        _ => None,
+                    };
+                    let stored_last_modified = last_modified.map(|lm| Utc.timestamp(lm, 0));
+
+                    Ok::<_, anyhow::Error>(Some((
+                        expires_at,
+                        meta,
+                        original_file_size,
+                        body_encryption_header,
+                        stored_last_modified,
+                        stored_etag,
+                    )))
                 } else {
                     return Ok(None);
                 }
@@ -689,7 +754,14 @@ impl Cache {
         };
 
         match maybe_query_result {
-            Some((expires_at, meta, original_file_size, body_encryption_header)) => {
+            Some((
+                expires_at,
+                meta,
+                original_file_size,
+                body_encryption_header,
+                maybe_stored_last_modified,
+                maybe_stored_etag,
+            )) => {
                 let now = Utc::now();
                 if expires_at < now {
                     return Ok(None);
@@ -697,6 +769,43 @@ impl Cache {
 
                 self.mark_lru_used(account_unique_id, file_name.as_str())
                     .await?;
+
+                let req_if_none_match: Vec<EntityTag> = request_headers
+                    .get_all(IF_NONE_MATCH)
+                    .iter()
+                    .filter_map(|v| v.to_str().ok().and_then(|r| r.parse().ok()))
+                    .collect();
+
+                let req_last_modified = request_headers
+                    .get(LAST_MODIFIED)
+                    .and_then(|date| Some(DateTime::parse_from_rfc2822(date.to_str().ok()?).ok()?));
+
+                let mut conditional_response_matches = false;
+                if let Some(stored_etag) = maybe_stored_etag {
+                    if req_if_none_match
+                        .iter()
+                        .filter(|&provided_etag| stored_etag.weak_eq(provided_etag))
+                        .next()
+                        .is_some()
+                    {
+                        info!("etag matches the cached version - send non-modified");
+                        conditional_response_matches = true;
+                    }
+                }
+                if let (Some(stored_last_modified), Some(provided_last_modified)) =
+                    (maybe_stored_last_modified, req_last_modified)
+                {
+                    if stored_last_modified < provided_last_modified {
+                        info!("last-modified matches the cached version - send non-modified");
+                        conditional_response_matches = true;
+                    }
+                }
+
+                if conditional_response_matches {
+                    let mut resp = Response::new(hyper::Body::empty());
+                    *resp.status_mut() = StatusCode::NOT_MODIFIED;
+                    return Ok(Some(resp));
+                }
 
                 let storage_path = self.storage_path(account_unique_id, file_name.as_ref());
 
