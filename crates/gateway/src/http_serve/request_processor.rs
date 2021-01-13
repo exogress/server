@@ -33,7 +33,8 @@ use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
 use http::header::{
     HeaderName, ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_DISPOSITION, CONTENT_LENGTH,
-    CONTENT_TYPE, COOKIE, HOST, LOCATION, SET_COOKIE,
+    CONTENT_TYPE, COOKIE, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, SET_COOKIE, TE,
+    TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
@@ -573,6 +574,16 @@ impl fmt::Debug for ResolvedProxy {
     }
 }
 
+const HOP_BY_HOP_HEADERS: [HeaderName; 7] = [
+    CONNECTION,
+    PROXY_AUTHENTICATE,
+    PROXY_AUTHORIZATION,
+    TE,
+    TRAILER,
+    TRANSFER_ENCODING,
+    UPGRADE,
+];
+
 fn copy_headers_from_proxy_res_to_res(
     proxy_headers: &HeaderMap,
     res: &mut Response<Body>,
@@ -601,6 +612,10 @@ fn copy_headers_from_proxy_res_to_res(
             }
         }
 
+        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
+            continue;
+        }
+
         res.headers_mut()
             .append(incoming_header_name, incoming_header_value.clone());
     }
@@ -612,6 +627,17 @@ fn copy_headers_to_proxy_req(
     is_upgrade_allowed: bool,
 ) {
     for (incoming_header_name, incoming_header_value) in req.headers() {
+        // https://tools.ietf.org/html/rfc2616#section-13.5.1v
+        // The following HTTP/1.1 headers are hop-by-hop headers:
+        //     - Connection
+        //     - Keep-Alive
+        //     - Proxy-Authenticate
+        //     - Proxy-Authorization
+        //     - TE
+        //     - Trailers
+        //     - Transfer-Encoding
+        //     - Upgrade
+
         if incoming_header_name == ACCEPT_ENCODING || incoming_header_name == HOST {
             continue;
         }
@@ -629,6 +655,10 @@ fn copy_headers_to_proxy_req(
             } else {
                 continue;
             }
+        }
+
+        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
+            continue;
         }
 
         proxy_req
