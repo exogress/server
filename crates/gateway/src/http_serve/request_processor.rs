@@ -25,6 +25,7 @@ use exogress_common::entities::{
     StaticResponseName, Upstream,
 };
 use exogress_common::tunnel::ConnectTarget;
+use exogress_server_common::presence;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::{mpsc, oneshot};
 use futures::{SinkExt, StreamExt, TryStreamExt};
@@ -110,6 +111,7 @@ pub struct RequestsProcessor {
     mount_point_name: MountPointName,
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     max_pop_cache_size_bytes: Byte,
+    presence_client: presence::Client,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -562,6 +564,7 @@ struct ResolvedProxy {
     config_id: ConfigId,
     individual_hostname: SmolStr,
     public_hostname: SmolStr,
+    presence_client: presence::Client,
 }
 
 impl fmt::Debug for ResolvedProxy {
@@ -574,6 +577,16 @@ impl fmt::Debug for ResolvedProxy {
     }
 }
 
+/// https://tools.ietf.org/html/rfc2616#section-13.5.1v
+/// The following HTTP/1.1 headers are hop-by-hop headers:
+///     - Connection
+///     - Keep-Alive
+///     - Proxy-Authenticate
+///     - Proxy-Authorization
+///     - TE
+///     - Trailers
+///     - Transfer-Encoding
+///     - Upgrade
 const HOP_BY_HOP_HEADERS: [HeaderName; 7] = [
     CONNECTION,
     PROXY_AUTHENTICATE,
@@ -627,17 +640,6 @@ fn copy_headers_to_proxy_req(
     is_upgrade_allowed: bool,
 ) {
     for (incoming_header_name, incoming_header_value) in req.headers() {
-        // https://tools.ietf.org/html/rfc2616#section-13.5.1v
-        // The following HTTP/1.1 headers are hop-by-hop headers:
-        //     - Connection
-        //     - Keep-Alive
-        //     - Proxy-Authenticate
-        //     - Proxy-Authorization
-        //     - TE
-        //     - Trailers
-        //     - Transfer-Encoding
-        //     - Upgrade
-
         if incoming_header_name == ACCEPT_ENCODING || incoming_header_name == HOST {
             continue;
         }
@@ -789,10 +791,23 @@ impl ResolvedProxy {
                     {
                         Some(http_client) => http_client,
                         None => {
-                            info!(
+                            warn!(
                                 "Failed to connect to instance {}. Try next instance",
                                 instance_id
                             );
+                            tokio::spawn({
+                                let presence_client = self.presence_client.clone();
+                                shadow_clone!(instance_id);
+
+                                async move {
+                                    info!("Request instance {} to go offline", instance_id);
+                                    let res = presence_client.set_offline(&instance_id, "").await;
+                                    info!(
+                                        "Request instance {} to go offline res = {:?}",
+                                        instance_id, res
+                                    );
+                                }
+                            });
                             // TODO: request instance deletion
                             continue 'instances;
                         }
@@ -2065,6 +2080,7 @@ impl RequestsProcessor {
         maybe_identity: Option<Vec<u8>>,
         traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
         cache: Cache,
+        presence_client: presence::Client,
         resolver: TokioAsyncResolver,
     ) -> anyhow::Result<RequestsProcessor> {
         let xchacha20poly1305_secret_key =
@@ -2205,6 +2221,8 @@ impl RequestsProcessor {
             shadow_clone!(rules_counter);
             shadow_clone!(resolver);
             shadow_clone!(traffic_counters);
+            shadow_clone!(presence_client);
+
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
                 resolver: resolver.clone(),
                 counters: traffic_counters.clone(),
@@ -2305,6 +2323,7 @@ impl RequestsProcessor {
                                     },
                                     individual_hostname: individual_hostname.clone(),
                                     public_hostname: mount_point_base_url.host().into(),
+                                    presence_client: presence_client.clone(),
                                 })
                             }
                             ClientHandlerVariant::S3Bucket(s3_bucket) => {
@@ -2428,6 +2447,7 @@ impl RequestsProcessor {
             mount_point_name,
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,
+            presence_client,
         })
     }
 }

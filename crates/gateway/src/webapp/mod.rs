@@ -15,6 +15,7 @@ use exogress_common::entities::{
     AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName,
     Upstream,
 };
+use exogress_server_common::presence;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
@@ -57,6 +58,7 @@ pub struct Client {
     rules_counters: AccountCounters,
 
     traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    presence_client: presence::Client,
     cache: Cache,
     resolver: TokioAsyncResolver,
 }
@@ -207,6 +209,12 @@ impl Client {
         cache: Cache,
         resolver: TokioAsyncResolver,
     ) -> Self {
+        let presence_client = presence::Client::new(
+            base_url.clone(),
+            "FIXME: not provided".to_string(),
+            maybe_identity.clone(),
+        );
+
         let mut builder = reqwest::ClientBuilder::new()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
@@ -232,6 +240,7 @@ impl Client {
             public_gw_base_url: public_gw_base_url.clone(),
             rules_counters,
             traffic_counters_tx,
+            presence_client,
             cache,
             resolver,
         }
@@ -330,6 +339,7 @@ impl Client {
                 let maybe_identity = self.maybe_identity.clone();
                 let public_gw_base_url = self.public_gw_base_url.clone();
                 let rules_counters = self.rules_counters.clone();
+                let presence_client = self.presence_client.clone();
 
                 let requests_processors_registry = self.requests_processors_registry.clone();
 
@@ -349,6 +359,7 @@ impl Client {
                         shadow_clone!(rules_counters);
                         shadow_clone!(config_error);
                         shadow_clone!(cache);
+                        shadow_clone!(presence_client);
 
                         async move {
                             let retrieval_started_at = Instant::now();
@@ -406,6 +417,7 @@ impl Client {
                                                         maybe_identity,
                                                         traffic_counters_tx.clone(),
                                                         cache,
+                                                        presence_client.clone(),
                                                         resolver,
                                                     ) {
                                                         Ok(rp) => rp,

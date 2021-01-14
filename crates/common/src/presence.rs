@@ -2,13 +2,14 @@
 use exogress_common::config_core::ClientConfig;
 use exogress_common::entities::{
     AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProjectName,
-    Upstream,
+    SmolStr, Upstream,
 };
 use exogress_common::signaling::ProbeHealthStatus;
 use hashbrown::HashMap;
 use reqwest::{Identity, Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -16,16 +17,17 @@ pub struct Nothing {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstanceRegistered {
-    pub(crate) instance_id: InstanceId,
-    pub(crate) account_unique_id: AccountUniqueId,
-    pub(crate) access_key_id: AccessKeyId,
+    pub instance_id: InstanceId,
+    pub account_unique_id: AccountUniqueId,
+    pub access_key_id: AccessKeyId,
 }
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    client: reqwest::Client,
-    base_url: Url,
-    name: String,
+    pub client: reqwest::Client,
+    pub base_url: Arc<Url>,
+    // TODO: signaler_id rework, so that signaler_id may not be provided
+    pub signaler_id: SmolStr,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -66,8 +68,8 @@ impl Client {
 
         Client {
             client: builder.build().unwrap(),
-            base_url: webapp_base_url,
-            name,
+            base_url: Arc::new(webapp_base_url),
+            signaler_id: name.into(),
         }
     }
 
@@ -78,7 +80,7 @@ impl Client {
         authorization: Option<&str>,
         body: &T,
     ) -> Result<R, Error> {
-        let mut req = self.client.request(method, url).json(body);
+        let mut req = self.client.request(method, url.clone()).json(body);
 
         if let Some(auth) = authorization {
             req = req.header("Authorization", auth.to_string());
@@ -100,14 +102,14 @@ impl Client {
     }
 
     async fn execute_signaler(&self, method: Method) -> Result<Nothing, Error> {
-        let mut url = self.base_url.clone();
+        let mut url = (&*self.base_url).clone();
 
         {
             let mut segments = url.path_segments_mut().unwrap();
             segments.push("int_api");
             segments.push("v1");
             segments.push("signalers");
-            segments.push(self.name.as_str());
+            segments.push(self.signaler_id.as_str());
         }
 
         self.execute_url(url, method, None, &()).await
@@ -115,22 +117,22 @@ impl Client {
 
     async fn execute_presence<T: Serialize + ?Sized, R: Serialize + DeserializeOwned + Sized>(
         &self,
+        with_signaler_id: bool,
         method: Method,
         instance_id: Option<&InstanceId>,
         authorization: &str,
         params: Option<&str>,
         config: &T,
     ) -> Result<R, Error> {
-        let mut url: Url = self.base_url.clone();
+        let mut url: Url = (&*self.base_url).clone();
 
         {
             let mut segments = url.path_segments_mut().unwrap();
-            segments
-                .push("int_api")
-                .push("v1")
-                .push("signalers")
-                .push(self.name.as_str())
-                .push("instances");
+            segments.push("int_api").push("v1");
+            if with_signaler_id {
+                segments.push("signalers").push(self.signaler_id.as_str());
+            }
+            segments.push("instances");
             if let Some(instance_id) = instance_id {
                 segments.push(instance_id.to_string().as_str());
             }
@@ -166,6 +168,7 @@ impl Client {
         );
 
         self.execute_presence(
+            true,
             Method::POST,
             None,
             authorization,
@@ -176,14 +179,14 @@ impl Client {
     }
 
     pub async fn signaler_alive(&self) -> Result<Nothing, Error> {
-        let mut url = self.base_url.clone();
+        let mut url = (&*self.base_url).clone();
         {
             let mut segments = url.path_segments_mut().unwrap();
             segments
                 .push("int_api")
                 .push("v1")
                 .push("signalers")
-                .push(self.name.as_str())
+                .push(self.signaler_id.as_str())
                 .push("alive");
         }
 
@@ -195,8 +198,15 @@ impl Client {
         instance_id: &InstanceId,
         authorization: &str,
     ) -> Result<Nothing, Error> {
-        self.execute_presence(Method::DELETE, Some(instance_id), authorization, None, &())
-            .await
+        self.execute_presence(
+            false,
+            Method::DELETE,
+            Some(instance_id),
+            authorization,
+            None,
+            &(),
+        )
+        .await
     }
 
     pub async fn update_presence(
@@ -205,12 +215,19 @@ impl Client {
         authorization: &str,
         config: &ClientConfig,
     ) -> Result<Nothing, Error> {
-        self.execute_presence(Method::PUT, Some(instance_id), authorization, None, config)
-            .await
+        self.execute_presence(
+            false,
+            Method::PUT,
+            Some(instance_id),
+            authorization,
+            None,
+            config,
+        )
+        .await
     }
 
     pub async fn report_health(&self, report: UpstreamHealthReport) -> Result<(), Error> {
-        let mut url = self.base_url.clone();
+        let mut url = (&*self.base_url).clone();
         url.path_segments_mut()
             .unwrap()
             .push("int_api")

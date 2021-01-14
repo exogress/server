@@ -783,7 +783,7 @@ dependencies = [
  "hostname",
  "http 0.2.3",
  "http-serde",
- "humantime 2.0.1",
+ "humantime 2.1.0",
  "humantime-serde",
  "hyper 0.14.2",
  "jsonwebtoken",
@@ -961,7 +961,9 @@ dependencies = [
  "clap",
  "exogress-common",
  "futures",
+ "hashbrown",
  "http 0.2.3",
+ "reqwest 0.11.0",
  "rustls-native-certs",
  "sentry",
  "serde",
@@ -973,6 +975,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-dns-resolver",
  "url",
+ "urlencoding",
 ]
 
 [[package]]
@@ -1375,13 +1378,13 @@ dependencies = [
 
 [[package]]
 name = "headers"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed18eb2459bf1a09ad2d6b1547840c3e5e62882fa09b9a6a20b1de8e3228848f"
+checksum = "62689dc57c7456e69712607ffcbd0aa1dfcccf9af73727e9b25bc1825375cac3"
 dependencies = [
- "base64 0.12.3",
+ "base64 0.13.0",
  "bitflags",
- "bytes 0.5.6",
+ "bytes 1.0.1",
  "headers-core",
  "http 0.2.3",
  "mime",
@@ -1528,9 +1531,9 @@ dependencies = [
 
 [[package]]
 name = "humantime"
-version = "2.0.1"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c1ad908cc71012b7bea4d0c53ba96a8cba9962f048fa68d143376143d863b7a"
+checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 
 [[package]]
 name = "humantime-serde"
@@ -1538,7 +1541,7 @@ version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac34a56cfd4acddb469cc7fff187ed5ac36f498ba085caf8bbc725e3ff474058"
 dependencies = [
- "humantime 2.0.1",
+ "humantime 2.1.0",
  "serde",
 ]
 
@@ -2609,9 +2612,9 @@ checksum = "dbf0c48bc1d91375ae5c3cd81e3722dff1abcf81a30960240640d223f59fe0e5"
 
 [[package]]
 name = "proc-macro-nested"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eba180dafb9038b050a4c280019bbedf9f2467b61e5d892dcad585bb57aadc5a"
+checksum = "bc881b2c22681370c6a780e47af9840ef841837bc98118431d4e1868bd0c1086"
 
 [[package]]
 name = "proc-macro2"

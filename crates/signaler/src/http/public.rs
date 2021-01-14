@@ -10,10 +10,10 @@ use exogress_common::signaling::{
 };
 use warp::Filter;
 
-use crate::presence;
-use crate::presence::{Error, InstanceRegistered, UpstreamHealthReport};
 use crate::termination::StopReason;
 use exogress_common::common_utils::backoff::Backoff;
+use exogress_server_common::presence;
+use exogress_server_common::presence::{Error, InstanceRegistered, UpstreamHealthReport};
 use shadow_clone::shadow_clone;
 use stop_handle::{StopHandle, StopWait};
 
