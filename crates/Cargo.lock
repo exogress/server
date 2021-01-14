@@ -963,6 +963,7 @@ dependencies = [
  "futures",
  "hashbrown",
  "http 0.2.3",
+ "lazy_static",
  "reqwest 0.11.0",
  "rustls-native-certs",
  "sentry",

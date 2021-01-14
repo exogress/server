@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use futures::channel::mpsc;
 use futures::{pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 
 use exogress_common::entities::{AccountName, ProjectName};
 use exogress_common::signaling::{
@@ -48,7 +48,7 @@ pub async fn server(
 
                 ws.on_upgrade({
                     move |mut websocket| async move {
-                        let start_time = Instant::now();
+                        let start_time = crate::statistics::CHANELS_ESTABLISHMENT_TIME.start_timer();
 
                         let wait_first = async move {
                             loop {
@@ -168,8 +168,7 @@ pub async fn server(
                                 };
 
                                 crate::statistics::ACTIVE_CHANNELS.inc();
-                                crate::statistics::CHANELS_ESTABLISHMENT_TIME_MS
-                                    .observe(start_time.elapsed().as_millis() as f64);
+                                start_time.observe_duration();
 
                                 let r = {
                                     shadow_clone!(presence_client);

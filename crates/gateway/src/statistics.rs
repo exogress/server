@@ -1,3 +1,4 @@
+use exogress_server_common::prometheus::DEFAULT_TIME_BUCKETS;
 use prometheus::{Encoder, Gauge, Histogram, IntCounter, IntCounterVec, TextEncoder};
 
 pub const HTTP_ERROR_REQUEST_ERROR: &str = "request_error";
@@ -5,24 +6,20 @@ pub const HTTP_ERROR_BAD_RESPONSE: &str = "bad_response";
 pub const HTTP_ERROR_BAD_STATUS: &str = "bad_status";
 
 lazy_static! {
-    pub static ref API_REQUEST_TIME_HISTOGRAM: Vec<f64> = vec![
-        10.0, 20.0, 30.0, 40.0, 50.0, 70.0, 100.0, 150.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
-        10000.0, 20000.0
-    ];
     pub static ref CONFIGS_CACHE_HIT: IntCounter =
         register_int_counter!("gw_configs_cache_hit", "Configs cache hit").unwrap();
     pub static ref CONFIGS_CACHE_MISS: IntCounter =
         register_int_counter!("gw_configs_cache_miss", "Configs cache miss").unwrap();
-    pub static ref CONFIGS_RETRIEVAL_TIME_MS: Histogram = register_histogram!(
-        "gw_configs_retrieval_time_ms",
-        "Time take to retrieve the config (in milliseconds)",
-        API_REQUEST_TIME_HISTOGRAM.clone()
+    pub static ref CONFIGS_RETRIEVAL_TIME: Histogram = register_histogram!(
+        "gw_configs_retrieval_time",
+        "Time take to retrieve the config",
+        DEFAULT_TIME_BUCKETS.clone()
     )
     .unwrap();
-    pub static ref TUNNEL_ESTABLISHMENT_TIME_MS: Histogram = register_histogram!(
-        "gw_tunnel_establishment_time_ms",
-        "Time take to establish tunnels with instances (in milliseconds)",
-        API_REQUEST_TIME_HISTOGRAM.clone()
+    pub static ref TUNNEL_ESTABLISHMENT_TIME: Histogram = register_histogram!(
+        "gw_tunnel_establishment_time",
+        "Time take to establish tunnels with instances",
+        DEFAULT_TIME_BUCKETS.clone()
     )
     .unwrap();
     pub static ref CONFIGS_RETRIEVAL_SUCCESS: IntCounter = register_int_counter!(
@@ -47,10 +44,10 @@ lazy_static! {
         register_int_counter!("gw_certificates_cache_hit", "Certificates cache hit").unwrap();
     pub static ref CERTIFICATES_CACHE_MISS: IntCounter =
         register_int_counter!("gw_certificates_cache_miss", "Certificates cache miss").unwrap();
-    pub static ref CERTIFICATES_RETRIEVAL_TIME_MS: Histogram = register_histogram!(
-        "gw_certificates_retrieval_time_ms",
-        "Time take to retrieve the certificate (in milliseconds)",
-        API_REQUEST_TIME_HISTOGRAM.clone()
+    pub static ref CERTIFICATES_RETRIEVAL_TIME: Histogram = register_histogram!(
+        "gw_certificates_retrieval_time",
+        "Time take to retrieve the certificate",
+        DEFAULT_TIME_BUCKETS.clone()
     )
     .unwrap();
     pub static ref CERTIFICATES_RETRIEVAL_SUCCESS: IntCounter = register_int_counter!(

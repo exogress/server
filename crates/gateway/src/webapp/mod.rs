@@ -29,7 +29,7 @@ use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{timeout, Instant};
+use tokio::time::timeout;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
@@ -362,7 +362,7 @@ impl Client {
                         shadow_clone!(presence_client);
 
                         async move {
-                            let retrieval_started_at = Instant::now();
+                            let retrieval_started_at = crate::statistics::CONFIGS_RETRIEVAL_TIME.start_timer();
 
                             info!(
                                 "Initiating new request to retrieve mapping for {}",
@@ -479,8 +479,7 @@ impl Client {
                                 }
                             }
 
-                            crate::statistics::CONFIGS_RETRIEVAL_TIME_MS
-                                .observe(retrieval_started_at.elapsed().as_millis() as f64);
+                            retrieval_started_at.observe_duration();
 
                             ready_event.set();
                         }
@@ -553,7 +552,8 @@ impl Client {
                     let domain = domain.clone();
 
                     async move {
-                        let start_retrieval = Instant::now();
+                        let start_retrieval =
+                            crate::statistics::CERTIFICATES_RETRIEVAL_TIME.start_timer();
 
                         match client.retrieve_certificate(&domain).await {
                             Ok(certs) => {
@@ -592,8 +592,7 @@ impl Client {
                             }
                         }
 
-                        crate::statistics::CERTIFICATES_RETRIEVAL_TIME_MS
-                            .observe(start_retrieval.elapsed().as_millis() as f64);
+                        start_retrieval.observe_duration();
 
                         evt.set();
                     }

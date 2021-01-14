@@ -13,7 +13,6 @@ use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Instant;
 use stop_handle::{StopHandle, StopWait};
 use tokio::io::AsyncReadExt;
 use tokio::time::{sleep, Duration};
@@ -80,7 +79,7 @@ pub async fn server(
 
                 let gw_location = query.get("location").unwrap().clone();
 
-                let start_time = Instant::now();
+                let start_time = crate::statistics::CHANELS_ESTABLISHMENT_TIME.start_timer();
                 ws.on_upgrade(move |websocket| {
                     {
                         shadow_clone!(gw_hostname);
@@ -126,15 +125,14 @@ pub async fn server(
                                         async move {
                                             while let Some(report) = mongo_saver_rx.next().await {
                                                 info!("Start saving to mongodb");
-                                                let start_time = Instant::now();
+                                                let start_time = crate::statistics::STATISTICS_REPORT_SAVE_TIME.start_timer();
 
                                                 tokio::time::timeout(
                                                     Duration::from_secs(5),
                                                     db_client.register_statistics_report(report, &gw_hostname, &gw_location)
                                                 ).await??;
 
-                                                crate::statistics::STATISTICS_REPORT_SAVE_TIME_MS
-                                                    .observe(start_time.elapsed().as_millis() as f64);
+                                                start_time.observe_duration();
                                             }
 
                                             Ok::<_, anyhow::Error>(())
@@ -286,8 +284,7 @@ pub async fn server(
                                     };
 
                                     crate::statistics::ACTIVE_CHANNELS.inc();
-                                    crate::statistics::CHANELS_ESTABLISHMENT_TIME_MS
-                                        .observe(start_time.elapsed().as_millis() as f64);
+                                    start_time.observe_duration();
 
                                     tokio::select! {
                                         r = notifier => {
