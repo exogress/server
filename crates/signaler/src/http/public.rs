@@ -201,6 +201,12 @@ pub async fn server(
                                                 account_unique_id, channel_connect_params.project
                                             ))
                                             .await?;
+                                        termination_pubsub
+                                            .subscribe(format!(
+                                                "instance_unreachable.{}",
+                                                instance_id
+                                            ))
+                                            .await?;
 
                                         let mut from_redis_termination_notifications =
                                             termination_pubsub.on_message();
@@ -394,7 +400,7 @@ pub async fn server(
 
                                 for _ in 0..10 {
                                     if let Err(e) = presence_client
-                                        .set_offline(&instance_id, &authorization)
+                                        .set_offline(&instance_id, &authorization, false)
                                         .await
                                     {
                                         error!("could not unset presence: {}", e);

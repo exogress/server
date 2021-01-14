@@ -49,7 +49,6 @@ use exogress_server_common::assistant::{
     RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage,
 };
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
-use exogress_server_common::presence;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;

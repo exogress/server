@@ -111,7 +111,6 @@ pub struct RequestsProcessor {
     mount_point_name: MountPointName,
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     max_pop_cache_size_bytes: Byte,
-    presence_client: presence::Client,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -801,7 +800,8 @@ impl ResolvedProxy {
 
                                 async move {
                                     info!("Request instance {} to go offline", instance_id);
-                                    let res = presence_client.set_offline(&instance_id, "").await;
+                                    let res =
+                                        presence_client.set_offline(&instance_id, "", true).await;
                                     info!(
                                         "Request instance {} to go offline res = {:?}",
                                         instance_id, res
@@ -2447,7 +2447,6 @@ impl RequestsProcessor {
             mount_point_name,
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,
-            presence_client,
         })
     }
 }

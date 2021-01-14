@@ -197,6 +197,7 @@ fn main() {
             .fuse();
 
             println!("Listening public HTTP on {}", listen_public_http_addr);
+            println!("Use redis at {} for notification", redis_addr);
 
             let redis_client = Client::open(redis_addr.as_str()).unwrap();
 

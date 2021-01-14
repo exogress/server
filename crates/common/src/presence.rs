@@ -197,13 +197,18 @@ impl Client {
         &self,
         instance_id: &InstanceId,
         authorization: &str,
+        is_unreachable: bool,
     ) -> Result<Nothing, Error> {
         self.execute_presence(
             false,
             Method::DELETE,
             Some(instance_id),
             authorization,
-            None,
+            if is_unreachable {
+                Some("unreachable=1")
+            } else {
+                None
+            },
             &(),
         )
         .await
