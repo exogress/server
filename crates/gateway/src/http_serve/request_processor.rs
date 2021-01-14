@@ -773,100 +773,114 @@ impl ResolvedProxy {
             *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
         }
 
-        let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
+        'instances: loop {
+            let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
 
-        match selected_instance_id {
-            Some(instance_id) => {
-                let http_client = try_option_or_exception!(
-                    self.client_tunnels
+            match selected_instance_id {
+                Some(instance_id) => {
+                    let http_client = match self
+                        .client_tunnels
                         .retrieve_http_connector(
                             &self.config_id,
                             &instance_id,
                             self.individual_hostname.clone(),
                         )
-                        .await,
-                    "proxy-error:instance-unreachable"
-                );
+                        .await
+                    {
+                        Some(http_client) => http_client,
+                        None => {
+                            info!(
+                                "Failed to connect to instance {}. Try next instance",
+                                instance_id
+                            );
+                            // TODO: request instance deletion
+                            continue 'instances;
+                        }
+                    };
 
-                let mut proxy_res = try_or_exception!(
-                    http_client.request(proxy_req).await,
-                    "proxy-error:instance-unreachable"
-                );
+                    let mut proxy_res = try_or_exception!(
+                        http_client.request(proxy_req).await,
+                        "proxy-error:upstream-unreachable"
+                    );
 
-                copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, true);
+                    copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, true);
 
-                res.headers_mut()
-                    .append("x-exg-proxied", "1".parse().unwrap());
+                    res.headers_mut()
+                        .append("x-exg-proxied", "1".parse().unwrap());
 
-                *res.status_mut() = proxy_res.status();
+                    *res.status_mut() = proxy_res.status();
 
-                if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
-                    let req_body = mem::replace(req.body_mut(), Body::empty());
-                    let req_for_upgrade = Request::new(req_body);
+                    if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
+                        let req_body = mem::replace(req.body_mut(), Body::empty());
+                        let req_for_upgrade = Request::new(req_body);
 
-                    tokio::spawn(
-                        #[allow(unreachable_code)]
-                        async move {
-                            let mut proxy_upgraded = hyper::upgrade::on(&mut proxy_res)
-                                .await
-                                .with_context(|| "error upgrading proxy connection")?;
-                            let mut req_upgraded = hyper::upgrade::on(req_for_upgrade)
-                                .await
-                                .with_context(|| "error upgrading connection")?;
+                        tokio::spawn(
+                            #[allow(unreachable_code)]
+                            async move {
+                                let mut proxy_upgraded =
+                                    hyper::upgrade::on(&mut proxy_res)
+                                        .await
+                                        .with_context(|| "error upgrading proxy connection")?;
+                                let mut req_upgraded = hyper::upgrade::on(req_for_upgrade)
+                                    .await
+                                    .with_context(|| "error upgrading connection")?;
 
-                            let mut buf1 = vec![0u8; 1024];
-                            let mut buf2 = vec![0u8; 1024];
+                                let mut buf1 = vec![0u8; 1024];
+                                let mut buf2 = vec![0u8; 1024];
 
-                            loop {
-                                tokio::select! {
-                                    bytes_read_result = proxy_upgraded.read(&mut buf1) => {
-                                        let bytes_read = bytes_read_result
-                                            .with_context(|| "error reading from incoming")?;
-                                        if bytes_read == 0 {
-                                            return Ok(());
-                                        } else {
-                                            req_upgraded
-                                                .write_all(&buf1[..bytes_read])
-                                                .await
-                                                .with_context(|| "error writing to forwarded")?;
-                                            req_upgraded.flush().await.with_context(|| "error flushing data to cliet")?;
-                                        }
-                                    },
+                                loop {
+                                    tokio::select! {
+                                        bytes_read_result = proxy_upgraded.read(&mut buf1) => {
+                                            let bytes_read = bytes_read_result
+                                                .with_context(|| "error reading from incoming")?;
+                                            if bytes_read == 0 {
+                                                return Ok(());
+                                            } else {
+                                                req_upgraded
+                                                    .write_all(&buf1[..bytes_read])
+                                                    .await
+                                                    .with_context(|| "error writing to forwarded")?;
+                                                req_upgraded.flush().await.with_context(|| "error flushing data to cliet")?;
+                                            }
+                                        },
 
-                                    bytes_read_result = req_upgraded.read(&mut buf2) => {
-                                        let bytes_read = bytes_read_result
-                                            .with_context(|| "error reading from forwarded")?;
-                                        if bytes_read == 0 {
-                                            return Ok(());
-                                        } else {
-                                            proxy_upgraded
-                                                .write_all(&buf2[..bytes_read])
-                                                .await
-                                                .with_context(|| "error writing to incoming")?;
-                                            proxy_upgraded
-                                                .flush()
-                                                .await
-                                                .with_context(|| "error flushing data to proxy")?;
+                                        bytes_read_result = req_upgraded.read(&mut buf2) => {
+                                            let bytes_read = bytes_read_result
+                                                .with_context(|| "error reading from forwarded")?;
+                                            if bytes_read == 0 {
+                                                return Ok(());
+                                            } else {
+                                                proxy_upgraded
+                                                    .write_all(&buf2[..bytes_read])
+                                                    .await
+                                                    .with_context(|| "error writing to incoming")?;
+                                                proxy_upgraded
+                                                    .flush()
+                                                    .await
+                                                    .with_context(|| "error flushing data to proxy")?;
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            Ok::<_, anyhow::Error>(())
-                        },
-                    );
-                } else {
-                    *res.body_mut() = proxy_res.into_body();
+                                Ok::<_, anyhow::Error>(())
+                            },
+                        );
+                    } else {
+                        *res.body_mut() = proxy_res.into_body();
+                    }
+
+                    return HandlerInvocationResult::Responded;
                 }
-
-                HandlerInvocationResult::Responded
+                None => {
+                    return HandlerInvocationResult::Exception {
+                        name: "proxy-error:bad-gateway:no-healthy-upstreams"
+                            .parse()
+                            .unwrap(),
+                        data: Default::default(),
+                    }
+                }
             }
-            None => HandlerInvocationResult::Exception {
-                name: "proxy-error:bad-gateway:no-healthy-upstreams"
-                    .parse()
-                    .unwrap(),
-                data: Default::default(),
-            },
         }
     }
 }
