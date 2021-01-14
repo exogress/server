@@ -2179,6 +2179,10 @@ impl RequestsProcessor {
             .flatten()
             .collect::<Vec<_>>();
 
+        if grouped_mount_points.is_empty() {
+            return Err(anyhow!("no mount points returned"));
+        }
+
         let mount_point_name = grouped_mount_points.iter().next().expect("FIXME").0.clone();
 
         for (mp_name, (_, _, _, _, mp)) in &grouped_mount_points {
