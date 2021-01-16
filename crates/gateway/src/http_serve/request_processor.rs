@@ -15,9 +15,11 @@ use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use cookie::Cookie;
 use core::{fmt, mem};
+use exogress_common::config_core::parametrized::acl::{Acl, AclEntry};
+use exogress_common::config_core::parametrized::google::bucket::GcsBucket;
 use exogress_common::config_core::{
-    AclEntry, Action, Auth, AuthProvider, CatchAction, CatchMatcher, ClientHandlerVariant,
-    Exception, MatchingPath, RescueItem, ResponseBody, StaticDir, StaticResponse, StatusCodeRange,
+    parametrized, Action, AuthProvider, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
+    MatchingPath, RescueItem, ResponseBody, StaticDir, StaticResponse, StatusCodeRange,
     TemplateEngine, UpstreamDefinition, UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
@@ -65,6 +67,30 @@ use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
 
 static IMAGE_MAGIC: Once = Once::new();
+
+// macro_rules! return_exception {
+//     ($res:expr) => {
+//         match $res {
+//             HandlerInvocationResult::Exception(e) => return HandlerInvocationResult::Error(e),
+//             _ => {}
+//         }
+//     };
+// }
+
+macro_rules! try_or_to_exception {
+    ($expr:expr) => {
+        match $expr {
+            core::result::Result::Ok(val) => val,
+            core::result::Result::Err(err) => {
+                let (exception, data) = err.to_exception();
+                return HandlerInvocationResult::Exception {
+                    name: exception,
+                    data,
+                };
+            }
+        }
+    };
+}
 
 macro_rules! try_or_exception {
     ($expr:expr, $exception:expr) => {
@@ -1004,7 +1030,7 @@ impl ResolvedStaticDir {
 
 #[derive(Debug)]
 struct ResolvedAuth {
-    config: Auth,
+    providers: Vec<(AuthProvider, Result<Acl, parametrized::Error>)>,
     handler_name: HandlerName,
     mount_point_base_url: MountPointBaseUrl,
     jwt_ecdsa: JwtEcdsa,
@@ -1077,16 +1103,8 @@ impl ResolvedAuth {
                             .get("provider")
                             .cloned()
                             .or_else(|| {
-                                if self.config.providers.len() == 1 {
-                                    Some(
-                                        self.config
-                                            .providers
-                                            .iter()
-                                            .next()
-                                            .unwrap()
-                                            .name
-                                            .to_string(),
-                                    )
+                                if self.providers.len() == 1 {
+                                    Some(self.providers.iter().next().unwrap().0.to_string())
                                 } else {
                                     None
                                 }
@@ -1108,7 +1126,7 @@ impl ResolvedAuth {
                                 &maybe_provider,
                                 &requested_url,
                                 &handler_name,
-                                &self.config,
+                                &self.providers,
                                 &self.jwt_ecdsa,
                                 &self.google_oauth2_client,
                                 &self.github_oauth2_client,
@@ -1144,8 +1162,8 @@ impl ResolvedAuth {
                                     }
 
                                     let maybe_auth_definition =
-                                        self.config.providers.iter().find(|provider| {
-                                            match (&provider.name, &used_provider) {
+                                        self.providers.iter().find(|provider| {
+                                            match (&provider.0, &used_provider) {
                                                 (
                                                     &AuthProvider::Google,
                                                     &Oauth2Provider::Google,
@@ -1159,10 +1177,12 @@ impl ResolvedAuth {
                                         });
 
                                     match maybe_auth_definition {
-                                        Some(auth_definition) => {
+                                        Some((_provider, acl_result)) => {
                                             let mut acl_allow = false;
 
-                                            'acl: for acl_entry in &auth_definition.acl {
+                                            let acl = try_or_to_exception!(acl_result.as_ref());
+
+                                            'acl: for acl_entry in &acl.0 {
                                                 for identity in &retrieved_flow_data.identities {
                                                     match acl_entry {
                                                         AclEntry::Allow { identity: pass } => {
@@ -2110,6 +2130,7 @@ impl RequestsProcessor {
         let account_unique_id = resp.account_unique_id;
         let account_name = resp.account;
         let project_name = resp.project;
+        let params = resp.params.clone();
 
         let project_mount_points = resp
             .project_config
@@ -2226,6 +2247,7 @@ impl RequestsProcessor {
             shadow_clone!(resolver);
             shadow_clone!(traffic_counters);
             shadow_clone!(presence_client);
+            shadow_clone!(params);
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
                 resolver: resolver.clone(),
@@ -2257,7 +2279,16 @@ impl RequestsProcessor {
                         resolved_variant: match handler.variant {
                             ClientHandlerVariant::Auth(auth) => {
                                 ResolvedHandlerVariant::Auth(ResolvedAuth {
-                                    config: auth,
+                                    providers: auth
+                                        .providers
+                                        .into_iter()
+                                        .map(|auth_def| {
+                                            (
+                                                auth_def.name,
+                                                auth_def.acl.resolve(&params)
+                                            )
+                                        })
+                                        .collect(),
                                     handler_name: handler_name.clone(),
                                     mount_point_base_url: mount_point_base_url.clone(),
                                     jwt_ecdsa: jwt_ecdsa.clone(),
@@ -2334,28 +2365,38 @@ impl RequestsProcessor {
                                 ResolvedHandlerVariant::S3Bucket(ResolvedS3Bucket {
                                     client: public_client.clone(),
                                     credentials:
-                                    if let (Some(access_key), Some(secret_key)) = (s3_bucket.access_key, s3_bucket.secret_key) {
-                                        Some(rusty_s3::Credentials::new(access_key.into(), secret_key.into()))
-                                    } else {
-                                        None
-                                    },
-                                    bucket: rusty_s3::Bucket::new(
-                                        s3_bucket.region.endpoint(),
-                                        false,
-                                        s3_bucket.bucket.into(),
-                                        s3_bucket.region.to_string(),
-                                    ).expect("FIXME"),
+                                        s3_bucket
+                                            .credentials
+                                            .map(|container|
+                                                container
+                                                    .resolve(&params)
+                                                    .map(|creds| {
+                                                        rusty_s3::Credentials::new(creds.access_key_id.into(), creds.secret_access_key.into())
+                                                    })
+                                            ),
+                                    bucket:
+                                        s3_bucket.bucket.resolve(&params)
+                                            .map(|s3_bucket_cfg| {
+                                                rusty_s3::Bucket::new(
+                                                    s3_bucket_cfg.region.endpoint(),
+                                                    false,
+                                                    s3_bucket_cfg.name.into(),
+                                                    s3_bucket_cfg.region.to_string(),
+                                                ).expect("FIXME")
+                                            }),
                                 })
                             }
                             ClientHandlerVariant::GcsBucket(gcs_bucket) => {
                                 ResolvedHandlerVariant::GcsBucket(ResolvedGcsBucket {
                                     client: public_client.clone(),
-                                    bucket_name: gcs_bucket.bucket,
-                                    auth: tame_oauth::gcp::ServiceAccountAccess::new(
-                                        tame_oauth::gcp::ServiceAccountInfo::deserialize(
-                                            gcs_bucket.credentials.as_str()
-                                        ).expect("FIXME")
-                                    ).expect("FIXME"),
+                                    bucket_name: gcs_bucket.bucket.resolve(&params),
+                                    auth: gcs_bucket.credentials.resolve(&params).map(|creds| {
+                                            tame_oauth::gcp::ServiceAccountAccess::new(
+                                                tame_oauth::gcp::ServiceAccountInfo::deserialize(
+                                                    creds.json.as_str()
+                                                ).expect("FIXME")
+                                            ).expect("FIXME")
+                                        }),
                                     token: Default::default()
                                 })
                             }
@@ -2464,8 +2505,8 @@ impl Drop for RequestsProcessor {
 #[derive(Clone, Debug)]
 struct ResolvedS3Bucket {
     client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
-    credentials: Option<rusty_s3::Credentials>,
-    bucket: rusty_s3::Bucket,
+    credentials: Option<Result<rusty_s3::Credentials, parametrized::Error>>,
+    bucket: Result<rusty_s3::Bucket, parametrized::Error>,
 }
 
 impl ResolvedS3Bucket {
@@ -2479,11 +2520,14 @@ impl ResolvedS3Bucket {
             return HandlerInvocationResult::ToNextHandler;
         }
 
-        let action = rusty_s3::actions::GetObject::new(
-            &self.bucket,
-            self.credentials.as_ref(),
-            requested_url.path(),
-        );
+        let bucket = try_or_to_exception!(self.bucket.as_ref());
+        let credentials = if let Some(creds) = &self.credentials {
+            Some(try_or_to_exception!(creds))
+        } else {
+            None
+        };
+
+        let action = rusty_s3::actions::GetObject::new(&bucket, credentials, requested_url.path());
         let signed_url = action.sign(Duration::from_secs(60));
 
         let mut proxy_resp = self
@@ -2504,8 +2548,8 @@ impl ResolvedS3Bucket {
 
 struct ResolvedGcsBucket {
     client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
-    bucket_name: SmolStr,
-    auth: tame_oauth::gcp::ServiceAccountAccess,
+    bucket_name: Result<GcsBucket, parametrized::Error>,
+    auth: Result<tame_oauth::gcp::ServiceAccountAccess, parametrized::Error>,
     token: Mutex<Option<tame_oauth::Token>>,
 }
 
@@ -2528,8 +2572,9 @@ impl ResolvedGcsBucket {
             return HandlerInvocationResult::ToNextHandler;
         }
 
-        let token_or_req = self
-            .auth
+        let auth = try_or_to_exception!(self.auth.as_ref());
+
+        let token_or_req = auth
             .get_token(&[tame_gcs::Scopes::ReadOnly])
             .expect("FIXME");
 
@@ -2571,8 +2616,7 @@ impl ResolvedGcsBucket {
                     *converted_res.headers_mut() = auth_res.headers().clone();
                     *converted_res.status_mut() = auth_res.status();
 
-                    self.auth
-                        .parse_token_response(scope_hash, converted_res)
+                    auth.parse_token_response(scope_hash, converted_res)
                         .expect("FIXME")
                 }
             };
@@ -2583,9 +2627,11 @@ impl ResolvedGcsBucket {
         }
         .await;
 
+        let bucket_name = try_or_to_exception!(self.bucket_name.as_ref());
+
         let download_req_empty = tame_gcs::objects::Object::download(
             &(
-                &tame_gcs::BucketName::try_from(self.bucket_name.as_str().to_string())
+                &tame_gcs::BucketName::try_from(bucket_name.name.as_str().to_string())
                     .expect("FIXME"),
                 &tame_gcs::ObjectName::try_from(requested_url.path()[1..].to_string())
                     .expect("FIXME"),

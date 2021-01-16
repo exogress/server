@@ -11,7 +11,7 @@ serde_json = "1.0.48"
 serde = { version = "1.0.105", features = ["derive"] }
 serde_derive = "1.0.25"
 thiserror = "1.0.13"
-sentry = "0.21.0"
+sentry = { version = "0.22.0", features = ["backtrace", "panic", "anyhow"] }
 rand = { version = "0.8" }
 stop-handle = "0.1"
 pin-project = "1.0"
@@ -29,11 +29,11 @@ tracing-futures = "0.2.4"
 urlencoding = "1.1.1"
 hashbrown = "0.9.1"
 prometheus = "0.11.0"
-tokio-stream = { version = "0.1.0" }
+tokio-stream = { version = "0.1.2" }
 
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns"] }
-warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio" }
+warp = { git = "https://github.com/seanmonstar/warp.git", branch = "master" }
 
 exogress-server-common = { path = "../common" }
 

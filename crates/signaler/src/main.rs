@@ -10,7 +10,6 @@ extern crate serde;
 extern crate prometheus;
 
 use std::net::SocketAddr;
-use std::panic;
 
 use clap::{crate_version, App, Arg};
 use futures::FutureExt;

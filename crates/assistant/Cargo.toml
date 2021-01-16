@@ -10,7 +10,7 @@ futures = "0.3.5"
 serde_json = "1.0.48"
 serde = { version = "1.0.105", features = ["derive"] }
 thiserror = "1.0.13"
-sentry = "0.21.0"
+sentry = { version = "0.22.0", features = ["backtrace", "panic", "anyhow"] }
 rand = { version = "0.8" }
 stop-handle = "0.1"
 pin-project = "1.0"
@@ -25,7 +25,7 @@ hashbrown = { version = "0.9", features = ["serde"] }
 chrono = { version = "0.4.11", features = ["serde"] }
 url = "2.1.1"
 bson = "1.1.0"
-tokio-stream = { version = "0.1.0" }
+tokio-stream = { version = "0.1.2" }
 prometheus = "0.11.0"
 lazy_static = "1.4.0"
 
@@ -34,7 +34,7 @@ mongodb = { path = "../../deps/mongo-rust-driver" }
 
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
-warp = { git = "https://github.com/aknuds1/warp.git", branch = "chore/upgrade-tokio" }
+warp = { git = "https://github.com/seanmonstar/warp.git", branch = "master" }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }

@@ -2,7 +2,7 @@ use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
 use crate::http_serve::auth::JwtEcdsa;
 use cookie::Cookie;
-use exogress_common::config_core::{Auth, AuthProvider};
+use exogress_common::config_core::{parametrized, AuthProvider};
 use exogress_common::entities::HandlerName;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use handlebars::Handlebars;
@@ -27,7 +27,10 @@ fn render(
     mount_point_base_url: &MountPointBaseUrl,
     requested_url: &Url,
     handler_name: &HandlerName,
-    auth: &Auth,
+    auth: &[(
+        AuthProvider,
+        Result<parametrized::acl::Acl, parametrized::Error>,
+    )],
 ) -> String {
     let handlebars = Handlebars::new();
 
@@ -45,12 +48,11 @@ fn render(
     url.set_scheme("http").unwrap();
 
     let providers: Vec<_> = auth
-        .providers
         .iter()
-        .map(|provider| {
+        .map(|(provider, _)| {
             let mut url = url.clone();
             url.query_pairs_mut()
-                .append_pair("provider", provider.name.to_string().as_str())
+                .append_pair("provider", provider.to_string().as_str())
                 .append_pair("handler", handler_name.to_string().as_str());
 
             let link = url
@@ -60,7 +62,7 @@ fn render(
                 .to_string();
 
             ProviderInfo {
-                name: provider.name.to_string(),
+                name: provider.to_string(),
                 link,
             }
         })
@@ -77,7 +79,10 @@ pub async fn respond_with_login(
     maybe_provider: &Option<AuthProvider>,
     requested_url: &Url,
     handler_name: &HandlerName,
-    auth: &Auth,
+    auth: &[(
+        AuthProvider,
+        Result<parametrized::acl::Acl, parametrized::Error>,
+    )],
     jwt_ecdsa: &JwtEcdsa,
     google_oauth2_client: &GoogleOauth2Client,
     github_oauth2_client: &GithubOauth2Client,

@@ -10,10 +10,11 @@ use chrono::serde::ts_milliseconds;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use exogress_common::common_utils::jwt::{jwt_token, JwtError};
+use exogress_common::config_core::parametrized::Parameter;
 use exogress_common::config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
 use exogress_common::entities::{
-    AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName,
-    Upstream,
+    AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
+    ParameterName, ProjectName, Upstream,
 };
 use exogress_server_common::presence;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
@@ -193,6 +194,7 @@ pub struct ConfigsResponse {
     pub jwt_ecdsa: JwtEcdsaResponse,
     pub xchacha20poly1305_secret_key: String,
     pub max_pop_cache_size_bytes: Byte,
+    pub params: HashMap<ParameterName, Parameter>,
 }
 
 impl Client {

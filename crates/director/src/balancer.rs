@@ -270,6 +270,8 @@ mod test {
         max_main_gateways: u8,
         max_reserved_gateways: u8,
     ) -> TestResult {
+        let max_main_gateways = max_main_gateways as u16;
+        let max_reserved_gateways = max_reserved_gateways as u16;
         if weighted.is_empty()
             || weighted
                 .iter()
