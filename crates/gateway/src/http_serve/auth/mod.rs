@@ -8,6 +8,7 @@ use oauth2::reqwest::Error;
 use reqwest::Identity;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::time::Duration;
 use url::Url;
 
@@ -34,6 +35,18 @@ impl ToString for Oauth2Provider {
             Oauth2Provider::Github => "github",
         }
         .to_string()
+    }
+}
+
+impl FromStr for Oauth2Provider {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "google" => Ok(Oauth2Provider::Google),
+            "github" => Ok(Oauth2Provider::Github),
+            _ => Err(()),
+        }
     }
 }
 

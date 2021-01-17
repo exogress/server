@@ -142,6 +142,7 @@ pub struct RequestsProcessor {
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     idp: String,
+    sub: String,
     exp: usize,
 }
 
@@ -1077,6 +1078,57 @@ impl ResolvedAuth {
             Body::from("<HTML><BODY>Redirecting to authorization page...</BODY></HTML>");
     }
 
+    fn auth_definition(
+        &self,
+        used_provider: &Oauth2Provider,
+    ) -> Option<&(AuthProvider, Result<Acl, parametrized::Error>)> {
+        self.providers
+            .iter()
+            .find(|provider| match (&provider.0, used_provider) {
+                (&AuthProvider::Google, &Oauth2Provider::Google) => true,
+                (&AuthProvider::Github, &Oauth2Provider::Github) => true,
+                _ => false,
+            })
+    }
+
+    fn acl_allowed_to<'a, 'b, 'c>(
+        &'c self,
+        identities: &'a [String],
+        acl_entries: &'b [AclEntry],
+    ) -> Option<&'a String> {
+        let mut acl_allow_to = None;
+        'acl: for acl_entry in acl_entries {
+            for identity in identities {
+                match acl_entry {
+                    AclEntry::Allow { identity: pass } => {
+                        let is_match = match Glob::new(pass) {
+                            Ok(glob) => glob.compile_matcher().is_match(identity),
+                            Err(_) => pass == identity,
+                        };
+                        if is_match {
+                            info!("Pass {} ", identity);
+                            acl_allow_to = Some(identity);
+                            break 'acl;
+                        }
+                    }
+                    AclEntry::Deny { identity: deny } => {
+                        let is_match = match Glob::new(deny) {
+                            Ok(glob) => glob.compile_matcher().is_match(identity),
+                            Err(_) => deny == identity,
+                        };
+                        if is_match {
+                            info!("Deny {} ", identity);
+                            acl_allow_to = None;
+                            break 'acl;
+                        }
+                    }
+                }
+            }
+        }
+
+        acl_allow_to
+    }
+
     async fn invoke(
         &self,
         req: &Request<Body>,
@@ -1162,60 +1214,18 @@ impl ResolvedAuth {
                                     }
 
                                     let maybe_auth_definition =
-                                        self.providers.iter().find(|provider| {
-                                            match (&provider.0, &used_provider) {
-                                                (
-                                                    &AuthProvider::Google,
-                                                    &Oauth2Provider::Google,
-                                                ) => true,
-                                                (
-                                                    &AuthProvider::Github,
-                                                    &Oauth2Provider::Github,
-                                                ) => true,
-                                                _ => false,
-                                            }
-                                        });
+                                        self.auth_definition(&used_provider);
 
                                     match maybe_auth_definition {
                                         Some((_provider, acl_result)) => {
-                                            let mut acl_allow = false;
-
                                             let acl = try_or_to_exception!(acl_result.as_ref());
 
-                                            'acl: for acl_entry in &acl.0 {
-                                                for identity in &retrieved_flow_data.identities {
-                                                    match acl_entry {
-                                                        AclEntry::Allow { identity: pass } => {
-                                                            let is_match = match Glob::new(pass) {
-                                                                Ok(glob) => glob
-                                                                    .compile_matcher()
-                                                                    .is_match(identity),
-                                                                Err(_) => pass == identity,
-                                                            };
-                                                            if is_match {
-                                                                info!("Pass {} ", identity);
-                                                                acl_allow = true;
-                                                                break 'acl;
-                                                            }
-                                                        }
-                                                        AclEntry::Deny { identity: deny } => {
-                                                            let is_match = match Glob::new(deny) {
-                                                                Ok(glob) => glob
-                                                                    .compile_matcher()
-                                                                    .is_match(identity),
-                                                                Err(_) => deny == identity,
-                                                            };
-                                                            if is_match {
-                                                                info!("Deny {} ", identity);
-                                                                acl_allow = false;
-                                                                break 'acl;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            let acl_allow_to = self.acl_allowed_to(
+                                                &retrieved_flow_data.identities,
+                                                &acl.0,
+                                            );
 
-                                            if acl_allow {
+                                            if let Some(allowed_identity) = acl_allow_to {
                                                 res.headers_mut().insert(
                                                     CACHE_CONTROL,
                                                     "no-cache".try_into().unwrap(),
@@ -1234,13 +1244,11 @@ impl ResolvedAuth {
                                                 *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
 
                                                 let claims = Claims {
-                                                    idp: serde_json::to_value(
-                                                        retrieved_flow_data
-                                                            .oauth2_flow_data
-                                                            .provider,
-                                                    )
-                                                    .unwrap()
-                                                    .to_string(),
+                                                    idp: retrieved_flow_data
+                                                        .oauth2_flow_data
+                                                        .provider
+                                                        .to_string(),
+                                                    sub: allowed_identity.to_string(),
                                                     exp: (Utc::now() + chrono::Duration::hours(24))
                                                         .timestamp()
                                                         .try_into()
@@ -1343,10 +1351,35 @@ impl ResolvedAuth {
                 },
             ) {
                 Ok(token) => {
-                    info!(
-                        "jwt-token parse and verified. go ahead. provider = {}",
-                        token.claims.idp
-                    );
+                    info!("toke = {:?}", token);
+                    let granted_identity = token.claims.sub;
+                    let granted_provider = token.claims.idp.parse().expect("FIXME");
+
+                    let maybe_auth_definition = self.auth_definition(&granted_provider);
+
+                    match maybe_auth_definition {
+                        Some((_provider, acl_result)) => {
+                            let acl = try_or_to_exception!(acl_result.as_ref());
+
+                            let identities = [granted_identity];
+
+                            let acl_allowed_to = self.acl_allowed_to(&identities, &acl.0);
+
+                            if acl_allowed_to.is_some() {
+                                info!(
+                                    "jwt-token parse and verified. go ahead. provider = {}, identity = {}",
+                                    token.claims.idp, identities[0]
+                                );
+                            } else {
+                                self.respond_not_authorized(req, res);
+                                return HandlerInvocationResult::Responded;
+                            }
+                        }
+                        None => {
+                            self.respond_not_authorized(req, res);
+                            return HandlerInvocationResult::Responded;
+                        }
+                    }
                 }
                 Err(e) => {
                     if let jsonwebtoken::errors::ErrorKind::InvalidSignature = e.kind() {
