@@ -48,12 +48,10 @@ use parking_lot::Mutex;
 use rusty_s3::actions::S3Action;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
 use std::io;
 use std::net::SocketAddr;
-use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Once};
 use std::time::Duration;
@@ -68,59 +66,8 @@ use weighted_rs::{SmoothWeight, Weight};
 
 static IMAGE_MAGIC: Once = Once::new();
 
-// macro_rules! return_exception {
-//     ($res:expr) => {
-//         match $res {
-//             HandlerInvocationResult::Exception(e) => return HandlerInvocationResult::Error(e),
-//             _ => {}
-//         }
-//     };
-// }
-
-macro_rules! try_or_to_exception {
-    ($expr:expr) => {
-        match $expr {
-            core::result::Result::Ok(val) => val,
-            core::result::Result::Err(err) => {
-                let (exception, data) = err.to_exception();
-                return HandlerInvocationResult::Exception {
-                    name: exception,
-                    data,
-                };
-            }
-        }
-    };
-}
-
-macro_rules! try_or_exception {
-    ($expr:expr, $exception:expr) => {
-        match $expr {
-            core::result::Result::Ok(val) => val,
-            core::result::Result::Err(err) => {
-                let mut data: HashMap<SmolStr, SmolStr> = HashMap::new();
-                data.insert("error".into(), err.to_string().into());
-                return HandlerInvocationResult::Exception {
-                    name: $exception.try_into().expect("Bad exception format"),
-                    data,
-                };
-            }
-        }
-    };
-}
-
-macro_rules! try_option_or_exception {
-    ($expr:expr, $exception:expr) => {
-        match $expr {
-            core::option::Option::Some(val) => val,
-            core::option::Option::None => {
-                return HandlerInvocationResult::Exception {
-                    name: $exception.try_into().expect("Bad exception format"),
-                    data: Default::default(),
-                };
-            }
-        }
-    };
-}
+#[macro_use]
+mod macros;
 
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
@@ -428,7 +375,6 @@ impl RequestsProcessor {
         req: &Request<Body>,
         res: &mut Response<Body>,
     ) -> Result<(), anyhow::Error> {
-        // return Ok(());
         let is_webp_supported = req
             .headers()
             .typed_get::<typed_headers::Accept>()?
@@ -2002,9 +1948,9 @@ impl ResolvedHandler {
                         );
                     } else {
                         error!(
-                                "error evaluating static response while in exception handling: {:?}. {:?}",
-                                exception, data
-                            );
+                            "error evaluating static response while in exception handling: {:?}. {:?}",
+                            exception, data
+                        );
                         *res.body_mut() = Body::from("Internal server error");
                         *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
 
@@ -2169,63 +2115,48 @@ impl RequestsProcessor {
             .project_config
             .mount_points
             .into_iter()
-            .map(|(k, v)| (k, (None, None, None, None, v.into())));
-
-        // static responses are shared across different config names
-        let static_responses: Rc<RefCell<HashMap<MountPointName, HashMap<_, _>>>> =
-            Rc::new(RefCell::new(HashMap::new()));
+            .map(|(k, v)| (k, (None, None, None, None, None, v.into())));
 
         let grouped_mount_points = grouped
             .into_iter()
-            .map({
-                shadow_clone!(static_responses);
+            .map(move |(config_name, configs)| {
+                let entry: &ConfigData = &configs
+                    .into_iter()
+                    .map(|entry| (entry.instance_ids.len(), entry))
+                    .sorted_by(|(left, _), (right, _)| left.cmp(&right).reverse())
+                    .into_iter()
+                    .next() //keep only revision with largest number of instances
+                    .unwrap()
+                    .1;
 
-                move |(config_name, configs)| {
-                    let entry: &ConfigData = &configs
-                        .into_iter()
-                        .map(|entry| (entry.instance_ids.len(), entry))
-                        .sorted_by(|(left, _), (right, _)| left.cmp(&right).reverse())
-                        .into_iter()
-                        .next() //keep only revision with largest number of instances
-                        .unwrap()
-                        .1;
+                let config = &entry.config;
+                let instance_ids = entry.instance_ids.clone();
 
-                    let config = &entry.config;
-                    let instance_ids = entry.instance_ids.clone();
+                let upstreams = &config.upstreams;
 
-                    let upstreams = &config.upstreams;
+                let client_rescue = config.rescue.clone();
+                let client_config_static_responses = config.static_responses.clone();
 
-                    let client_rescue = config.rescue.clone();
-
-                    config
-                        .mount_points
-                        .clone()
-                        .into_iter()
-                        .map(move |(mp_name, mp)| {
+                config
+                    .mount_points
+                    .clone()
+                    .into_iter()
+                    .map(move |(mp_name, mp)| {
+                        (
+                            mp_name,
                             (
-                                mp_name,
-                                (
-                                    Some(config_name.clone()),
-                                    Some(upstreams.clone()),
-                                    Some(instance_ids.clone()),
-                                    Some(client_rescue.clone()),
-                                    mp,
-                                ),
-                            )
-                        })
-                }
+                                Some(config_name.clone()),
+                                Some(upstreams.clone()),
+                                Some(instance_ids.clone()),
+                                Some(client_rescue.clone()),
+                                Some(client_config_static_responses.clone()),
+                                mp,
+                            ),
+                        )
+                    })
             })
             .flatten()
             .chain(project_mount_points)
-            .inspect(|(mount_point_name, (_, _, _, _, config))| {
-                for (static_response_name, static_response) in &config.static_responses {
-                    static_responses
-                        .borrow_mut()
-                        .entry(mount_point_name.clone())
-                        .or_default()
-                        .insert(static_response_name.clone(), static_response.clone());
-                }
-            })
             .group_by(|a| a.0.clone())
             .into_iter()
             .map(|a| a.1)
@@ -2238,32 +2169,26 @@ impl RequestsProcessor {
 
         let mount_point_name = grouped_mount_points.iter().next().expect("FIXME").0.clone();
 
-        for (mp_name, (_, _, _, _, mp)) in &grouped_mount_points {
-            for (static_response_name, static_response) in &mp.static_responses {
-                static_responses
-                    .borrow_mut()
-                    .entry(mp_name.clone())
-                    .or_default()
-                    .insert(static_response_name.clone(), static_response.clone());
-            }
-        }
-
-        for (static_response_name, static_response) in &resp.project_config.static_responses {
-            for (_, mp_static_responses) in static_responses.borrow_mut().iter_mut() {
-                mp_static_responses.insert(static_response_name.clone(), static_response.clone());
-            }
-        }
+        let project_static_responses = resp.project_config.static_responses.clone();
 
         let mut merged_resolved_handlers = vec![];
 
-        for (mp_name, (config_name, upstreams, instance_ids, client_config_rescue, mp)) in
-            grouped_mount_points.into_iter()
+        for (
+            _mp_name,
+            (
+                config_name,
+                upstreams,
+                instance_ids,
+                client_config_rescue,
+                client_config_static_responses,
+                mp,
+            ),
+        ) in grouped_mount_points.into_iter()
         {
             let mp_rescue = mp.rescue.clone();
 
             shadow_clone!(instance_ids);
             shadow_clone!(project_rescue);
-            shadow_clone!(static_responses);
             shadow_clone!(jwt_ecdsa);
             shadow_clone!(mount_point_base_url);
             shadow_clone!(google_oauth2_client);
@@ -2280,6 +2205,7 @@ impl RequestsProcessor {
             shadow_clone!(traffic_counters);
             shadow_clone!(presence_client);
             shadow_clone!(params);
+            shadow_clone!(project_static_responses);
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
                 resolver: resolver.clone(),
@@ -2288,115 +2214,137 @@ impl RequestsProcessor {
                 recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
             });
 
+            let mp_static_responses = mp.static_responses;
+
             let mut r = mp.handlers
                 .into_iter()
-                .map(move |(handler_name, handler)| {
-                    let replace_base_path = handler.replace_base_path.clone();
+                .map({
+                    shadow_clone!(project_static_responses);
 
-                    let mp_static_responses = &static_responses.borrow().get(&mp_name).cloned().unwrap_or_default();
+                    move |(handler_name, handler)| {
+                        let replace_base_path = handler.replace_base_path.clone();
 
-                    Some(ResolvedHandler {
-                        handler_name: handler_name.clone(),
-                        handler_checksum: {
-                            use std::hash::{Hash, Hasher};
+                        let mut available_static_responses = HashMap::new();
 
-                            // FIXME
-                            let mut s = seahash::SeaHasher::new();
-                            handler.hash(&mut s);
-                            handler_name.hash(&mut s);
-                            let checksum = s.finish();
+                        // Add all project level static-response to mount-point accessible
+                        for (k, v) in &project_static_responses {
+                            available_static_responses.insert(k.clone(), v.clone());
+                        }
 
-                            checksum.into()
-                        },
-                        resolved_variant: match handler.variant {
-                            ClientHandlerVariant::Auth(auth) => {
-                                ResolvedHandlerVariant::Auth(ResolvedAuth {
-                                    providers: auth
-                                        .providers
-                                        .into_iter()
-                                        .map(|auth_def| {
-                                            (
-                                                auth_def.name,
-                                                auth_def.acl.resolve(&params)
-                                            )
-                                        })
-                                        .collect(),
-                                    handler_name: handler_name.clone(),
-                                    mount_point_base_url: mount_point_base_url.clone(),
-                                    jwt_ecdsa: jwt_ecdsa.clone(),
-                                    google_oauth2_client: google_oauth2_client.clone(),
-                                    github_oauth2_client: github_oauth2_client.clone(),
-                                    assistant_base_url: assistant_base_url.clone(),
-                                    maybe_identity: maybe_identity.clone(),
-                                })
+                        // Add all config level static-response to mount-point accessible
+                        if let Some(resps) = &client_config_static_responses {
+                            for (k, v) in resps {
+                                available_static_responses.insert(k.clone(), v.clone());
                             }
-                            ClientHandlerVariant::StaticDir(static_dir) => {
-                                ResolvedHandlerVariant::StaticDir(ResolvedStaticDir {
-                                    config: static_dir,
-                                    handler_name: handler_name.clone(),
-                                    instance_ids: {
-                                        let mut balancer = SmoothWeight::<InstanceId>::new();
-                                        let instance_ids = instance_ids
-                                            .as_ref()
-                                            .expect("[BUG] try to access instance_ids on project-level config")
-                                            .keys();
-                                        for instance_id in instance_ids {
-                                            balancer.add(instance_id.clone(), 1);
-                                        }
+                        }
 
-                                        Mutex::new(balancer)
-                                    },
-                                    client_tunnels: client_tunnels.clone(),
-                                    config_id: ConfigId {
-                                        account_name: account_name.clone(),
-                                        account_unique_id: account_unique_id.clone(),
-                                        project_name: project_name.clone(),
-                                        config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
-                                    },
-                                    individual_hostname: individual_hostname.clone(),
-                                    public_hostname: mount_point_base_url.host().into(),
-                                })
-                            }
-                            ClientHandlerVariant::Proxy(proxy) => {
-                                ResolvedHandlerVariant::Proxy(ResolvedProxy {
-                                    name: proxy.upstream.clone(),
-                                    upstream: upstreams
-                                        .as_ref()
-                                        .expect(
-                                            "[BUG]: try to access upstream for project-level config",
-                                        )
-                                        .get(&proxy.upstream)
-                                        .cloned()?,
-                                    instance_ids: {
-                                        let mut balancer = SmoothWeight::<InstanceId>::new();
-                                        let instance_ids = instance_ids
-                                            .as_ref()
-                                            .expect("[BUG] try to access instance_ids on project-level config")
-                                            .iter();
-                                        for (instance_id, health_status) in instance_ids {
-                                            if health_status.get(&proxy.upstream) == Some(&true) {
+                        // Add all mount-point static-responses
+                        for (k, v) in &mp_static_responses {
+                            available_static_responses.insert(k.clone(), v.clone());
+                        }
+
+                        Some(ResolvedHandler {
+                            handler_name: handler_name.clone(),
+                            handler_checksum: {
+                                use std::hash::{Hash, Hasher};
+
+                                // FIXME
+                                let mut s = seahash::SeaHasher::new();
+                                handler.hash(&mut s);
+                                handler_name.hash(&mut s);
+                                let checksum = s.finish();
+
+                                checksum.into()
+                            },
+                            resolved_variant: match handler.variant {
+                                ClientHandlerVariant::Auth(auth) => {
+                                    ResolvedHandlerVariant::Auth(ResolvedAuth {
+                                        providers: auth
+                                            .providers
+                                            .into_iter()
+                                            .map(|auth_def| {
+                                                (
+                                                    auth_def.name,
+                                                    auth_def.acl.resolve(&params)
+                                                )
+                                            })
+                                            .collect(),
+                                        handler_name: handler_name.clone(),
+                                        mount_point_base_url: mount_point_base_url.clone(),
+                                        jwt_ecdsa: jwt_ecdsa.clone(),
+                                        google_oauth2_client: google_oauth2_client.clone(),
+                                        github_oauth2_client: github_oauth2_client.clone(),
+                                        assistant_base_url: assistant_base_url.clone(),
+                                        maybe_identity: maybe_identity.clone(),
+                                    })
+                                }
+                                ClientHandlerVariant::StaticDir(static_dir) => {
+                                    ResolvedHandlerVariant::StaticDir(ResolvedStaticDir {
+                                        config: static_dir,
+                                        handler_name: handler_name.clone(),
+                                        instance_ids: {
+                                            let mut balancer = SmoothWeight::<InstanceId>::new();
+                                            let instance_ids = instance_ids
+                                                .as_ref()
+                                                .expect("[BUG] try to access instance_ids on project-level config")
+                                                .keys();
+                                            for instance_id in instance_ids {
                                                 balancer.add(instance_id.clone(), 1);
                                             }
-                                        }
 
-                                        Mutex::new(balancer)
-                                    },
-                                    client_tunnels: client_tunnels.clone(),
-                                    config_id: ConfigId {
-                                        account_name: account_name.clone(),
-                                        account_unique_id: account_unique_id.clone(),
-                                        project_name: project_name.clone(),
-                                        config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
-                                    },
-                                    individual_hostname: individual_hostname.clone(),
-                                    public_hostname: mount_point_base_url.host().into(),
-                                    presence_client: presence_client.clone(),
-                                })
-                            }
-                            ClientHandlerVariant::S3Bucket(s3_bucket) => {
-                                ResolvedHandlerVariant::S3Bucket(ResolvedS3Bucket {
-                                    client: public_client.clone(),
-                                    credentials:
+                                            Mutex::new(balancer)
+                                        },
+                                        client_tunnels: client_tunnels.clone(),
+                                        config_id: ConfigId {
+                                            account_name: account_name.clone(),
+                                            account_unique_id: account_unique_id.clone(),
+                                            project_name: project_name.clone(),
+                                            config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
+                                        },
+                                        individual_hostname: individual_hostname.clone(),
+                                        public_hostname: mount_point_base_url.host().into(),
+                                    })
+                                }
+                                ClientHandlerVariant::Proxy(proxy) => {
+                                    ResolvedHandlerVariant::Proxy(ResolvedProxy {
+                                        name: proxy.upstream.clone(),
+                                        upstream: upstreams
+                                            .as_ref()
+                                            .expect(
+                                                "[BUG]: try to access upstream for project-level config",
+                                            )
+                                            .get(&proxy.upstream)
+                                            .cloned()?,
+                                        instance_ids: {
+                                            let mut balancer = SmoothWeight::<InstanceId>::new();
+                                            let instance_ids = instance_ids
+                                                .as_ref()
+                                                .expect("[BUG] try to access instance_ids on project-level config")
+                                                .iter();
+                                            for (instance_id, health_status) in instance_ids {
+                                                if health_status.get(&proxy.upstream) == Some(&true) {
+                                                    balancer.add(instance_id.clone(), 1);
+                                                }
+                                            }
+
+                                            Mutex::new(balancer)
+                                        },
+                                        client_tunnels: client_tunnels.clone(),
+                                        config_id: ConfigId {
+                                            account_name: account_name.clone(),
+                                            account_unique_id: account_unique_id.clone(),
+                                            project_name: project_name.clone(),
+                                            config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
+                                        },
+                                        individual_hostname: individual_hostname.clone(),
+                                        public_hostname: mount_point_base_url.host().into(),
+                                        presence_client: presence_client.clone(),
+                                    })
+                                }
+                                ClientHandlerVariant::S3Bucket(s3_bucket) => {
+                                    ResolvedHandlerVariant::S3Bucket(ResolvedS3Bucket {
+                                        client: public_client.clone(),
+                                        credentials:
                                         s3_bucket
                                             .credentials
                                             .map(|container|
@@ -2406,7 +2354,7 @@ impl RequestsProcessor {
                                                         rusty_s3::Credentials::new(creds.access_key_id.into(), creds.secret_access_key.into())
                                                     })
                                             ),
-                                    bucket:
+                                        bucket:
                                         s3_bucket.bucket.resolve(&params)
                                             .map(|s3_bucket_cfg| {
                                                 rusty_s3::Bucket::new(
@@ -2416,48 +2364,48 @@ impl RequestsProcessor {
                                                     s3_bucket_cfg.region.to_string(),
                                                 ).expect("FIXME")
                                             }),
-                                })
-                            }
-                            ClientHandlerVariant::GcsBucket(gcs_bucket) => {
-                                ResolvedHandlerVariant::GcsBucket(ResolvedGcsBucket {
-                                    client: public_client.clone(),
-                                    bucket_name: gcs_bucket.bucket.resolve(&params),
-                                    auth: gcs_bucket.credentials.resolve(&params).map(|creds| {
+                                    })
+                                }
+                                ClientHandlerVariant::GcsBucket(gcs_bucket) => {
+                                    ResolvedHandlerVariant::GcsBucket(ResolvedGcsBucket {
+                                        client: public_client.clone(),
+                                        bucket_name: gcs_bucket.bucket.resolve(&params),
+                                        auth: gcs_bucket.credentials.resolve(&params).map(|creds| {
                                             tame_oauth::gcp::ServiceAccountAccess::new(
                                                 tame_oauth::gcp::ServiceAccountInfo::deserialize(
                                                     creds.json.as_str()
                                                 ).expect("FIXME")
                                             ).expect("FIXME")
                                         }),
-                                    token: Default::default()
-                                })
-                            }
-                        },
-                        priority: handler.priority,
-                        handler_rescue: resolve_rescue_items(
-                            &handler.rescue,
-                            mp_static_responses,
-                        )?,
-                        mount_point_rescue: resolve_rescue_items(
-                            &mp_rescue,
-                            mp_static_responses,
-                        )?,
-                        config_rescue: if let Some(client_rescue) = &client_config_rescue {
-                            resolve_rescue_items(
-                                client_rescue,
-                                mp_static_responses,
-                            )?
-                        } else {
-                            Default::default()
-                        },
-                        project_rescue: resolve_rescue_items(
-                            &project_rescue,
-                            mp_static_responses,
-                        )?,
-                        resolved_rules: handler
-                            .rules
-                            .into_iter()
-                            .map(|rule| {
+                                        token: Default::default()
+                                    })
+                                }
+                            },
+                            priority: handler.priority,
+                            handler_rescue: resolve_rescue_items(
+                                &handler.rescue,
+                                &available_static_responses,
+                            )?,
+                            mount_point_rescue: resolve_rescue_items(
+                                &mp_rescue,
+                                &available_static_responses,
+                            )?,
+                            config_rescue: if let Some(client_rescue) = &client_config_rescue {
+                                resolve_rescue_items(
+                                    client_rescue,
+                                    &available_static_responses,
+                                )?
+                            } else {
+                                Default::default()
+                            },
+                            project_rescue: resolve_rescue_items(
+                                &project_rescue,
+                                &available_static_responses,
+                            )?,
+                            resolved_rules: handler
+                                .rules
+                                .into_iter()
+                                .map(|rule| {
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
                                             path: rule.filter.path,
@@ -2467,7 +2415,7 @@ impl RequestsProcessor {
                                             Action::Invoke { rescue } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
                                                 rescue: resolve_rescue_items(
                                                     &rescue,
-                                                    mp_static_responses,
+                                                    &available_static_responses,
                                                 )?,
                                             }),
                                             Action::NextHandler => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::NextHandler),
@@ -2483,23 +2431,24 @@ impl RequestsProcessor {
                                                     &static_response_name,
                                                     &status_code,
                                                     &data,
-                                                    mp_static_responses,
+                                                    &available_static_responses,
                                                 ),
                                                 data: Default::default(), // TODO: what data should be here? argh, need integrateion test suite
                                                 rescue: resolve_rescue_items(
                                                     &rescue,
-                                                    mp_static_responses,
+                                                    &available_static_responses,
                                                 )?,
                                             }),
                                         },
                                     })
                                 })
-                            .collect::<Option<_>>()?,
-                        account_unique_id,
-                        base_path: handler.base_path,
-                        replace_base_path: handler.replace_base_path,
-                        rules_counter: rules_counter.clone(),
-                    })
+                                .collect::<Option<_>>()?,
+                            account_unique_id,
+                            base_path: handler.base_path,
+                            replace_base_path: handler.replace_base_path,
+                            rules_counter: rules_counter.clone(),
+                        })
+                    }
                 })
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| anyhow!("failed to build processor"))?;
@@ -2712,6 +2661,8 @@ impl ResolvedStaticResponse {
         res: &mut Response<Body>,
         additional_data: HashMap<SmolStr, SmolStr>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
+        *res = Response::new(Body::empty());
+
         let mut merged_data = self.data.clone();
         merged_data.extend(additional_data.into_iter());
 
@@ -2781,6 +2732,7 @@ impl ResolvedStaticResponse {
                             })?
                     }
                 };
+                info!("body = {:?}", body);
                 *res.body_mut() = Body::from(body);
             }
             None => {
