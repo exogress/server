@@ -2162,16 +2162,6 @@ impl RequestsProcessor {
 
                     let upstreams = &config.upstreams;
 
-                    for (static_response_name, static_response) in &config.static_responses {
-                        for mp in config.mount_points.keys() {
-                            static_responses
-                                .borrow_mut()
-                                .entry(mp.clone())
-                                .or_default()
-                                .insert(static_response_name.clone(), static_response.clone());
-                        }
-                    }
-
                     let client_rescue = config.rescue.clone();
 
                     config
@@ -2194,6 +2184,15 @@ impl RequestsProcessor {
             })
             .flatten()
             .chain(project_mount_points)
+            .inspect(|(mount_point_name, (_, _, _, _, config))| {
+                for (static_response_name, static_response) in &config.static_responses {
+                    static_responses
+                        .borrow_mut()
+                        .entry(mount_point_name.clone())
+                        .or_default()
+                        .insert(static_response_name.clone(), static_response.clone());
+                }
+            })
             .group_by(|a| a.0.clone())
             .into_iter()
             .map(|a| a.1)
