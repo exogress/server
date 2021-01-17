@@ -6,13 +6,12 @@ use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, Pr
 use futures::{StreamExt, TryStreamExt};
 use http::header::{ETAG, IF_NONE_MATCH, LAST_MODIFIED};
 use http::{HeaderMap, Response, StatusCode};
-use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, OptionalExtension};
 use sha2::Digest;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
+use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
+use sqlx::{Row, SqlitePool};
 use std::io;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -21,7 +20,7 @@ use typed_headers::HeaderMapExt;
 
 #[derive(Clone)]
 pub struct Cache {
-    sqlite: Arc<tokio::sync::Mutex<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>>>,
+    sqlite: SqlitePool,
     cache_files_dir: Arc<PathBuf>,
     in_flights: Arc<DashSet<(AccountUniqueId, String)>>,
 }
@@ -69,10 +68,10 @@ impl Cache {
             sqlite_db_path.as_os_str().to_str().unwrap()
         );
 
-        let manager = SqliteConnectionManager::file(sqlite_db_path);
-        // FIXME: use builder
-        let pool = r2d2::Pool::new(manager)?;
-        let sqlite = pool.get()?;
+        let sqlite = SqlitePoolOptions::new()
+            .max_connections(64)
+            .connect(sqlite_db_path.to_str().unwrap())
+            .await?;
 
         info!("Cache sqlite DB successfully opened");
 
@@ -81,7 +80,7 @@ impl Cache {
         // + 3. find the least used file in account
         // + 4. update last used time of file by account + filename
 
-        sqlite.execute(
+        sqlx::query(
             "CREATE TABLE IF NOT EXISTS  files (
                   id                       INTEGER PRIMARY KEY,
                   account_unique_id        TEXT NOT NULL,
@@ -98,28 +97,29 @@ impl Cache {
                   last_modified            INT8,
                   used_times               INT4 NOT NULL
             )",
-            params![],
-        )?;
+        )
+        .execute(&sqlite)
+        .await?;
 
-        sqlite.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS account_files ON files(account_unique_id, filename);",
-            params![],
-        )?;
-        sqlite.execute(
-            "CREATE INDEX IF NOT EXISTS expired_files ON files(expires_at);",
-            params![],
-        )?;
-        sqlite.execute(
-            "CREATE INDEX IF NOT EXISTS expired_files_in_account ON files(account_unique_id, expires_at);",
-            params![],
-        )?;
-        sqlite.execute(
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS account_files ON files(account_unique_id, filename);")
+            .execute(&sqlite)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS expired_files ON files(expires_at);")
+            .execute(&sqlite)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS expired_files_in_account ON files(account_unique_id, expires_at);")
+            .execute(&sqlite)
+            .await?;
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS expired_files ON files(account_unique_id, last_used_at);",
-            params![],
-        )?;
+        )
+        .execute(&sqlite)
+        .await?;
 
         let cache = Cache {
-            sqlite: Arc::new(tokio::sync::Mutex::new(pool)),
+            sqlite,
             cache_files_dir: Arc::new(cache_files_dir),
             in_flights: Arc::new(Default::default()),
         };
@@ -194,18 +194,11 @@ impl Cache {
         for (evicted_file, account_unique_id) in evicted_files {
             info!("evict file {} from cache", evicted_file);
 
-            {
-                let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
-                shadow_clone!(evicted_file);
-
-                let _res = tokio::task::spawn_blocking(move || {
-                    Ok::<_, anyhow::Error>(locked_sqlite_pool.get()?.execute(
-                        "DELETE FROM files WHERE account_unique_id = ?1 AND filename = ?2;",
-                        params![account_unique_id.to_string(), evicted_file],
-                    )?)
-                })
-                .await??;
-            }
+            sqlx::query("DELETE FROM files WHERE account_unique_id = ? AND filename = ?")
+                .bind(account_unique_id.to_string().as_str())
+                .bind(evicted_file.as_str())
+                .execute(&self.sqlite)
+                .await?;
 
             let mut storage_path = self.storage_path(&account_unique_id, evicted_file.as_str());
 
@@ -225,36 +218,23 @@ impl Cache {
     async fn delete_some_expired(&self, limit: isize) -> anyhow::Result<usize> {
         let now = Utc::now().timestamp();
 
-        let evicted_files: Vec<(String, AccountUniqueId)> = {
-            let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
-
-            tokio::task::spawn_blocking(move || {
-                let conn = locked_sqlite_pool.get()?;
-                let mut stmt = conn.prepare(
-                    "SELECT account_unique_id, filename 
-                    FROM files 
-                    WHERE expires_at < ?1 
-                    LIMIT ?2;",
-                )?;
-
-                let res = stmt
-                    .query_map(params![now, limit], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })?
-                    .into_iter()
-                    .map(|r| {
-                        let (account_unique_id, filename) = r?;
-                        Ok::<_, anyhow::Error>((
-                            filename,
-                            AccountUniqueId::from_str(&account_unique_id)?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Ok::<_, anyhow::Error>(res)
-            })
-            .await??
-        };
+        let evicted_files: Vec<(String, AccountUniqueId)> = sqlx::query(
+            "SELECT account_unique_id, filename 
+                 FROM files 
+                 WHERE expires_at < ?1 
+                 LIMIT ?2;",
+        )
+        .bind(now)
+        .bind(limit as i64)
+        .fetch(&self.sqlite)
+        .err_into::<anyhow::Error>()
+        .and_then(|row: SqliteRow| async move {
+            let account_unique_id: String = row.try_get("account_unique_id")?;
+            let filename: String = row.try_get("filename")?;
+            Ok::<_, anyhow::Error>((filename, account_unique_id.parse()?))
+        })
+        .try_collect()
+        .await?;
 
         let num_evicted_files = evicted_files.len();
 
@@ -274,34 +254,22 @@ impl Cache {
     ) -> anyhow::Result<usize> {
         let now = Utc::now().timestamp();
 
-        let evicted_files: Vec<(String, AccountUniqueId)> = {
-            let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
-            shadow_clone!(account_unique_id);
-
-            tokio::task::spawn_blocking(move || {
-                let conn = locked_sqlite_pool.get()?;
-                let mut stmt = conn.prepare(
-                    "SELECT filename 
-                    FROM files 
-                    WHERE expires_at < ?1 AND account_unique_id = ?2
-                    LIMIT ?3;",
-                )?;
-
-                let res = stmt
-                    .query_map(params![now, account_unique_id.to_string(), limit], |row| {
-                        row.get::<_, String>(0)
-                    })?
-                    .into_iter()
-                    .map(|r| {
-                        let filename = r?;
-                        Ok::<_, anyhow::Error>((filename, account_unique_id.clone()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Ok::<_, anyhow::Error>(res)
-            })
-            .await??
-        };
+        let evicted_files: Vec<(String, AccountUniqueId)> = sqlx::query(
+            "SELECT filename 
+                  FROM files 
+                  WHERE expires_at < ? AND account_unique_id = ?
+                  LIMIT ?",
+        )
+        .bind(now)
+        .bind(account_unique_id.to_string().as_str())
+        .bind(limit as i64)
+        .fetch(&self.sqlite)
+        .and_then(|row: SqliteRow| async move {
+            let filename: String = row.try_get("filename")?;
+            Ok((filename, account_unique_id.clone()))
+        })
+        .try_collect()
+        .await?;
 
         let num_evicted_files = evicted_files.len();
 
@@ -317,35 +285,21 @@ impl Cache {
         &self,
         account_unique_id: &AccountUniqueId,
     ) -> anyhow::Result<usize> {
-        let evicted_files: Vec<(String, AccountUniqueId)> = {
-            let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
-            shadow_clone!(account_unique_id);
-
-            tokio::task::spawn_blocking(move || {
-                let conn = locked_sqlite_pool.get()?;
-                let mut stmt = conn.prepare(
-                    "SELECT filename 
-                    FROM files 
-                    WHERE account_unique_id = ?1
-                    ORDER BY last_used_at
-                    LIMIT 1;",
-                )?;
-
-                let res = stmt
-                    .query_map(params![account_unique_id.to_string()], |row| {
-                        Ok(row.get::<_, String>(0)?)
-                    })?
-                    .into_iter()
-                    .map(|r| {
-                        let filename = r?;
-                        Ok::<_, anyhow::Error>((filename, account_unique_id.clone()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Ok::<_, anyhow::Error>(res)
-            })
-            .await??
-        };
+        let evicted_files: Vec<(String, AccountUniqueId)> = sqlx::query(
+            "SELECT filename 
+                 FROM files 
+                 WHERE account_unique_id = ?
+                 ORDER BY last_used_at
+                 LIMIT 1;",
+        )
+        .bind(account_unique_id.to_string().as_str())
+        .fetch(&self.sqlite)
+        .and_then(|row: SqliteRow| async move {
+            let filename: String = row.try_get("filename")?;
+            Ok((filename, account_unique_id.clone()))
+        })
+        .try_collect()
+        .await?;
 
         let num_evicted_files = evicted_files.len();
 
@@ -357,30 +311,23 @@ impl Cache {
     }
 
     async fn get_account_used(&self, account_unique_id: &AccountUniqueId) -> anyhow::Result<Byte> {
-        let space_used = {
-            let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
-            shadow_clone!(account_unique_id);
-
-            tokio::task::spawn_blocking(move || {
-                let conn = locked_sqlite_pool.get()?;
-                let mut stmt = conn.prepare(
-                    "SELECT sum(original_file_size) as space_used
+        let maybe_row = sqlx::query(
+            "SELECT sum(original_file_size) as space_used
                     FROM files
                     WHERE account_unique_id = ?1
                     GROUP BY account_unique_id
-                    LIMIT 1;",
-                )?;
+                    LIMIT 1",
+        )
+        .bind(account_unique_id.to_string())
+        .fetch_optional(&self.sqlite)
+        .await?;
 
-                let res = stmt
-                    .query_row(params![account_unique_id.to_string()], |row| {
-                        Ok(row.get::<_, u32>(0)?)
-                    })
-                    .optional()?;
-
-                Ok::<_, anyhow::Error>(res)
-            })
-            .await??
-            .unwrap_or(0u32)
+        let space_used = match maybe_row {
+            None => 0,
+            Some(row) => {
+                let space_used: u32 = row.try_get("space_used")?;
+                space_used
+            }
         };
 
         let bytes_used = Byte::from_bytes(space_used.into());
@@ -440,66 +387,51 @@ impl Cache {
             )
         });
 
-        {
-            let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
-
-            tokio::task::spawn_blocking({
-                shadow_clone!(account_unique_id);
-                let file_name = file_name.to_string();
-
-                move || {
-                    Ok::<_, anyhow::Error>(
-                        locked_sqlite_pool.get()?.execute(
-                            "INSERT INTO files (
-                                      account_unique_id,
-                                      filename,
-                                      file_size,
-                                      original_file_size,
-                                      expires_at,
-                                      last_used_at,
-                                      meta,
-                                      used_times,
-                                      body_encryption_header,
-                                      meta_encryption_header,
-                                      etag,
-                                      is_weak_etag,
-                                      last_modified
-                                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                                    ON CONFLICT(account_unique_id, filename) DO 
-                                        UPDATE SET 
-                                            file_size=?3,
-                                            original_file_size=?4,
-                                            expires_at=?5,
-                                            last_used_at=?6,
-                                            meta=?7,
-                                            used_times=?8,
-                                            body_encryption_header=?9,
-                                            meta_encryption_header=?10,
-                                            etag=?11,
-                                            is_weak_etag=?12,
-                                            last_modified=?13;"
-                                .into(),
-                            params![
-                                account_unique_id.to_string(),
-                                file_name,
-                                file_size as u32,
-                                original_file_size,
-                                valid_till.timestamp(),
-                                Utc::now().timestamp(),
-                                base64::encode(encrypted_meta_json),
-                                0,
-                                base64::encode(body_encryption_header.as_ref()),
-                                base64::encode(meta_encryption_header.as_ref()),
-                                etag.as_ref().map(|e| e.tag().to_string()),
-                                etag.as_ref().map(|e| e.weak),
-                                last_modified,
-                            ],
-                        )?,
-                    )
-                }
-            })
-            .await??;
-        }
+        sqlx::query(
+            "INSERT INTO files (
+                      account_unique_id,
+                      filename,
+                      file_size,
+                      original_file_size,
+                      expires_at,
+                      last_used_at,
+                      meta,
+                      used_times,
+                      body_encryption_header,
+                      meta_encryption_header,
+                      etag,
+                      is_weak_etag,
+                      last_modified
+                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                    ON CONFLICT(account_unique_id, filename) DO 
+                        UPDATE SET 
+                            file_size=?3,
+                            original_file_size=?4,
+                            expires_at=?5,
+                            last_used_at=?6,
+                            meta=?7,
+                            used_times=?8,
+                            body_encryption_header=?9,
+                            meta_encryption_header=?10,
+                            etag=?11,
+                            is_weak_etag=?12,
+                            last_modified=?13;",
+        )
+        .bind(account_unique_id.to_string())
+        .bind(file_name)
+        .bind(file_size as u32)
+        .bind(original_file_size)
+        .bind(valid_till.timestamp())
+        .bind(Utc::now().timestamp())
+        .bind(base64::encode(encrypted_meta_json))
+        .bind(0)
+        .bind(base64::encode(body_encryption_header.as_ref()))
+        .bind(base64::encode(meta_encryption_header.as_ref()))
+        .bind(etag.as_ref().map(|e| e.tag().to_string()))
+        .bind(etag.as_ref().map(|e| e.weak))
+        .bind(last_modified)
+        .execute(&self.sqlite)
+        .await?;
 
         let mut parent_dir = storage_path.clone();
         parent_dir.pop();
@@ -516,28 +448,16 @@ impl Cache {
         account_unique_id: &AccountUniqueId,
         file_name: &str,
     ) -> anyhow::Result<()> {
-        {
-            let locked_sqlite = self.sqlite.clone().lock_owned().await;
-
-            tokio::task::spawn_blocking({
-                shadow_clone!(account_unique_id);
-                let file_name = file_name.to_string();
-
-                move || {
-                    Ok::<_, anyhow::Error>(locked_sqlite.get()?.execute(
-                        "UPDATE files 
-                             SET used_times=used_times+1, last_used_at=?3 
-                             WHERE account_unique_id = ?1 AND filename = ?2;",
-                        params![
-                            account_unique_id.to_string(),
-                            file_name,
-                            Utc::now().timestamp()
-                        ],
-                    )?)
-                }
-            })
-            .await??;
-        }
+        sqlx::query(
+            "UPDATE files 
+                 SET used_times=used_times+1, last_used_at=?
+                 WHERE account_unique_id = ? AND filename = ?",
+        )
+        .bind(Utc::now().timestamp())
+        .bind(account_unique_id.to_string())
+        .bind(file_name)
+        .execute(&self.sqlite)
+        .await?;
 
         Ok(())
     }
@@ -660,199 +580,154 @@ impl Cache {
             path_and_query,
         );
 
-        let maybe_query_result = {
-            let locked_sqlite_pool = self.sqlite.clone().lock_owned().await;
-            shadow_clone!(account_unique_id);
-            shadow_clone!(file_name);
-            shadow_clone!(xchacha20poly1305_secret_key);
-
-            tokio::task::spawn_blocking(move || {
-                let conn = locked_sqlite_pool.get()?;
-                let mut stmt = conn.prepare(
-                    "SELECT
-                        expires_at,
-                        meta,
-                        original_file_size,
-                        body_encryption_header,
-                        meta_encryption_header,
-                        etag,
-                        is_weak_etag,
-                        last_modified
-                    FROM files 
-                    WHERE filename = ?1 AND account_unique_id = ?2;",
-                )?;
-
-                if let Some((
-                    ts,
-                    encrypted_meta_json,
+        let maybe_query_result = sqlx::query(
+            "SELECT
+                    expires_at,
+                    meta,
                     original_file_size,
-                    encoded_body_encryption_header,
-                    encoded_meta_encryption_header,
+                    body_encryption_header,
+                    meta_encryption_header,
                     etag,
                     is_weak_etag,
-                    last_modified,
-                )) = stmt
-                    .query_row(params![file_name, account_unique_id.to_string()], |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, u32>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, String>(4)?,
-                            row.get::<_, Option<String>>(5)?,
-                            row.get::<_, Option<bool>>(6)?,
-                            row.get::<_, Option<i64>>(7)?,
-                        ))
-                    })
-                    .optional()?
-                {
-                    let expires_at = Utc.timestamp(ts, 0);
-                    let body_encryption_header =
-                        sodiumoxide::crypto::secretstream::Header::from_slice(&base64::decode(
-                            encoded_body_encryption_header,
-                        )?)
-                        .ok_or_else(|| anyhow!("failed to read encryption header"))?;
-                    let meta_encryption_header =
-                        sodiumoxide::crypto::secretstream::Header::from_slice(&base64::decode(
-                            encoded_meta_encryption_header,
-                        )?)
-                        .ok_or_else(|| anyhow!("failed to read encryption header"))?;
+                    last_modified
+                FROM files 
+                WHERE filename = ? AND account_unique_id = ?",
+        )
+        .bind(file_name.as_str())
+        .bind(account_unique_id.to_string())
+        .fetch_optional(&self.sqlite)
+        .await?;
 
-                    let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
-                        &meta_encryption_header,
-                        &xchacha20poly1305_secret_key,
-                    )
-                    .map_err(|_| anyhow!("could not init decryption"))?;
+        if let Some(row) = maybe_query_result {
+            let original_file_size = row.try_get::<u32, _>("original_file_size")?;
+            let etag = row.try_get::<Option<String>, _>("etag")?;
+            let is_weak_etag = row.try_get::<Option<bool>, _>("is_weak_etag")?;
+            let last_modified = row.try_get::<Option<i64>, _>("last_modified")?;
 
-                    let decrypted = dec_stream
-                        .pull(base64::decode(encrypted_meta_json)?.as_ref(), None)
-                        .map_err(|_| anyhow!("could not decrypt meta data"))?
-                        .0;
+            let expires_at = Utc.timestamp(row.try_get("expires_at")?, 0);
+            let body_encryption_header = sodiumoxide::crypto::secretstream::Header::from_slice(
+                &base64::decode(row.try_get::<String, _>("body_encryption_header")?)?,
+            )
+            .ok_or_else(|| anyhow!("failed to read encryption header"))?;
+            let meta_encryption_header = sodiumoxide::crypto::secretstream::Header::from_slice(
+                &base64::decode(row.try_get::<String, _>("meta_encryption_header")?)?,
+            )
+            .ok_or_else(|| anyhow!("failed to read encryption header"))?;
 
-                    let meta = serde_json::from_slice::<Meta>(decrypted.as_ref())?;
+            let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
+                &meta_encryption_header,
+                &xchacha20poly1305_secret_key,
+            )
+            .map_err(|_| anyhow!("could not init decryption"))?;
 
-                    let stored_etag = match (is_weak_etag, etag) {
-                        (Some(true), Some(tag)) => Some(EntityTag::weak(&tag)),
-                        (Some(false), Some(tag)) => Some(EntityTag::strong(&tag)),
-                        _ => None,
-                    };
-                    let stored_last_modified = last_modified.map(|lm| Utc.timestamp(lm, 0));
-
-                    Ok::<_, anyhow::Error>(Some((
-                        expires_at,
-                        meta,
-                        original_file_size,
-                        body_encryption_header,
-                        stored_last_modified,
-                        stored_etag,
-                    )))
-                } else {
-                    return Ok(None);
-                }
-            })
-            .await??
-        };
-
-        match maybe_query_result {
-            Some((
-                expires_at,
-                meta,
-                original_file_size,
-                body_encryption_header,
-                maybe_stored_last_modified,
-                maybe_stored_etag,
-            )) => {
-                let now = Utc::now();
-                if expires_at < now {
-                    return Ok(None);
-                }
-
-                self.mark_lru_used(account_unique_id, file_name.as_str())
-                    .await?;
-
-                let req_if_none_match: Vec<EntityTag> = request_headers
-                    .get_all(IF_NONE_MATCH)
-                    .iter()
-                    .filter_map(|v| v.to_str().ok().and_then(|r| r.parse().ok()))
-                    .collect();
-
-                let req_last_modified = request_headers
-                    .get(LAST_MODIFIED)
-                    .and_then(|date| Some(DateTime::parse_from_rfc2822(date.to_str().ok()?).ok()?));
-
-                let mut conditional_response_matches = false;
-                if let Some(stored_etag) = maybe_stored_etag {
-                    if req_if_none_match
-                        .iter()
-                        .filter(|&provided_etag| stored_etag.weak_eq(provided_etag))
-                        .next()
-                        .is_some()
-                    {
-                        info!("etag matches the cached version - send non-modified");
-                        conditional_response_matches = true;
-                    }
-                }
-                if let (Some(stored_last_modified), Some(provided_last_modified)) =
-                    (maybe_stored_last_modified, req_last_modified)
-                {
-                    if stored_last_modified < provided_last_modified {
-                        info!("last-modified matches the cached version - send non-modified");
-                        conditional_response_matches = true;
-                    }
-                }
-
-                if conditional_response_matches {
-                    let mut resp = Response::new(hyper::Body::empty());
-                    *resp.status_mut() = StatusCode::NOT_MODIFIED;
-                    return Ok(Some(resp));
-                }
-
-                let storage_path = self.storage_path(account_unique_id, file_name.as_ref());
-
-                let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
-                    &body_encryption_header,
-                    xchacha20poly1305_secret_key,
+            let decrypted = dec_stream
+                .pull(
+                    base64::decode(row.try_get::<String, _>("meta")?)?.as_ref(),
+                    None,
                 )
-                .map_err(|_| anyhow!("could not init decryption"))?;
+                .map_err(|_| anyhow!("could not decrypt meta data"))?
+                .0;
 
-                let reader = tokio::fs::File::open(&storage_path).await?;
+            let meta = serde_json::from_slice::<Meta>(decrypted.as_ref())?;
 
-                let framed_reader = LengthDelimitedCodec::builder().new_read(reader);
+            let maybe_stored_etag = match (is_weak_etag, etag) {
+                (Some(true), Some(tag)) => Some(EntityTag::weak(&tag)),
+                (Some(false), Some(tag)) => Some(EntityTag::strong(&tag)),
+                _ => None,
+            };
+            let maybe_stored_last_modified = last_modified.map(|lm| Utc.timestamp(lm, 0));
 
-                let body = framed_reader
-                    .map_ok(move |encrypted_frame| {
-                        Ok::<Vec<u8>, io::Error>(
-                            dec_stream
-                                .pull(&encrypted_frame, None)
-                                .map_err(|_| {
-                                    io::Error::new(
-                                        io::ErrorKind::Other,
-                                        "failed to decoded encrypted frame",
-                                    )
-                                })?
-                                .0,
-                        )
-                    })
-                    .take_while(|r| {
-                        if let Err(e) = r {
-                            error!("Could not decode encrypted frame from storage: {}", e);
-                        }
-                        futures::future::ready(r.is_ok())
-                    })
-                    .map(|r| r.unwrap());
-
-                let mut resp = Response::new(hyper::Body::wrap_stream(body));
-                *resp.status_mut() = meta.status;
-                *resp.headers_mut() = meta.headers;
-                if original_file_size > 0 {
-                    resp.headers_mut()
-                        .typed_insert::<typed_headers::ContentLength>(
-                            &typed_headers::ContentLength(original_file_size.into()),
-                        );
-                }
-                Ok(Some(resp))
+            let now = Utc::now();
+            if expires_at < now {
+                return Ok(None);
             }
-            None => Ok(None),
+
+            self.mark_lru_used(account_unique_id, file_name.as_str())
+                .await?;
+
+            let req_if_none_match: Vec<EntityTag> = request_headers
+                .get_all(IF_NONE_MATCH)
+                .iter()
+                .filter_map(|v| v.to_str().ok().and_then(|r| r.parse().ok()))
+                .collect();
+
+            let req_last_modified = request_headers
+                .get(LAST_MODIFIED)
+                .and_then(|date| Some(DateTime::parse_from_rfc2822(date.to_str().ok()?).ok()?));
+
+            let mut conditional_response_matches = false;
+            if let Some(stored_etag) = maybe_stored_etag {
+                if req_if_none_match
+                    .iter()
+                    .filter(|&provided_etag| stored_etag.weak_eq(provided_etag))
+                    .next()
+                    .is_some()
+                {
+                    info!("etag matches the cached version - send non-modified");
+                    conditional_response_matches = true;
+                }
+            }
+            if let (Some(stored_last_modified), Some(provided_last_modified)) =
+                (maybe_stored_last_modified, req_last_modified)
+            {
+                if stored_last_modified < provided_last_modified {
+                    info!("last-modified matches the cached version - send non-modified");
+                    conditional_response_matches = true;
+                }
+            }
+
+            if conditional_response_matches {
+                let mut resp = Response::new(hyper::Body::empty());
+                *resp.status_mut() = StatusCode::NOT_MODIFIED;
+                return Ok(Some(resp));
+            }
+
+            let storage_path = self.storage_path(account_unique_id, file_name.as_ref());
+
+            let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
+                &body_encryption_header,
+                xchacha20poly1305_secret_key,
+            )
+            .map_err(|_| anyhow!("could not init decryption"))?;
+
+            let reader = tokio::fs::File::open(&storage_path).await?;
+
+            let framed_reader = LengthDelimitedCodec::builder().new_read(reader);
+
+            let body = framed_reader
+                .map_ok(move |encrypted_frame| {
+                    Ok::<Vec<u8>, io::Error>(
+                        dec_stream
+                            .pull(&encrypted_frame, None)
+                            .map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::Other,
+                                    "failed to decoded encrypted frame",
+                                )
+                            })?
+                            .0,
+                    )
+                })
+                .take_while(|r| {
+                    if let Err(e) = r {
+                        error!("Could not decode encrypted frame from storage: {}", e);
+                    }
+                    futures::future::ready(r.is_ok())
+                })
+                .map(|r| r.unwrap());
+
+            let mut resp = Response::new(hyper::Body::wrap_stream(body));
+            *resp.status_mut() = meta.status;
+            *resp.headers_mut() = meta.headers;
+            if original_file_size > 0 {
+                resp.headers_mut()
+                    .typed_insert::<typed_headers::ContentLength>(&typed_headers::ContentLength(
+                        original_file_size.into(),
+                    ));
+            }
+            Ok(Some(resp))
+        } else {
+            Ok(None)
         }
     }
 }
