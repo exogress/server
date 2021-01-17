@@ -68,17 +68,19 @@ impl Cache {
             sqlite_db_path.as_os_str().to_str().unwrap()
         );
 
+        if let Err(e) = tokio::fs::metadata(&sqlite_db_path).await {
+            if let io::ErrorKind::NotFound = e.kind() {
+                info!("sqlite db not exist. Creating empty file");
+                tokio::fs::File::create(&sqlite_db_path).await?;
+            }
+        }
+
         let sqlite = SqlitePoolOptions::new()
             .max_connections(64)
             .connect(sqlite_db_path.to_str().unwrap())
             .await?;
 
         info!("Cache sqlite DB successfully opened");
-
-        // + 1. find all expired
-        // + 2. find all expired in account
-        // + 3. find the least used file in account
-        // + 4. update last used time of file by account + filename
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS  files (
