@@ -7,6 +7,7 @@ extern crate tracing;
 #[macro_use]
 extern crate serde;
 
+use crate::elasticsearch::ElasticsearchClient;
 use crate::http::GatewayCommonTlsConfig;
 use crate::reporting::MongoDbClient;
 use crate::termination::StopReason;
@@ -27,6 +28,7 @@ use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+mod elasticsearch;
 mod http;
 mod presence;
 mod reporting;
@@ -76,6 +78,15 @@ fn main() {
                 .default_value("mongodb://localhost:27017")
                 .required(true)
                 .help("Set mongodb URL")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("elasticsearch_url")
+                .long("elasticsearch-url")
+                .value_name("URL")
+                .default_value("http://localhost:9200")
+                .required(true)
+                .help("Set elasticsearch URL")
                 .takes_value(true),
         )
         .arg(
@@ -167,6 +178,10 @@ fn main() {
     let webapp_client =
         crate::webapp::Client::new(webapp_base_url.clone(), int_client_cert.clone());
 
+    let elasticsearch_url = matches
+        .value_of("elasticsearch_url")
+        .expect("no --elasticsearch-url provided")
+        .to_string();
     let mongodb_url = matches
         .value_of("mongodb_url")
         .expect("no --mongodb-url provided")
@@ -248,6 +263,9 @@ fn main() {
                 .await
                 .expect("mongo db connection error");
 
+            let elastic_client = ElasticsearchClient::new(elasticsearch_url.as_ref())
+                .expect("mongo db connection error");
+
             info!("Listening  HTTP on {}", listen_http_addr);
 
             let http = http::server(
@@ -261,6 +279,7 @@ fn main() {
                 webapp_client,
                 presence_client,
                 mongodb_client,
+                elastic_client,
                 app_stop_handle,
                 app_stop_wait,
             );

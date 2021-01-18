@@ -1,3 +1,4 @@
+use crate::logging::LogMessage;
 use crate::url_prefix::MountPointBaseUrl;
 use chrono::serde::ts_milliseconds;
 use exogress_common::entities::{AccountUniqueId, ConfigId};
@@ -55,6 +56,9 @@ pub enum WsToGwMessage {
 pub enum WsFromGwMessage {
     #[serde(rename = "statistics")]
     Statistics { report: StatisticsReport },
+
+    #[serde(rename = "logs")]
+    Logs { report: Vec<LogMessage> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

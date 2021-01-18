@@ -16,6 +16,7 @@ use exogress_common::entities::{
     AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
     ParameterName, ProjectName, Upstream,
 };
+use exogress_server_common::logging::LogMessage;
 use exogress_server_common::presence;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::mpsc;
@@ -54,7 +55,10 @@ pub struct Client {
     assistant_base_url: Url,
     maybe_identity: Option<Vec<u8>>,
 
+    gw_location: SmolStr,
+
     public_gw_base_url: Url,
+    log_messages_tx: mpsc::Sender<LogMessage>,
 
     rules_counters: AccountCounters,
 
@@ -207,6 +211,8 @@ impl Client {
         github_oauth2_client: auth::github::GithubOauth2Client,
         assistant_base_url: Url,
         public_gw_base_url: &Url,
+        gw_location: SmolStr,
+        log_messages_tx: mpsc::Sender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
         resolver: TokioAsyncResolver,
@@ -239,7 +245,9 @@ impl Client {
             github_oauth2_client,
             assistant_base_url,
             maybe_identity,
+            gw_location,
             public_gw_base_url: public_gw_base_url.clone(),
+            log_messages_tx,
             rules_counters,
             traffic_counters_tx,
             presence_client,
@@ -324,6 +332,7 @@ impl Client {
 
         let host = matchable_url.host();
         let config_error = Arc::new(Mutex::new(None));
+        let gw_location = self.gw_location.clone();
 
         // take lock and deal with in_flight queries
         let in_flight_request = self
@@ -332,6 +341,7 @@ impl Client {
             .or_insert_with({
                 shadow_clone!(matchable_url);
                 shadow_clone!(config_error);
+                shadow_clone!(gw_location);
 
                 let base_url = self.webapp_base_url.clone();
                 let reqwest = self.reqwest.clone();
@@ -342,6 +352,7 @@ impl Client {
                 let public_gw_base_url = self.public_gw_base_url.clone();
                 let rules_counters = self.rules_counters.clone();
                 let presence_client = self.presence_client.clone();
+                let log_messages_tx = self.log_messages_tx.clone();
 
                 let requests_processors_registry = self.requests_processors_registry.clone();
 
@@ -418,6 +429,8 @@ impl Client {
                                                         individual_hostname,
                                                         maybe_identity,
                                                         traffic_counters_tx.clone(),
+                                                        log_messages_tx,
+                                                        &gw_location,
                                                         cache,
                                                         presence_client.clone(),
                                                         resolver,

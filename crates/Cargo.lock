@@ -865,6 +865,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shadow-clone",
+ "simd-json",
  "stop-handle",
  "thiserror",
  "tokio",
@@ -3848,11 +3849,11 @@ checksum = "f764005d11ee5f36500a149ace24e00e3da98b0158b3e2d53a7495660d3f4d60"
 
 [[package]]
 name = "tame-gcs"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d0bbb2ceb3cca71ab850b56b61efe1969eca36640f33855b148a8889c10fcbe"
+checksum = "7d91eca7cff3139b918223bb560b20bfb47053ba9cb414822eb4fc3e9bedee9e"
 dependencies = [
- "base64 0.12.3",
+ "base64 0.13.0",
  "bytes 1.0.1",
  "chrono",
  "http",
@@ -3866,11 +3867,11 @@ dependencies = [
 
 [[package]]
 name = "tame-oauth"
-version = "0.4.6"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ba5509f2734c7e513441eb23d3c9df8bccc8d405b1571409fa9558c3cdaae10"
+checksum = "9435c9348e480fad0f2215d5602e2dfad03df8a6398c4e7ceaeaa42758f26a8a"
 dependencies = [
- "base64 0.12.3",
+ "base64 0.13.0",
  "chrono",
  "http",
  "lock_api 0.4.2",

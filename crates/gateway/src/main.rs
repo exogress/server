@@ -608,6 +608,7 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
+        let (log_messages_tx, log_messages_rx) = mpsc::channel(16536);
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
 
@@ -631,6 +632,12 @@ fn main() {
 
         let account_rules_counters = AccountCounters::new();
 
+        let gw_location: SmolStr = matches
+            .value_of("location")
+            .expect("Please provide --location")
+            .to_string()
+            .into();
+
         let api_client = Client::new(
             cache_ttl,
             account_rules_counters.clone(),
@@ -640,6 +647,8 @@ fn main() {
             github_oauth2_client.clone(),
             assistant_base_url.clone(),
             &public_base_url,
+            gw_location.clone(),
+            log_messages_tx,
             int_client_cert.clone(),
             cache,
             resolver.clone(),
@@ -659,21 +668,42 @@ fn main() {
             warn!("tunnels acceptor stopped: {:?}", res);
         });
 
-        let (mut statistics_tx, statistics_rx) = mpsc::channel::<WsFromGwMessage>(16);
+        let (mut gw_to_assistant_messages_tx, gw_to_assistant_messages_rx) =
+            mpsc::channel::<WsFromGwMessage>(16);
 
         let individual_hostname = matches
             .value_of("individual_hostname")
             .expect("Please provide --individual-hostname")
             .to_string();
 
-        let gw_location = matches
-            .value_of("location")
-            .expect("Please provide --location")
-            .to_string();
+        let dump_log_messages = {
+            shadow_clone!(individual_hostname);
+            shadow_clone!(mut gw_to_assistant_messages_tx);
+
+            const CHUNK: usize = 2048;
+            let mut ready_chunks = log_messages_rx.ready_chunks(CHUNK);
+            async move {
+                while let Some(ready_chunks) = ready_chunks.next().await {
+                    let should_wait = ready_chunks.len() != CHUNK;
+
+                    let batch = WsFromGwMessage::Logs {
+                        report: ready_chunks,
+                    };
+
+                    gw_to_assistant_messages_tx.send(batch).await?;
+
+                    if should_wait {
+                        sleep(Duration::from_secs(5)).await;
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(())
+            }
+        };
 
         let dump_traffic_statistics = {
             shadow_clone!(individual_hostname);
-            shadow_clone!(mut statistics_tx);
+            shadow_clone!(mut gw_to_assistant_messages_tx);
 
             const CHUNK: usize = 2048;
             let mut ready_chunks = futures::stream::select(
@@ -717,7 +747,7 @@ fn main() {
                         },
                     };
 
-                    statistics_tx.send(batch).await?;
+                    gw_to_assistant_messages_tx.send(batch).await?;
 
                     if should_wait {
                         sleep(Duration::from_secs(20)).await;
@@ -749,7 +779,7 @@ fn main() {
                             },
                         };
 
-                        statistics_tx.send(report).await?;
+                        gw_to_assistant_messages_tx.send(report).await?;
                         sleep(Duration::from_secs(60)).await;
                     } else {
                         sleep(Duration::from_secs(10)).await;
@@ -765,11 +795,11 @@ fn main() {
         let consumer = AssistantClient::new(
             assistant_base_url.clone(),
             &individual_hostname,
-            &gw_location,
+            gw_location.clone(),
             &api_client.mappings(),
             &client_tunnels,
             tls_gw_common.clone(),
-            statistics_rx,
+            gw_to_assistant_messages_rx,
             int_client_cert.clone(),
             &api_client,
             resolver.clone(),
@@ -807,6 +837,7 @@ fn main() {
 
         tokio::spawn(async move {
             tokio::select! {
+                _ = tokio::spawn(dump_log_messages) => {},
                 _ = tokio::spawn(dump_traffic_statistics) => {},
                 _ = tokio::spawn(dump_rules_statistics) => {},
             }

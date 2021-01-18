@@ -1,9 +1,11 @@
+use crate::elasticsearch::ElasticsearchClient;
 use crate::reporting::MongoDbClient;
 use crate::termination::StopReason;
 use exogress_common::common_utils::backoff::Backoff;
 use exogress_server_common::assistant::{
     GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
 };
+use exogress_server_common::logging::LogMessage;
 use futures::channel::mpsc;
 use futures::pin_mut;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -55,6 +57,7 @@ pub async fn server(
     webapp_client: crate::webapp::Client,
     presence_client: crate::presence::Client,
     db_client: MongoDbClient,
+    elastic_client: ElasticsearchClient,
     stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<StopReason>,
 ) {
@@ -68,6 +71,7 @@ pub async fn server(
             shadow_clone!(db_client);
             shadow_clone!(webapp_client);
             shadow_clone!(presence_client);
+            shadow_clone!(elastic_client);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
                 shadow_clone!(mut redis);
@@ -76,6 +80,7 @@ pub async fn server(
                 shadow_clone!(webapp_client);
                 shadow_clone!(presence_client);
                 shadow_clone!(stop_handle);
+                shadow_clone!(elastic_client);
 
                 let gw_location = query.get("location").unwrap().clone();
 
@@ -84,6 +89,7 @@ pub async fn server(
                     {
                         shadow_clone!(gw_hostname);
                         shadow_clone!(stop_handle);
+                        shadow_clone!(elastic_client);
 
                         async move {
                             match presence_client.set_online(&gw_hostname).await {
@@ -117,6 +123,28 @@ pub async fn server(
                                     };
 
                                     let (mut mongo_saver_tx, mut mongo_saver_rx) = mpsc::channel(128);
+                                    let (mut elastic_saver_tx, mut elastic_saver_rx) = mpsc::channel::<Vec<LogMessage>>(128);
+
+                                    let elastic_saver = tokio::spawn({
+                                        shadow_clone!(elastic_client);
+
+                                        async move {
+                                            while let Some(report) = elastic_saver_rx.next().await {
+                                                info!("Start saving to elasticsearch");
+                                                let start_time = crate::statistics::ACCOUNT_LOGS_SAVE_TIME.start_timer();
+
+                                                tokio::time::timeout(
+                                                    Duration::from_secs(5),
+                                                    elastic_client.save_log_messages(&report)
+                                                ).await??;
+
+                                                start_time.observe_duration();
+                                            }
+
+                                            Ok::<_, anyhow::Error>(())
+                                        }
+                                    });
+
 
                                     let mongo_saver = tokio::spawn({
                                         shadow_clone!(gw_hostname);
@@ -150,13 +178,17 @@ pub async fn server(
                                                 // info!("received from WS: {:?}", msg);
 
                                                 if msg.is_text() {
-                                                    let txt = msg.to_str().unwrap();
-                                                    let msg = serde_json::from_str::<WsFromGwMessage>(txt).expect("FIXME");
+                                                    let mut txt = msg.to_str().unwrap().to_string();
+                                                    let msg = simd_json::from_str::<WsFromGwMessage>(&mut txt).expect("FIXME");
                                                     info!("received GW: {:?}", msg);
                                                     match msg {
                                                         WsFromGwMessage::Statistics { report } => {
                                                             info!("Will save statistics report to mongodb");
                                                             mongo_saver_tx.send(report).await?;
+                                                        },
+                                                        WsFromGwMessage::Logs { report } => {
+                                                            info!("Will save logs to elasticsearch");
+                                                            elastic_saver_tx.send(report).await?;
                                                         }
                                                         _ => {},
                                                     }
@@ -175,7 +207,7 @@ pub async fn server(
                                     };
 
                                     let notifier = async move {
-                                        let outgoing_msg = serde_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
+                                        let outgoing_msg = simd_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
 
                                         tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::text(outgoing_msg))).await??;
 
@@ -194,11 +226,11 @@ pub async fn server(
                                                             async move {
                                                                 while let Some(msg) = messages.next().await {
                                                                     match msg.get_payload::<String>() {
-                                                                        Ok(p) => {
+                                                                        Ok(mut p) => {
                                                                             info!("redis -> assistant: {:?}", p);
-                                                                            match serde_json::from_str::<Notification>(&p) {
+                                                                            match simd_json::from_str::<Notification>(&mut p) {
                                                                                 Ok(notification) => {
-                                                                                    let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
+                                                                                    let outgoing_msg = simd_json::to_string(&WsToGwMessage::WebAppNotification(notification))
                                                                                         .expect("could not serialize");
                                                                                     let r = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
                                                                                         .send(warp::filters::ws::Message::text(
@@ -298,6 +330,9 @@ pub async fn server(
                                         },
                                         r = mongo_saver => {
                                             warn!("mongo_saver stopped: {:?}", r);
+                                        },
+                                        r = elastic_saver => {
+                                            warn!("elastic_saver stopped: {:?}", r);
                                         },
                                         r = ensure_pong_received => {
                                             warn!("WS ensure_pong_received stopped: {:?}", r);

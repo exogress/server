@@ -11,6 +11,7 @@ use exogress_server_common::assistant::{
 use futures::channel::mpsc;
 use futures::pin_mut;
 use parking_lot::RwLock;
+use smol_str::SmolStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -30,18 +31,18 @@ pub struct AssistantClient {
     webapp_client: webapp::Client,
     mappings: RequestsProcessorsRegistry,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
-    statistics_rx: mpsc::Receiver<WsFromGwMessage>,
+    gw_to_assistant_messages_rx: mpsc::Receiver<WsFromGwMessage>,
 }
 
 impl AssistantClient {
     pub async fn new(
         assistant_base_url: Url,
         individual_hostname: &str,
-        gw_location: &str,
+        gw_location: SmolStr,
         mappings: &RequestsProcessorsRegistry,
         client_tunnels: &ClientTunnels,
         tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
-        statistics_rx: mpsc::Receiver<WsFromGwMessage>,
+        gw_to_assistant_messages_rx: mpsc::Receiver<WsFromGwMessage>,
         maybe_identity: Option<Vec<u8>>,
         webapp_client: &webapp::Client,
         resolver: TokioAsyncResolver,
@@ -60,7 +61,8 @@ impl AssistantClient {
                 .push(individual_hostname)
                 .push("notifications");
         }
-        url.query_pairs_mut().append_pair("location", gw_location);
+        url.query_pairs_mut()
+            .append_pair("location", gw_location.as_str());
 
         if scheme == "https" {
             url.set_scheme("wss").unwrap();
@@ -84,7 +86,7 @@ impl AssistantClient {
             stop_handle: app_stop_handle.clone(),
             mappings,
             tls_gw_common,
-            statistics_rx,
+            gw_to_assistant_messages_rx,
         })
     }
 
@@ -110,7 +112,7 @@ impl AssistantClient {
         let client_tunnels = self.client_tunnels;
         let webapp_client = self.webapp_client;
         let mappings = self.mappings;
-        let mut statistics_rx = self.statistics_rx;
+        let mut gw_to_assistant_messages_rx = self.gw_to_assistant_messages_rx;
 
         #[allow(unreachable_code)]
         let consume = {
@@ -211,12 +213,12 @@ impl AssistantClient {
             shadow_clone!(stop_handle);
 
             async move {
-                while let Some(report) = statistics_rx.next().await {
+                while let Some(report) = gw_to_assistant_messages_rx.next().await {
                     info!(
                         "received statistics report. will send to assistant WS: {:?}",
                         report
                     );
-                    let report = serde_json::to_string(&report).unwrap();
+                    let report = simd_json::to_string(&report).unwrap();
                     if let Err(e) = ch_ws_tx.send(tungstenite::Message::Text(report)).await {
                         error!("send statistics error: {:?}", e);
                         stop_handle.stop(StopReason::NotificationChannelError);

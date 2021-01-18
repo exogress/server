@@ -27,6 +27,7 @@ use exogress_common::entities::{
     StaticResponseName, Upstream,
 };
 use exogress_common::tunnel::ConnectTarget;
+use exogress_server_common::logging::LogMessage;
 use exogress_server_common::presence;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::{mpsc, oneshot};
@@ -84,6 +85,8 @@ pub struct RequestsProcessor {
     mount_point_name: MountPointName,
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     max_pop_cache_size_bytes: Byte,
+    gw_location: SmolStr,
+    log_messages_tx: mpsc::Sender<LogMessage>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -102,6 +105,23 @@ impl RequestsProcessor {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
     ) {
+        let log_message = LogMessage {
+            gw_location: self.gw_location.clone(),
+            time: Utc::now(),
+            client_addr: remote_addr.ip(),
+            account_unique_id: self.account_unique_id.clone(),
+            project: self.project_name.clone(),
+            mount_point: self.mount_point_name.clone(),
+            url: requested_url.to_string().into(),
+            method: req.method().to_string().into(),
+        };
+
+        self.log_messages_tx
+            .clone()
+            .send(log_message)
+            .await
+            .unwrap();
+
         self.rules_counter.register_request(&self.account_unique_id);
 
         let mut processed_by = None;
@@ -2083,6 +2103,8 @@ impl RequestsProcessor {
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
         traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        log_messages_tx: mpsc::Sender<LogMessage>,
+        gw_location: &str,
         cache: Cache,
         presence_client: presence::Client,
         resolver: TokioAsyncResolver,
@@ -2478,6 +2500,8 @@ impl RequestsProcessor {
             mount_point_name,
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,
+            gw_location: gw_location.into(),
+            log_messages_tx,
         })
     }
 }

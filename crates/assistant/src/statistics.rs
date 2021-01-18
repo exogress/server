@@ -20,6 +20,12 @@ lazy_static! {
         DEFAULT_TIME_BUCKETS.clone()
     )
     .unwrap();
+    pub static ref ACCOUNT_LOGS_SAVE_TIME: Histogram = register_histogram!(
+        "assistant_accounts_logs_batch_save_time",
+        "Time taken to save log message batch to account",
+        DEFAULT_TIME_BUCKETS.clone()
+    )
+    .unwrap();
 }
 
 pub fn dump_prometheus() -> String {
