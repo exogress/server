@@ -1,28 +1,33 @@
+use chrono::serde::ts_milliseconds;
 use exogress_common::config_core::parametrized::aws::bucket::S3Region;
 use exogress_common::config_core::{AuthProvider, StaticResponse};
 use exogress_common::entities::{HandlerName, InstanceId, MountPointName, ProjectName, SmolStr};
-use http::{Method, StatusCode};
+use http::Method;
+use serde_with::{serde_as, DurationSeconds};
 use std::net::IpAddr;
+use std::time::Duration;
 
-#[derive(OptionalStruct, Serialize, Deserialize, Debug, Clone)]
-#[optional_derive(Serialize, Copy, Display)]
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogMessage {
     gw_location: SmolStr,
+    #[serde(with = "ts_milliseconds")]
     time: chrono::DateTime<chrono::Utc>,
     client_addr: IpAddr,
 
     project: ProjectName,
     mount_point: MountPointName,
-    handler_name: HandlerName,
+    handler_name: Option<HandlerName>,
 
-    path: String,
-    method: Method,
-    status: StatusCode,
-    hostname: String,
+    hostname: SmolStr,
+    path: SmolStr,
+    method: Option<SmolStr>,
 
-    process_time: chrono::Duration,
+    status: Option<u16>,
+
+    #[serde_as(as = "Option<DurationSeconds>")]
+    process_time_ms: Option<Duration>,
     // steps: Vec<ProcessingStep>,
-    // client_geo: SmolStr,
 }
 //
 // pub enum ProcessingStep {
