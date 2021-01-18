@@ -90,6 +90,14 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("elasticsearch_ca")
+                .long("elasticsearch-ca")
+                .value_name("PATH")
+                .required(false)
+                .help("Set elasticsearch TLS CA")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("mongodb_database")
                 .long("mongodb-database")
                 .value_name("STRING")
@@ -182,6 +190,7 @@ fn main() {
         .value_of("elasticsearch_url")
         .expect("no --elasticsearch-url provided")
         .to_string();
+    let elasticsearch_ca = matches.value_of("elasticsearch_ca").map(|s| s.to_string());
     let mongodb_url = matches
         .value_of("mongodb_url")
         .expect("no --mongodb-url provided")
@@ -263,8 +272,10 @@ fn main() {
                 .await
                 .expect("mongo db connection error");
 
-            let elastic_client = ElasticsearchClient::new(elasticsearch_url.as_ref())
-                .expect("mongo db connection error");
+            let elastic_client =
+                ElasticsearchClient::new(elasticsearch_url.as_ref(), elasticsearch_ca)
+                    .await
+                    .expect("elasticsearch db connection error");
 
             info!("Listening  HTTP on {}", listen_http_addr);
 
