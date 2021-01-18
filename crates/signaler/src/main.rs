@@ -22,10 +22,14 @@ use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_common::entities::Ulid;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use exogress_server_common::presence;
+use mimalloc::MiMalloc;
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 mod http;
 mod statistics;

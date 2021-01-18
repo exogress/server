@@ -36,8 +36,8 @@ use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
 use http::header::{
     HeaderName, ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_DISPOSITION, CONTENT_LENGTH,
-    CONTENT_TYPE, COOKIE, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, SET_COOKIE, TE,
-    TRAILER, TRANSFER_ENCODING, UPGRADE,
+    CONTENT_TYPE, COOKIE, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, RANGE,
+    SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
@@ -259,6 +259,11 @@ impl RequestsProcessor {
         };
 
         if !res.status().is_success() {
+            return;
+        }
+
+        if req.headers().get(RANGE).is_some() {
+            info!("Range header presented. Skip caching.");
             return;
         }
 

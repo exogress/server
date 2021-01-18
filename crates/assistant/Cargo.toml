@@ -28,7 +28,9 @@ bson = "1.1.0"
 tokio-stream = { version = "0.1.2" }
 prometheus = "0.11.0"
 lazy_static = "1.4.0"
+mimalloc = "0.1.22"
 
+elasticsearch =  { git = "https://github.com/krojew/elasticsearch-rs.git", branch = "master", default-features = false, features = ["rustls-tls"]}
 #mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "master" }
 mongodb = { path = "../../deps/mongo-rust-driver" }
 

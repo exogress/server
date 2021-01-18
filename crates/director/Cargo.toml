@@ -34,8 +34,8 @@ seahash = "4.1"
 prometheus = "0.11.0"
 lazy_static = "1.4.0"
 trust-dns-resolver = "0.20"
-mimalloc = "0.1.22"
 warp = { git = "https://github.com/seanmonstar/warp.git", branch = "master", features =["websocket", "tls", "compression"] }
+mimalloc = "0.1.22"
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils"], default-features = false }
