@@ -58,7 +58,6 @@ use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 mod cache;
 pub(crate) mod clients;
-mod config;
 mod dbip;
 mod http_serve;
 mod int_server;

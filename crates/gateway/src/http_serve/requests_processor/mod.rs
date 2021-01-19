@@ -11,7 +11,8 @@ use chrono::{DateTime, Utc};
 use core::mem;
 use exogress_common::config_core::{
     Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception, MatchingPath, RescueItem,
-    ResponseBody, StaticResponse, StatusCodeRange, TemplateEngine, UrlPathSegmentOrQueryPart,
+    ResponseBody, StaticResponse, StatusCodeRange, TemplateEngine, TrailingSlashFilterRule,
+    UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
     AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
@@ -54,6 +55,7 @@ mod s3_bucket;
 mod static_dir;
 
 use http::header::{LOCATION, RANGE};
+use exogress_server_common::url_prefix::UrlPrefixError::PathRootNotSet;
 
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
@@ -531,11 +533,15 @@ enum ResolvedCatchAction {
 #[derive(Debug)]
 pub struct ResolvedFilter {
     pub path: MatchingPath,
+    pub trailing_slash: TrailingSlashFilterRule,
     pub base_path: Vec<UrlPathSegmentOrQueryPart>,
 }
 
 impl ResolvedFilter {
-    fn is_matches(&self, url: &Url) -> bool {
+    fn is_matches(&self, url: &Url) -> Option<HashMap<u8, SmolStr>> {
+        let mut match_mapping = HashMap::new();
+        let is_trailing_slash = url.path().ends_with("/");
+
         let mut segments = vec![];
         {
             let mut path_segments = url.path_segments().unwrap();
@@ -544,22 +550,25 @@ impl ResolvedFilter {
             while let Some(expected_base_segment) = base_segments.next() {
                 if let Some(segment) = path_segments.next() {
                     if segment != expected_base_segment.as_str() {
-                        return false;
+                        return None;
                     }
                 } else {
-                    return false;
+                    return None;
                 }
             }
 
             while let Some(segment) = path_segments.next() {
-                segments.push(segment.to_string());
+                if !segment.is_empty() {
+                    segments.push(segment.to_string());
+                }
             }
         }
 
-        match &self.path {
+        let matcher = || match &self.path {
             MatchingPath::Root
                 if segments.len() == 0 || (segments.len() == 1 && segments[0].is_empty()) =>
             {
+                match_mapping.insert(1, )
                 return true;
             }
             MatchingPath::Wildcard => {
@@ -567,59 +576,74 @@ impl ResolvedFilter {
             }
             MatchingPath::Strict(match_segments) => {
                 if match_segments.len() != segments.len() {
-                    return false;
+                    return None;
                 }
                 for (match_segment, segment) in match_segments.iter().zip(&segments) {
                     if !match_segment.is_match(segment) {
-                        return false;
+                        return None;
                     }
                 }
                 return true;
             }
             MatchingPath::LeftWildcardRight(left_match_segments, right_match_segments) => {
                 if left_match_segments.len() + right_match_segments.len() > segments.len() {
-                    return false;
+                    return None;
                 }
                 for (match_segment, segment) in left_match_segments.iter().zip(&segments) {
                     if !match_segment.is_match(segment) {
-                        return false;
+                        return None;
                     }
                 }
                 for (match_segment, segment) in
                     right_match_segments.iter().rev().zip(segments.iter().rev())
                 {
                     if !match_segment.is_match(segment) {
-                        return false;
+                        return None;
                     }
                 }
                 return true;
             }
             MatchingPath::LeftWildcard(left_match_segments) => {
                 if left_match_segments.len() > segments.len() {
-                    return false;
+                    return None;
                 }
                 for (match_segment, segment) in left_match_segments.iter().zip(&segments) {
                     if !match_segment.is_match(segment) {
-                        return false;
+                        return None;
                     }
                 }
                 return true;
             }
             MatchingPath::WildcardRight(right_match_segments) => {
                 if right_match_segments.len() > segments.len() {
-                    return false;
+                    return None;
                 }
                 for (match_segment, segment) in
                     right_match_segments.iter().rev().zip(segments.iter().rev())
                 {
                     if !match_segment.is_match(segment) {
-                        return false;
+                        return None;
                     }
                 }
                 return true;
             }
-            _ => return false,
-        }
+            _ => return None,
+        };
+
+        let is_path_matched = (matcher)();
+
+        let trailing_slash_condition_met = match self.trailing_slash {
+            TrailingSlashFilterRule::Require => is_trailing_slash == true,
+            TrailingSlashFilterRule::Allow => true,
+            TrailingSlashFilterRule::Deny => is_trailing_slash == false,
+        };
+
+        info!(
+            "railing_slash_condition_met = {:?}",
+            trailing_slash_condition_met
+        );
+
+        is_path_matched && trailing_slash_condition_met
     }
 }
 
@@ -1470,6 +1494,7 @@ impl RequestsProcessor {
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
                                             path: rule.filter.path,
+                                            trailing_slash: rule.filter.trailing_slash,
                                             base_path: replace_base_path.clone(),
                                         },
                                         action: match rule.action {
@@ -1675,6 +1700,7 @@ mod test {
         let url3: Url = "https://a.b.c/a/b".parse().unwrap();
         let matcher = ResolvedFilter {
             path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Any]),
+            trailing_slash: Default::default(),
             base_path: vec![],
         };
 
@@ -1683,16 +1709,181 @@ mod test {
         assert!(matcher.is_matches(&url3));
     }
 
-    #[test]
-    fn test_matching_empty() {
-        let url1: Url = "https://a.b.c/a/b".parse().unwrap();
-        let url2: Url = "https://a.b.c/a/b/".parse().unwrap();
-        let matcher = ResolvedFilter {
-            path: MatchingPath::WildcardRight(vec![MatchPathSegment::Any, MatchPathSegment::Empty]),
-            base_path: vec![],
-        };
-
-        assert!(!matcher.is_matches(&url1));
-        assert!(matcher.is_matches(&url2));
-    }
+    // #[test]
+    // fn test_matching2() {
+    //     let rules = vec![
+    //         ResolvedFilter {path: MatchingPath::Root,
+    //                 trailing_slash: Default::default(),
+    //             },
+    //             action: Action::Throw {
+    //                 exception: "exception".parse().unwrap(),
+    //                 data: Default::default(),
+    //             },
+    //         },
+    //         Rule {
+    //             filter: Filter {
+    //                 path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Exact(
+    //                     "a".parse().unwrap(),
+    //                 )]),
+    //                 trailing_slash: Default::default(),
+    //             },
+    //             action: Action::Throw {
+    //                 exception: "exception2".parse().unwrap(),
+    //                 data: Default::default(),
+    //             },
+    //         },
+    //         Rule {
+    //             filter: Filter {
+    //                 path: MatchingPath::WildcardRight(vec![MatchPathSegment::Exact(
+    //                     "z".parse().unwrap(),
+    //                 )]),
+    //                 trailing_slash: Default::default(),
+    //             },
+    //             action: Action::Throw {
+    //                 exception: "exception3".parse().unwrap(),
+    //                 data: Default::default(),
+    //             },
+    //         },
+    //         Rule {
+    //             filter: Filter {
+    //                 path: MatchingPath::LeftWildcardRight(
+    //                     vec![MatchPathSegment::Exact("b".parse().unwrap())],
+    //                     vec![MatchPathSegment::Exact("y".parse().unwrap())],
+    //                 ),
+    //                 trailing_slash: Default::default(),
+    //             },
+    //             action: Action::Throw {
+    //                 exception: "exception4".parse().unwrap(),
+    //                 data: Default::default(),
+    //             },
+    //         },
+    //         Rule {
+    //             filter: Filter {
+    //                 path: MatchingPath::Strict(vec![
+    //                     MatchPathSegment::Exact("c".parse().unwrap()),
+    //                     MatchPathSegment::Exact("d".parse().unwrap()),
+    //                 ]),
+    //                 trailing_slash: Default::default(),
+    //             },
+    //             action: Action::Throw {
+    //                 exception: "exception5".parse().unwrap(),
+    //                 data: Default::default(),
+    //             },
+    //         },
+    //         Rule {
+    //             filter: Filter {
+    //                 path: MatchingPath::Strict(vec![
+    //                     MatchPathSegment::Any,
+    //                     MatchPathSegment::Exact("e".parse().unwrap()),
+    //                 ]),
+    //                 trailing_slash: Default::default(),
+    //             },
+    //             action: Action::Throw {
+    //                 exception: "exception6".parse().unwrap(),
+    //                 data: Default::default(),
+    //             },
+    //         },
+    //         Rule {
+    //             filter: Filter {
+    //                 path: MatchingPath::Strict(vec![
+    //                     MatchPathSegment::Any,
+    //                     MatchPathSegment::Regex("[0-9]{1}.{2}a".parse().unwrap()),
+    //                 ]),
+    //                 trailing_slash: Default::default(),
+    //             },
+    //             action: Action::Throw {
+    //                 exception: "exception7".parse().unwrap(),
+    //                 data: Default::default(),
+    //             },
+    //         },
+    //     ];
+    //
+    //     let found = common_find_filter_rule(&rules, "http://asd/".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception")
+    //     );
+    //
+    //     let found = common_find_filter_rule(&rules, "http://asd/a".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception2")
+    //     );
+    //     let found = common_find_filter_rule(&rules, "http://asd/a/b/c".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception2")
+    //     );
+    //     let found = common_find_filter_rule(&rules, "http://asd/1/2/z".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception3")
+    //     );
+    //     let found = common_find_filter_rule(&rules, "http://asd/z".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception3")
+    //     );
+    //     let found = common_find_filter_rule(&rules, "http://asd/b/1/2/3/y".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception4")
+    //     );
+    //     let found = common_find_filter_rule(&rules, "http://asd/b/y".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception4")
+    //     );
+    //     let not_found = common_find_filter_rule(&rules, "http://asd/b".parse().unwrap()).next();
+    //     assert!(matches!(not_found, None));
+    //
+    //     let found = common_find_filter_rule(&rules, "http://asd/c/d".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception5")
+    //     );
+    //     let found = common_find_filter_rule(&rules, "http://asd/aasd/e".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception6")
+    //     );
+    //     let found =
+    //         common_find_filter_rule(&rules, "http://asd/asdfsfdg/1hra".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception7")
+    //     );
+    //     let not_found =
+    //         common_find_filter_rule(&rules, "http://asd/asdfsfdg/1hsra".parse().unwrap()).next();
+    //     assert!(matches!(not_found, None));
+    // }
+    //
+    // #[test]
+    // fn test_wildcards() {
+    //     let rules = vec![Rule {
+    //         filter: Filter {
+    //             path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Any]),
+    //             trailing_slash: Default::default(),
+    //         },
+    //         action: Action::Throw {
+    //             exception: "exception8".parse().unwrap(),
+    //             data: Default::default(),
+    //         },
+    //     }];
+    //
+    //     let found = common_find_filter_rule(
+    //         &rules,
+    //         "http://asd/hfa/asdf/asdf/asd/f/asdf".parse().unwrap(),
+    //     )
+    //     .next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception8")
+    //     );
+    //     let found = common_find_filter_rule(
+    //         &rules,
+    //         "http://asd/hfa/asdf/asdf/asd/f/asdf".parse().unwrap(),
+    //     )
+    //     .next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception8")
+    //     );
+    //
+    //     let found = common_find_filter_rule(&rules, "http://asd/hfa/".parse().unwrap()).next();
+    //     assert!(
+    //         matches!(found, Some(Action::Throw { exception, .. }) if exception.to_string() == "exception8")
+    //     );
+    //
+    //     let not_found = common_find_filter_rule(&rules, "http://asd/".parse().unwrap()).next();
+    //     assert!(matches!(not_found, None));
+    // }
 }

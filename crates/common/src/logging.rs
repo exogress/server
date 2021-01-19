@@ -1,5 +1,4 @@
 use chrono::serde::ts_milliseconds;
-use exogress_common::config_core::parametrized::aws::bucket::S3Region;
 use exogress_common::config_core::Exception;
 use exogress_common::entities::{
     AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName, SmolStr,
