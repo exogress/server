@@ -133,12 +133,23 @@ pub async fn server(
                                                 info!("Start saving to elasticsearch");
                                                 let start_time = crate::statistics::ACCOUNT_LOGS_SAVE_TIME.start_timer();
 
-                                                tokio::time::timeout(
+                                                let res = tokio::time::timeout(
                                                     Duration::from_secs(5),
                                                     elastic_client.save_log_messages(&report)
-                                                ).await??;
+                                                ).await;
 
-                                                start_time.observe_duration();
+                                                match res {
+                                                    Err(e) => {
+                                                        error!("Failed to save to elasticsearch: {}", e);
+                                                    }
+                                                    Ok(Err(e)) => {
+                                                        error!("Failed to save to elasticsearch: {}", e);
+                                                    }
+                                                    Ok(Ok(_)) => {
+                                                        start_time.observe_duration();
+                                                    }
+                                                }
+
                                             }
 
                                             Ok::<_, anyhow::Error>(())
@@ -179,18 +190,35 @@ pub async fn server(
 
                                                 if msg.is_text() {
                                                     let mut txt = msg.to_str().unwrap().to_string();
-                                                    let msg = simd_json::from_str::<WsFromGwMessage>(&mut txt).expect("FIXME");
-                                                    info!("received GW: {:?}", msg);
-                                                    match msg {
-                                                        WsFromGwMessage::Statistics { report } => {
-                                                            info!("Will save statistics report to mongodb");
-                                                            mongo_saver_tx.send(report).await?;
-                                                        },
-                                                        WsFromGwMessage::Logs { report } => {
-                                                            info!("Will save logs to elasticsearch");
-                                                            elastic_saver_tx.send(report).await?;
+                                                    match simd_json::from_str::<WsFromGwMessage>(&mut txt) {
+                                                        Ok(msg) => {
+                                                            info!("received GW: {:?}", msg);
+                                                            crate::statistics::GW_MESSAGES_PARSED
+                                                                .with_label_values(&[
+                                                                    "",
+                                                                ])
+                                                                .inc();
+
+                                                            match msg {
+                                                                WsFromGwMessage::Statistics { report } => {
+                                                                    info!("Will save statistics report to mongodb");
+                                                                    mongo_saver_tx.send(report).await?;
+                                                                },
+                                                                WsFromGwMessage::Logs { report } => {
+                                                                    info!("Will save logs to elasticsearch");
+                                                                    elastic_saver_tx.send(report).await?;
+                                                                }
+                                                                _ => {},
+                                                            }
                                                         }
-                                                        _ => {},
+                                                        Err(e) => {
+                                                            crate::statistics::GW_MESSAGES_PARSED
+                                                                .with_label_values(&[
+                                                                    "1",
+                                                                ])
+                                                                .inc();
+                                                            error!("Error parsing WsFromGwMessage: {}", e);
+                                                        }
                                                     }
                                                 } else if msg.is_ping() {
                                                     //     pongs are automatic

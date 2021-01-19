@@ -20,14 +20,19 @@ use exogress_common::config_core::parametrized::google::bucket::GcsBucket;
 use exogress_common::config_core::{
     parametrized, Action, AuthProvider, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
     MatchingPath, RescueItem, ResponseBody, StaticDir, StaticResponse, StatusCodeRange,
-    TemplateEngine, UpstreamDefinition, UrlPathSegmentOrQueryPart,
+    TemplateEngine, UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
-    AccountUniqueId, ConfigId, HandlerName, InstanceId, MountPointName, ProjectName,
-    StaticResponseName, Upstream,
+    AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
+    StaticResponseName,
 };
 use exogress_common::tunnel::ConnectTarget;
-use exogress_server_common::logging::LogMessage;
+use exogress_server_common::logging::{
+    AuthHandlerLogMessage, CompressProcessingStep, ExceptionProcessingStep,
+    GcsBucketHandlerLogMessage, HandlerProcessingStep, LogMessage, OptimizeProcessingStep,
+    ProcessingStep, S3BucketHandlerLogMessage, StaticDirHandlerLogMessage,
+    StaticResponseProcessingStep,
+};
 use exogress_server_common::presence;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::{mpsc, oneshot};
@@ -35,17 +40,13 @@ use futures::{SinkExt, StreamExt, TryStreamExt};
 use globset::Glob;
 use handlebars::Handlebars;
 use hashbrown::{HashMap, HashSet};
-use http::header::{
-    HeaderName, ACCEPT_ENCODING, CACHE_CONTROL, CONNECTION, CONTENT_DISPOSITION, CONTENT_LENGTH,
-    CONTENT_TYPE, COOKIE, HOST, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, RANGE,
-    SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
-};
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
 use itertools::Itertools;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use magick_rust::{magick_wand_genesis, MagickWand};
 use parking_lot::Mutex;
+use resolved_proxy::ResolvedProxy;
 use rusty_s3::actions::S3Action;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
@@ -55,12 +56,11 @@ use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::{Arc, Once};
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::time::{Duration, Instant};
+use tokio::io::AsyncWriteExt;
 use tokio::task;
 use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
-use typed_headers::http::header::FORWARDED;
 use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
@@ -69,6 +69,17 @@ static IMAGE_MAGIC: Once = Once::new();
 
 #[macro_use]
 mod macros;
+
+mod helpers;
+mod resolved_proxy;
+
+use helpers::{
+    add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
+};
+use http::header::{
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, LOCATION, RANGE,
+    SET_COOKIE,
+};
 
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
@@ -97,31 +108,15 @@ struct Claims {
 }
 
 impl RequestsProcessor {
-    pub async fn process(
+    async fn do_process(
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
         requested_url: &Url,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        log_message: &mut LogMessage,
     ) {
-        let log_message = LogMessage {
-            gw_location: self.gw_location.clone(),
-            time: Utc::now(),
-            client_addr: remote_addr.ip(),
-            account_unique_id: self.account_unique_id.clone(),
-            project: self.project_name.clone(),
-            mount_point: self.mount_point_name.clone(),
-            url: requested_url.to_string().into(),
-            method: req.method().to_string().into(),
-        };
-
-        self.log_messages_tx
-            .clone()
-            .send(log_message)
-            .await
-            .unwrap();
-
         self.rules_counter.register_request(&self.account_unique_id);
 
         let mut processed_by = None;
@@ -178,6 +173,7 @@ impl RequestsProcessor {
                             if let Ok(Some(len)) =
                                 res.headers().typed_get::<typed_headers::ContentLength>()
                             {
+                                log_message.content_len = Some(len.0);
                                 let byte = Byte::from(len.0);
 
                                 info!(
@@ -185,6 +181,9 @@ impl RequestsProcessor {
                                     byte.get_appropriate_unit(true)
                                 );
                             }
+
+                            log_message.steps.push(ProcessingStep::ServedFromCache);
+
                             return;
                         }
                     }
@@ -233,6 +232,7 @@ impl RequestsProcessor {
                     &replaced_url,
                     local_addr,
                     remote_addr,
+                    log_message,
                 )
                 .await;
 
@@ -253,12 +253,12 @@ impl RequestsProcessor {
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
             Some(handler) => {
-                let optimize_result = self.optimize_image(req, res).await;
+                let optimize_result = self.optimize_image(req, res, log_message).await;
                 if let Err(e) = optimize_result {
                     warn!("Skipped image optimization due to the error: {}", e);
                 }
 
-                self.compress(req, res);
+                self.compress(req, res, log_message);
 
                 res.headers_mut()
                     .insert("server", HeaderValue::from_static("exogress"));
@@ -266,6 +266,55 @@ impl RequestsProcessor {
                 self.save_to_cache(req, res, handler);
             }
         }
+
+        if let Ok(Some(len)) = res.headers().typed_get::<typed_headers::ContentLength>() {
+            log_message.content_len = Some(len.0);
+        }
+    }
+
+    pub async fn process(
+        &self,
+        req: &mut Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &Url,
+        local_addr: &SocketAddr,
+        remote_addr: &SocketAddr,
+    ) {
+        let started_at = Instant::now();
+
+        let mut log_message = LogMessage {
+            gw_location: self.gw_location.clone(),
+            time: Utc::now(),
+            client_addr: remote_addr.ip(),
+            account_unique_id: self.account_unique_id.clone(),
+            project: self.project_name.clone(),
+            mount_point: self.mount_point_name.clone(),
+            url: requested_url.to_string().into(),
+            method: req.method().to_string().into(),
+            status_code: None,
+            time_taken: None,
+            content_len: None,
+            steps: vec![],
+        };
+
+        self.do_process(
+            req,
+            res,
+            requested_url,
+            local_addr,
+            remote_addr,
+            &mut log_message,
+        )
+        .await;
+
+        log_message.time_taken = Some(started_at.elapsed());
+        log_message.status_code = Some(res.status().as_u16());
+
+        self.log_messages_tx
+            .clone()
+            .send(log_message)
+            .await
+            .unwrap();
     }
 
     fn save_to_cache(
@@ -399,6 +448,7 @@ impl RequestsProcessor {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        log_message: &mut LogMessage,
     ) -> Result<(), anyhow::Error> {
         let is_webp_supported = req
             .headers()
@@ -430,6 +480,8 @@ impl RequestsProcessor {
                     .await?,
             );
 
+            let source_image_len = image_body.len();
+
             let converted_image_result = task::spawn_blocking({
                 shadow_clone!(image_body);
 
@@ -447,10 +499,19 @@ impl RequestsProcessor {
 
             match converted_image_result {
                 Ok(buf) => {
+                    const WEBP_MIME: &str = "image/webp";
                     let buf_len = buf.len();
+                    let ratio = source_image_len as f64 / buf_len as f64;
+                    log_message
+                        .steps
+                        .push(ProcessingStep::Optimize(OptimizeProcessingStep {
+                            from_content_type: content_type.essence_str().into(),
+                            to_content_type: WEBP_MIME.into(),
+                            compression_ratio: ratio,
+                        }));
                     *res.body_mut() = Body::from(buf);
                     res.headers_mut().typed_insert::<ContentType>(&ContentType(
-                        mime::Mime::from_str("image/webp").unwrap(),
+                        mime::Mime::from_str(WEBP_MIME.into()).unwrap(),
                     ));
                     res.headers_mut()
                         .insert(CONTENT_LENGTH, HeaderValue::from(buf_len));
@@ -469,7 +530,12 @@ impl RequestsProcessor {
         }
     }
 
-    fn compress(&self, req: &Request<Body>, res: &mut Response<Body>) {
+    fn compress(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        log_message: &mut LogMessage,
+    ) {
         let maybe_accept_encoding = req
             .headers()
             .typed_get::<typed_headers::AcceptEncoding>()
@@ -511,10 +577,15 @@ impl RequestsProcessor {
             .typed_remove::<typed_headers::ContentLength>();
         let processed_stream = match compression {
             SupportedContentEncoding::Brotli => {
+                let header = typed_headers::ContentCoding::BROTLI;
+                log_message
+                    .steps
+                    .push(ProcessingStep::Compress(CompressProcessingStep {
+                        encoding: header.as_str().into(),
+                    }));
+
                 res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(
-                        typed_headers::ContentCoding::BROTLI,
-                    ));
+                    .typed_insert(&typed_headers::ContentEncoding::from(header));
 
                 Either::Left(tokio_util::io::ReaderStream::new(
                     async_compression::tokio::bufread::BrotliEncoder::with_quality(
@@ -524,10 +595,16 @@ impl RequestsProcessor {
                 ))
             }
             SupportedContentEncoding::Gzip => {
+                let header = typed_headers::ContentCoding::GZIP;
+
+                log_message
+                    .steps
+                    .push(ProcessingStep::Compress(CompressProcessingStep {
+                        encoding: header.as_str().into(),
+                    }));
+
                 res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(
-                        typed_headers::ContentCoding::GZIP,
-                    ));
+                    .typed_insert(&typed_headers::ContentEncoding::from(header));
 
                 Either::Right(Either::Left(tokio_util::io::ReaderStream::new(
                     async_compression::tokio::bufread::GzipEncoder::new(
@@ -536,10 +613,16 @@ impl RequestsProcessor {
                 )))
             }
             SupportedContentEncoding::Deflate => {
+                let header = typed_headers::ContentCoding::DEFLATE;
+
+                log_message
+                    .steps
+                    .push(ProcessingStep::Compress(CompressProcessingStep {
+                        encoding: header.as_str().into(),
+                    }));
+
                 res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(
-                        typed_headers::ContentCoding::DEFLATE,
-                    ));
+                    .typed_insert(&typed_headers::ContentEncoding::from(header));
 
                 Either::Right(Either::Right(tokio_util::io::ReaderStream::new(
                     async_compression::tokio::bufread::DeflateEncoder::new(
@@ -550,351 +633,6 @@ impl RequestsProcessor {
         };
 
         *res.body_mut() = Body::wrap_stream(processed_stream);
-    }
-}
-
-struct ResolvedProxy {
-    name: Upstream,
-    upstream: UpstreamDefinition,
-    instance_ids: Mutex<SmoothWeight<InstanceId>>,
-    client_tunnels: ClientTunnels,
-    config_id: ConfigId,
-    individual_hostname: SmolStr,
-    public_hostname: SmolStr,
-    presence_client: presence::Client,
-}
-
-impl fmt::Debug for ResolvedProxy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResolvedProxy")
-            .field("name", &self.name)
-            .field("upstream", &self.upstream)
-            .field("config_id", &self.config_id)
-            .finish()
-    }
-}
-
-/// https://tools.ietf.org/html/rfc2616#section-13.5.1v
-/// The following HTTP/1.1 headers are hop-by-hop headers:
-///     - Connection
-///     - Keep-Alive
-///     - Proxy-Authenticate
-///     - Proxy-Authorization
-///     - TE
-///     - Trailers
-///     - Transfer-Encoding
-///     - Upgrade
-const HOP_BY_HOP_HEADERS: [HeaderName; 7] = [
-    CONNECTION,
-    PROXY_AUTHENTICATE,
-    PROXY_AUTHORIZATION,
-    TE,
-    TRAILER,
-    TRANSFER_ENCODING,
-    UPGRADE,
-];
-
-fn copy_headers_from_proxy_res_to_res(
-    proxy_headers: &HeaderMap,
-    res: &mut Response<Body>,
-    is_upgrade_allowed: bool,
-) {
-    for (incoming_header_name, incoming_header_value) in proxy_headers.iter() {
-        if incoming_header_name == ACCEPT_ENCODING
-            || incoming_header_name == &HeaderName::from_static("x-amz-id-2")
-            || incoming_header_name == &HeaderName::from_static("x-amz-request-id")
-        {
-            continue;
-        }
-
-        if incoming_header_name == CONNECTION {
-            if is_upgrade_allowed {
-                if !incoming_header_value
-                    .to_str()
-                    .unwrap()
-                    .to_lowercase()
-                    .contains("upgrade")
-                {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-        }
-
-        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
-            continue;
-        }
-
-        res.headers_mut()
-            .append(incoming_header_name, incoming_header_value.clone());
-    }
-}
-
-fn copy_headers_to_proxy_req(
-    req: &Request<Body>,
-    proxy_req: &mut Request<Body>,
-    is_upgrade_allowed: bool,
-) {
-    for (incoming_header_name, incoming_header_value) in req.headers() {
-        if incoming_header_name == ACCEPT_ENCODING || incoming_header_name == HOST {
-            continue;
-        }
-
-        if incoming_header_name == CONNECTION {
-            if is_upgrade_allowed {
-                if !incoming_header_value
-                    .to_str()
-                    .unwrap()
-                    .to_lowercase()
-                    .contains("upgrade")
-                {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-        }
-
-        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
-            continue;
-        }
-
-        proxy_req
-            .headers_mut()
-            .append(incoming_header_name, incoming_header_value.clone());
-    }
-}
-
-fn add_forwarded_headers(
-    req: &mut Request<Body>,
-    local_addr: &SocketAddr,
-    remote_addr: &SocketAddr,
-    public_hostname: &str,
-    force_host_header: Option<&str>,
-) {
-    req.headers_mut()
-        .append("x-forwarded-host", public_hostname.parse().unwrap());
-
-    req.headers_mut()
-        .append("x-forwarded-proto", "https".parse().unwrap());
-
-    //X-Forwarded-Host and X-Forwarded-Proto
-    let mut x_forwarded_for = req
-        .headers_mut()
-        .remove("x-forwarded-for")
-        .map(|h| h.to_str().unwrap().to_string())
-        .unwrap_or_else(|| remote_addr.ip().to_string());
-
-    x_forwarded_for.push_str(&format!(", {}", local_addr.ip()));
-
-    req.headers_mut()
-        .insert("x-forwarded-for", x_forwarded_for.parse().unwrap());
-
-    if !req.headers().contains_key("x-real-ip") {
-        req.headers_mut()
-            .append("x-real-ip", remote_addr.ip().to_string().parse().unwrap());
-    }
-
-    // FIXME: consider chain of proxies
-    let forwarded_header = format!(
-        "by={};for={};host={};proto=https",
-        local_addr.ip(),
-        remote_addr.ip(),
-        public_hostname
-    );
-
-    req.headers_mut()
-        .insert(FORWARDED, forwarded_header.parse().unwrap());
-
-    let host_header = force_host_header.unwrap_or(public_hostname);
-    req.headers_mut().insert(HOST, host_header.parse().unwrap());
-
-    info!("with forwarded headers = {:?}", req.headers());
-}
-
-impl ResolvedProxy {
-    async fn invoke(
-        &self,
-        req: &mut Request<Body>,
-        res: &mut Response<Body>,
-        requested_url: &Url,
-        local_addr: &SocketAddr,
-        remote_addr: &SocketAddr,
-    ) -> HandlerInvocationResult {
-        if req.headers().contains_key("x-exg-proxied") {
-            return HandlerInvocationResult::Exception {
-                name: "proxy-error:loop-detected".parse().unwrap(),
-                data: Default::default(),
-            };
-        }
-
-        let mut proxy_to = requested_url.clone();
-
-        let connect_target = ConnectTarget::Upstream(self.name.clone());
-        connect_target.update_url(&mut proxy_to);
-
-        proxy_to.set_port(None).unwrap();
-        if proxy_to.scheme() == "https" {
-            proxy_to.set_scheme("http").unwrap();
-        } else if proxy_to.scheme() == "wss" {
-            proxy_to.set_scheme("ws").unwrap();
-        } else {
-            unreachable!("unknown scheme: {}", proxy_to.scheme());
-        }
-
-        let mut proxy_req = Request::<Body>::new(Body::empty());
-        *proxy_req.method_mut() = req.method().clone();
-        *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
-
-        copy_headers_to_proxy_req(req, &mut proxy_req, true);
-
-        add_forwarded_headers(
-            &mut proxy_req,
-            local_addr,
-            remote_addr,
-            &self.public_hostname,
-            None,
-        );
-
-        proxy_req
-            .headers_mut()
-            .append("x-exg", "1".parse().unwrap());
-
-        if req.method() != &Method::GET
-            && req
-                .headers()
-                .get(CONNECTION)
-                .map(|h| h.to_str().unwrap().to_lowercase())
-                .map(|s| s.contains("upgrade"))
-                != Some(true)
-        {
-            *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
-        }
-
-        'instances: loop {
-            let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
-
-            match selected_instance_id {
-                Some(instance_id) => {
-                    let http_client = match self
-                        .client_tunnels
-                        .retrieve_http_connector(
-                            &self.config_id,
-                            &instance_id,
-                            self.individual_hostname.clone(),
-                        )
-                        .await
-                    {
-                        Some(http_client) => http_client,
-                        None => {
-                            warn!(
-                                "Failed to connect to instance {}. Try next instance",
-                                instance_id
-                            );
-                            tokio::spawn({
-                                let presence_client = self.presence_client.clone();
-                                shadow_clone!(instance_id);
-
-                                async move {
-                                    info!("Request instance {} to go offline", instance_id);
-                                    let res =
-                                        presence_client.set_offline(&instance_id, "", true).await;
-                                    info!(
-                                        "Request instance {} to go offline res = {:?}",
-                                        instance_id, res
-                                    );
-                                }
-                            });
-                            // TODO: request instance deletion
-                            continue 'instances;
-                        }
-                    };
-
-                    let mut proxy_res = try_or_exception!(
-                        http_client.request(proxy_req).await,
-                        "proxy-error:upstream-unreachable"
-                    );
-
-                    copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, true);
-
-                    res.headers_mut()
-                        .append("x-exg-proxied", "1".parse().unwrap());
-
-                    *res.status_mut() = proxy_res.status();
-
-                    if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
-                        let req_body = mem::replace(req.body_mut(), Body::empty());
-                        let req_for_upgrade = Request::new(req_body);
-
-                        tokio::spawn(
-                            #[allow(unreachable_code)]
-                            async move {
-                                let mut proxy_upgraded =
-                                    hyper::upgrade::on(&mut proxy_res)
-                                        .await
-                                        .with_context(|| "error upgrading proxy connection")?;
-                                let mut req_upgraded = hyper::upgrade::on(req_for_upgrade)
-                                    .await
-                                    .with_context(|| "error upgrading connection")?;
-
-                                let mut buf1 = vec![0u8; 1024];
-                                let mut buf2 = vec![0u8; 1024];
-
-                                loop {
-                                    tokio::select! {
-                                        bytes_read_result = proxy_upgraded.read(&mut buf1) => {
-                                            let bytes_read = bytes_read_result
-                                                .with_context(|| "error reading from incoming")?;
-                                            if bytes_read == 0 {
-                                                return Ok(());
-                                            } else {
-                                                req_upgraded
-                                                    .write_all(&buf1[..bytes_read])
-                                                    .await
-                                                    .with_context(|| "error writing to forwarded")?;
-                                                req_upgraded.flush().await.with_context(|| "error flushing data to cliet")?;
-                                            }
-                                        },
-
-                                        bytes_read_result = req_upgraded.read(&mut buf2) => {
-                                            let bytes_read = bytes_read_result
-                                                .with_context(|| "error reading from forwarded")?;
-                                            if bytes_read == 0 {
-                                                return Ok(());
-                                            } else {
-                                                proxy_upgraded
-                                                    .write_all(&buf2[..bytes_read])
-                                                    .await
-                                                    .with_context(|| "error writing to incoming")?;
-                                                proxy_upgraded
-                                                    .flush()
-                                                    .await
-                                                    .with_context(|| "error flushing data to proxy")?;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Ok::<_, anyhow::Error>(())
-                            },
-                        );
-                    } else {
-                        *res.body_mut() = proxy_res.into_body();
-                    }
-
-                    return HandlerInvocationResult::Responded;
-                }
-                None => {
-                    return HandlerInvocationResult::Exception {
-                        name: "proxy-error:bad-gateway:no-healthy-upstreams"
-                            .parse()
-                            .unwrap(),
-                        data: Default::default(),
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -926,6 +664,7 @@ impl ResolvedStaticDir {
         requested_url: &Url,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
@@ -937,6 +676,20 @@ impl ResolvedStaticDir {
         if req.method() != &Method::GET {
             return HandlerInvocationResult::ToNextHandler;
         }
+
+        let instance_id = try_option_or_exception!(
+            Weight::next(&mut *self.instance_ids.lock()),
+            "proxy-error:no-instances"
+        );
+
+        log_message
+            .steps
+            .push(ProcessingStep::Invoked(HandlerProcessingStep::StaticDir(
+                StaticDirHandlerLogMessage {
+                    instance_id: instance_id.clone(),
+                    config_name: self.config_id.config_name.clone(),
+                },
+            )));
 
         let mut proxy_to = requested_url.clone();
 
@@ -967,11 +720,6 @@ impl ResolvedStaticDir {
         proxy_req
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
-
-        let instance_id = try_option_or_exception!(
-            Weight::next(&mut *self.instance_ids.lock()),
-            "proxy-error:no-instances"
-        );
 
         let http_client = try_option_or_exception!(
             self.client_tunnels
@@ -1066,8 +814,8 @@ impl ResolvedAuth {
         &'c self,
         identities: &'a [String],
         acl_entries: &'b [AclEntry],
-    ) -> Option<&'a String> {
-        let mut acl_allow_to = None;
+    ) -> (Option<&'a String>, Option<&'b SmolStr>) {
+        let mut acl_allow_to = (None, None);
         'acl: for acl_entry in acl_entries {
             for identity in identities {
                 match acl_entry {
@@ -1078,7 +826,7 @@ impl ResolvedAuth {
                         };
                         if is_match {
                             info!("Pass {} ", identity);
-                            acl_allow_to = Some(identity);
+                            acl_allow_to = (Some(identity), Some(pass));
                             break 'acl;
                         }
                     }
@@ -1089,7 +837,7 @@ impl ResolvedAuth {
                         };
                         if is_match {
                             info!("Deny {} ", identity);
-                            acl_allow_to = None;
+                            acl_allow_to = (None, Some(deny));
                             break 'acl;
                         }
                     }
@@ -1105,6 +853,7 @@ impl ResolvedAuth {
         req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &Url,
+        log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         let path_segments: Vec<_> = requested_url.path_segments().unwrap().collect();
         let query = requested_url
@@ -1196,7 +945,7 @@ impl ResolvedAuth {
                                                 &acl.0,
                                             );
 
-                                            if let Some(allowed_identity) = acl_allow_to {
+                                            if let (Some(allowed_identity), _) = acl_allow_to {
                                                 res.headers_mut().insert(
                                                     CACHE_CONTROL,
                                                     "no-cache".try_into().unwrap(),
@@ -1322,7 +1071,6 @@ impl ResolvedAuth {
                 },
             ) {
                 Ok(token) => {
-                    info!("toke = {:?}", token);
                     let granted_identity = token.claims.sub;
                     let granted_provider = token.claims.idp.parse().expect("FIXME");
 
@@ -1332,22 +1080,52 @@ impl ResolvedAuth {
                         Some((_provider, acl_result)) => {
                             let acl = try_or_to_exception!(acl_result.as_ref());
 
-                            let identities = [granted_identity];
+                            let identities = [granted_identity.clone()];
 
-                            let acl_allowed_to = self.acl_allowed_to(&identities, &acl.0);
+                            let (acl_allowed_to, acl_entry) =
+                                self.acl_allowed_to(&identities, &acl.0);
 
-                            if acl_allowed_to.is_some() {
+                            if let Some(allow_to) = acl_allowed_to {
                                 info!(
-                                    "jwt-token parse and verified. go ahead. provider = {}, identity = {}",
-                                    token.claims.idp, identities[0]
+                                    "jwt-token parse and verified. go ahead. provider = {:?}, identity = {}, acl_entry = {:?}",
+                                    granted_provider, granted_identity, acl_entry
                                 );
+
+                                log_message.steps.push(ProcessingStep::Invoked(
+                                    HandlerProcessingStep::Auth(AuthHandlerLogMessage {
+                                        provider: Some(granted_provider.to_string().into()),
+                                        identity: Some(allow_to.into()),
+                                        acl_entry: acl_entry.cloned(),
+                                        allowed: true,
+                                    }),
+                                ));
                             } else {
                                 self.respond_not_authorized(req, res);
+
+                                log_message.steps.push(ProcessingStep::Invoked(
+                                    HandlerProcessingStep::Auth(AuthHandlerLogMessage {
+                                        provider: Some(granted_provider.to_string().into()),
+                                        identity: Some(granted_identity.into()),
+                                        acl_entry: acl_entry.cloned(),
+                                        allowed: false,
+                                    }),
+                                ));
+
                                 return HandlerInvocationResult::Responded;
                             }
                         }
                         None => {
                             self.respond_not_authorized(req, res);
+
+                            log_message.steps.push(ProcessingStep::Invoked(
+                                HandlerProcessingStep::Auth(AuthHandlerLogMessage {
+                                    provider: Some(granted_provider.to_string().into()),
+                                    identity: Some(granted_identity.into()),
+                                    acl_entry: None,
+                                    allowed: false,
+                                }),
+                            ));
+
                             return HandlerInvocationResult::Responded;
                         }
                     }
@@ -1360,11 +1138,34 @@ impl ResolvedAuth {
                     };
 
                     self.respond_not_authorized(req, res);
+
+                    log_message
+                        .steps
+                        .push(ProcessingStep::Invoked(HandlerProcessingStep::Auth(
+                            AuthHandlerLogMessage {
+                                provider: None,
+                                identity: None,
+                                acl_entry: None,
+                                allowed: false,
+                            },
+                        )));
+
                     return HandlerInvocationResult::Responded;
                 }
             }
         } else {
             info!("jwt-token not found");
+
+            log_message
+                .steps
+                .push(ProcessingStep::Invoked(HandlerProcessingStep::Auth(
+                    AuthHandlerLogMessage {
+                        provider: None,
+                        identity: None,
+                        acl_entry: None,
+                        allowed: false,
+                    },
+                )));
 
             self.respond_not_authorized(req, res);
             return HandlerInvocationResult::Responded;
@@ -1384,7 +1185,7 @@ enum ResolvedHandlerVariant {
 }
 
 #[derive(Debug)]
-enum HandlerInvocationResult {
+pub enum HandlerInvocationResult {
     Responded,
     ToNextHandler,
     Exception {
@@ -1473,24 +1274,43 @@ impl ResolvedHandlerVariant {
         requested_url: &Url,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         match self {
             ResolvedHandlerVariant::Proxy(proxy) => {
                 proxy
-                    .invoke(req, res, requested_url, local_addr, remote_addr)
+                    .invoke(
+                        req,
+                        res,
+                        requested_url,
+                        local_addr,
+                        remote_addr,
+                        log_message,
+                    )
                     .await
             }
             ResolvedHandlerVariant::StaticDir(static_dir) => {
                 static_dir
-                    .invoke(req, res, requested_url, local_addr, remote_addr)
+                    .invoke(
+                        req,
+                        res,
+                        requested_url,
+                        local_addr,
+                        remote_addr,
+                        log_message,
+                    )
                     .await
             }
-            ResolvedHandlerVariant::Auth(auth) => auth.invoke(req, res, requested_url).await,
+            ResolvedHandlerVariant::Auth(auth) => {
+                auth.invoke(req, res, requested_url, log_message).await
+            }
             ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
-                s3_bucket.invoke(req, res, requested_url).await
+                s3_bucket.invoke(req, res, requested_url, log_message).await
             }
             ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
-                gcs_bucket.invoke(req, res, requested_url).await
+                gcs_bucket
+                    .invoke(req, res, requested_url, log_message)
+                    .await
             }
         }
     }
@@ -1507,6 +1327,7 @@ enum ResolvedFinalizingRuleAction {
         data: HashMap<SmolStr, SmolStr>,
     },
     Respond {
+        static_response_name: StaticResponseName,
         static_response: Option<ResolvedStaticResponse>,
         data: HashMap<SmolStr, SmolStr>,
         rescue: Vec<ResolvedRescueItem>,
@@ -1531,6 +1352,7 @@ impl ResolvedRuleAction {
 #[derive(Debug, Clone)]
 enum ResolvedCatchAction {
     StaticResponse {
+        static_response_name: StaticResponseName,
         static_response: Option<ResolvedStaticResponse>,
         data: HashMap<SmolStr, SmolStr>,
     },
@@ -1660,6 +1482,8 @@ struct ResolvedHandler {
     handler_name: HandlerName,
     handler_checksum: HandlerChecksum,
 
+    config_name: Option<ConfigName>,
+
     resolved_variant: ResolvedHandlerVariant,
 
     base_path: Vec<UrlPathSegmentOrQueryPart>,
@@ -1772,8 +1596,18 @@ impl ResolvedHandler {
         rescueable: &Rescueable<'_>,
         is_in_exception: bool,
         maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+        log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
         info!("handle rescueable: {:?}", rescueable);
+
+        if let &Rescueable::Exception { exception, data } = rescueable {
+            log_message
+                .steps
+                .push(ProcessingStep::Exception(ExceptionProcessingStep {
+                    exception: exception.clone(),
+                    data: data.clone(),
+                }));
+        }
 
         let maybe_resolved_exception = maybe_rule_invoke_catch
             .and_then(|r| Self::find_exception_handler(r, &rescueable))
@@ -1800,9 +1634,11 @@ impl ResolvedHandler {
                 Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing,
             },
             Some(ResolvedCatchAction::StaticResponse {
+                static_response_name,
                 static_response,
                 data,
             }) => RescueableHandleResult::StaticResponse {
+                static_response_name: static_response_name.clone(),
                 static_response: static_response.clone(),
                 data: data.clone(),
             },
@@ -1811,6 +1647,7 @@ impl ResolvedHandler {
 
         match result {
             RescueableHandleResult::StaticResponse {
+                static_response_name,
                 static_response,
                 mut data,
             } => {
@@ -1820,10 +1657,12 @@ impl ResolvedHandler {
                 return self.handle_static_response(
                     req,
                     res,
+                    &static_response_name,
                     &static_response,
                     data,
                     rescueable.is_exception() || is_in_exception,
                     maybe_rule_invoke_catch,
+                    log_message,
                 );
             }
             RescueableHandleResult::NextHandler => {
@@ -1869,6 +1708,7 @@ impl ResolvedHandler {
         replaced_url: &Url,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
         let action = match self.find_action(replaced_url) {
             None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
@@ -1880,13 +1720,20 @@ impl ResolvedHandler {
             }) => {
                 let invocation_result = self
                     .resolved_variant
-                    .invoke(req, res, replaced_url, local_addr, remote_addr)
+                    .invoke(req, res, replaced_url, local_addr, remote_addr, log_message)
                     .await;
 
                 match invocation_result {
                     HandlerInvocationResult::Responded => {
                         let rescueable = Rescueable::StatusCode(res.status());
-                        return self.handle_rescueable(req, res, &rescueable, false, Some(catch));
+                        return self.handle_rescueable(
+                            req,
+                            res,
+                            &rescueable,
+                            false,
+                            Some(catch),
+                            log_message,
+                        );
                     }
                     HandlerInvocationResult::ToNextHandler => {
                         return ResolvedHandlerProcessingResult::NextHandler;
@@ -1896,7 +1743,14 @@ impl ResolvedHandler {
                             exception: &name,
                             data: &data,
                         };
-                        return self.handle_rescueable(req, res, &rescueable, false, Some(catch));
+                        return self.handle_rescueable(
+                            req,
+                            res,
+                            &rescueable,
+                            false,
+                            Some(catch),
+                            log_message,
+                        );
                     }
                 }
             }
@@ -1908,9 +1762,10 @@ impl ResolvedHandler {
                 data,
             }) => {
                 let rescueable = Rescueable::Exception { exception, data };
-                return self.handle_rescueable(req, res, &rescueable, false, None);
+                return self.handle_rescueable(req, res, &rescueable, false, None, log_message);
             }
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
+                static_response_name,
                 static_response,
                 data,
                 rescue,
@@ -1918,10 +1773,12 @@ impl ResolvedHandler {
                 return self.handle_static_response(
                     req,
                     res,
+                    static_response_name,
                     static_response,
                     data.clone(),
                     false,
                     Some(rescue),
+                    log_message,
                 );
             }
             ResolvedRuleAction::None => {
@@ -1934,11 +1791,21 @@ impl ResolvedHandler {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        static_response_name: &StaticResponseName,
         maybe_static_response: &Option<ResolvedStaticResponse>,
         additional_data: HashMap<SmolStr, SmolStr>,
         is_in_exception: bool,
         maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+        log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
+        log_message.steps.push(ProcessingStep::StaticResponse(
+            StaticResponseProcessingStep {
+                static_response: static_response_name.clone(),
+                data: additional_data.clone(),
+                config_name: self.config_name.clone(),
+            },
+        ));
+
         *res = Response::new(Body::empty());
 
         match maybe_static_response {
@@ -1953,6 +1820,7 @@ impl ResolvedHandler {
                     &rescueable,
                     true,
                     maybe_rule_invoke_catch,
+                    log_message,
                 );
             }
             Some(static_response) => match static_response.invoke(req, res, additional_data) {
@@ -1970,6 +1838,7 @@ impl ResolvedHandler {
                             &rescueable,
                             false,
                             maybe_rule_invoke_catch,
+                            log_message,
                         );
                     } else {
                         error!(
@@ -1992,6 +1861,7 @@ impl ResolvedHandler {
 enum RescueableHandleResult {
     /// Respond with static response
     StaticResponse {
+        static_response_name: StaticResponseName,
         static_response: Option<ResolvedStaticResponse>,
         data: HashMap<SmolStr, SmolStr>,
     },
@@ -2060,6 +1930,7 @@ fn resolve_cache_action(
             status_code,
             data,
         } => ResolvedCatchAction::StaticResponse {
+            static_response_name: name.clone(),
             static_response: resolve_static_response(name, status_code, data, static_responses),
             data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         },
@@ -2283,6 +2154,7 @@ impl RequestsProcessor {
 
                                 checksum.into()
                             },
+                            config_name: config_name.clone(),
                             resolved_variant: match handler.variant {
                                 ClientHandlerVariant::Auth(auth) => {
                                     ResolvedHandlerVariant::Auth(ResolvedAuth {
@@ -2371,8 +2243,7 @@ impl RequestsProcessor {
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {
                                     ResolvedHandlerVariant::S3Bucket(ResolvedS3Bucket {
                                         client: public_client.clone(),
-                                        credentials:
-                                        s3_bucket
+                                        credentials:  s3_bucket
                                             .credentials
                                             .map(|container|
                                                 container
@@ -2454,6 +2325,7 @@ impl RequestsProcessor {
                                             Action::Respond {
                                                 name: static_response_name, status_code, data, rescue
                                             } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
+                                                static_response_name: static_response_name.clone(),
                                                 static_response: resolve_static_response(
                                                     &static_response_name,
                                                     &status_code,
@@ -2525,12 +2397,22 @@ impl ResolvedS3Bucket {
         req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &Url,
+        log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET {
             return HandlerInvocationResult::ToNextHandler;
         }
 
         let bucket = try_or_to_exception!(self.bucket.as_ref());
+
+        log_message
+            .steps
+            .push(ProcessingStep::Invoked(HandlerProcessingStep::S3Bucket(
+                S3BucketHandlerLogMessage {
+                    region: bucket.region().into(),
+                },
+            )));
+
         let credentials = if let Some(creds) = &self.credentials {
             Some(try_or_to_exception!(creds))
         } else {
@@ -2577,12 +2459,22 @@ impl ResolvedGcsBucket {
         req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &Url,
+        log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET {
             return HandlerInvocationResult::ToNextHandler;
         }
 
         let auth = try_or_to_exception!(self.auth.as_ref());
+        let bucket_name = try_or_to_exception!(self.bucket_name.as_ref());
+
+        log_message
+            .steps
+            .push(ProcessingStep::Invoked(HandlerProcessingStep::GcsBucket(
+                GcsBucketHandlerLogMessage {
+                    bucket: bucket_name.name.clone(),
+                },
+            )));
 
         let token_or_req = auth
             .get_token(&[tame_gcs::Scopes::ReadOnly])
@@ -2636,8 +2528,6 @@ impl ResolvedGcsBucket {
             new_token
         }
         .await;
-
-        let bucket_name = try_or_to_exception!(self.bucket_name.as_ref());
 
         let download_req_empty = tame_gcs::objects::Object::download(
             &(

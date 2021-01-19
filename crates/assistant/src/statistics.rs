@@ -1,6 +1,9 @@
 use exogress_server_common::prometheus::DEFAULT_TIME_BUCKETS;
 use lazy_static::lazy_static;
-use prometheus::{register_gauge, register_histogram, Encoder, Gauge, Histogram, TextEncoder};
+use prometheus::{
+    register_gauge, register_histogram, register_int_counter_vec, Encoder, Gauge, Histogram,
+    IntCounterVec, TextEncoder,
+};
 
 lazy_static! {
     pub static ref ACTIVE_CHANNELS: Gauge = register_gauge!(
@@ -24,6 +27,12 @@ lazy_static! {
         "assistant_accounts_logs_batch_save_time",
         "Time taken to save log message batch to account",
         DEFAULT_TIME_BUCKETS.clone()
+    )
+    .unwrap();
+    pub static ref GW_MESSAGES_PARSED: IntCounterVec = register_int_counter_vec!(
+        "assistant_gw_messages_parsed",
+        "Number of parsed gateway messages",
+        &["error"]
     )
     .unwrap();
 }

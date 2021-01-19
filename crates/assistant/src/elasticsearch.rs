@@ -1,8 +1,9 @@
 use anyhow::anyhow;
 use elasticsearch::cert::{Certificate, CertificateValidation};
-use elasticsearch::http::transport::{SingleNodeConnectionPool, Transport, TransportBuilder};
+use elasticsearch::http::transport::{SingleNodeConnectionPool, TransportBuilder};
 use elasticsearch::{BulkOperation, BulkParts, Elasticsearch};
 use exogress_server_common::logging::LogMessage;
+use serde_json::Value;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
@@ -48,14 +49,18 @@ impl ElasticsearchClient {
             .await
         {
             Ok(resp) => {
-                if resp.status_code().is_success() {
-                    Ok(())
+                let status_code = resp.status_code();
+                if status_code.is_success() {
+                    let response_body = resp.json::<Value>().await?;
+                    let successful = response_body["errors"].as_bool().unwrap() == false;
+                    if successful {
+                        Ok(())
+                    } else {
+                        error!("elastic save error: {:?}", response_body);
+                        Err(anyhow!("couldn't save to elastic: error"))
+                    }
                 } else {
-                    Err(anyhow!(
-                        "bad response: {}. Body = {}",
-                        resp.status_code(),
-                        resp.text().await?
-                    ))
+                    Err(anyhow!("bad response: {}", status_code))
                 }
             }
             Err(e) => Err(anyhow!("Error saving to elasticsearch: {}", e)),

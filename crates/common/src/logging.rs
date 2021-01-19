@@ -1,7 +1,15 @@
 use chrono::serde::ts_milliseconds;
-use exogress_common::entities::{AccountUniqueId, MountPointName, ProjectName, SmolStr};
+use exogress_common::config_core::parametrized::aws::bucket::S3Region;
+use exogress_common::config_core::Exception;
+use exogress_common::entities::{
+    AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName, SmolStr,
+    StaticResponseName, Upstream,
+};
+use hashbrown::HashMap;
 use serde_with::serde_as;
+use serde_with::DurationSecondsWithFrac;
 use std::net::IpAddr;
+use std::time::Duration;
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -14,58 +22,108 @@ pub struct LogMessage {
     pub account_unique_id: AccountUniqueId,
     pub project: ProjectName,
     pub mount_point: MountPointName,
-    // handler_name: Option<HandlerName>,
     pub url: SmolStr,
     pub method: SmolStr,
-    // status: Option<u16>,
 
-    // #[serde_as(as = "Option<DurationSeconds>")]
-    // process_time_ms: Option<Duration>,
-    // steps: Vec<ProcessingStep>,
+    pub status_code: Option<u16>,
+
+    #[serde_as(as = "Option<DurationSecondsWithFrac>")]
+    pub time_taken: Option<Duration>,
+
+    pub content_len: Option<u64>,
+
+    pub steps: Vec<ProcessingStep>,
 }
-//
-// pub enum ProcessingStep {
-//     Handler(HandlerLogMessage),
-//     Exception(ExceptionName),
-//     StaticResponse(StaticResponse),
-//     Optimize,
-//     Cache,
-// }
-//
-// pub enum HandlerLogMessage {
-//     Auth(AuthHandlerLogMessage),
-//     Proxy(ProxyHandlerLogMessage),
-//     S3Bucket(S3BucketHandlerLogMessage),
-//     GcsBucket(GcsBucketHandlerLogMessage),
-//     StaticDir(StaticDirHandlerLogMessage),
-// }
-//
-// pub struct UpstreamLogMessage {
-//     upstream: UpstreamName,
-//     instance_id: InstanceId,
-//     upstream_addr: IpAddr,
-// }
-//
-// pub struct StaticDirHandlerLogMessage {
-//     upstream: UpstreamLogMessage,
-//     dir: SmolStr,
-// }
-//
-// pub struct ProxyHandlerLogMessage {
-//     upstream: UpstreamLogMessage,
-// }
-//
-// pub struct S3BucketHandlerLogMessage {
-//     region: S3Region,
-// }
-//
-// pub struct GcsBucketHandlerLogMessage {
-//     bucket: SmolStr,
-// }
-//
-// pub struct AuthHandlerLogMessage {
-//     provider: AuthProvider,
-//     identity: Option<SmolStr>,
-//     acl_entry: Option<SmolStr>,
-//     is_passed: bool,
-// }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "kind")]
+pub enum ProcessingStep {
+    #[serde(rename = "invoked")]
+    Invoked(HandlerProcessingStep),
+
+    #[serde(rename = "exception")]
+    Exception(ExceptionProcessingStep),
+
+    #[serde(rename = "static_response")]
+    StaticResponse(StaticResponseProcessingStep),
+
+    #[serde(rename = "served_from_cache")]
+    ServedFromCache,
+
+    #[serde(rename = "optimize")]
+    Optimize(OptimizeProcessingStep),
+
+    #[serde(rename = "compress")]
+    Compress(CompressProcessingStep),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OptimizeProcessingStep {
+    pub from_content_type: SmolStr,
+    pub to_content_type: SmolStr,
+    pub compression_ratio: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CompressProcessingStep {
+    pub encoding: SmolStr,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StaticResponseProcessingStep {
+    pub static_response: StaticResponseName,
+    pub data: HashMap<SmolStr, SmolStr>,
+    pub config_name: Option<ConfigName>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExceptionProcessingStep {
+    pub exception: Exception,
+    pub data: HashMap<SmolStr, SmolStr>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "handler")]
+pub enum HandlerProcessingStep {
+    #[serde(rename = "auth")]
+    Auth(AuthHandlerLogMessage),
+    #[serde(rename = "proxy")]
+    Proxy(ProxyHandlerLogMessage),
+    #[serde(rename = "s3_bucket")]
+    S3Bucket(S3BucketHandlerLogMessage),
+    #[serde(rename = "gcs_bucket")]
+    GcsBucket(GcsBucketHandlerLogMessage),
+    #[serde(rename = "static_dir")]
+    StaticDir(StaticDirHandlerLogMessage),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StaticDirHandlerLogMessage {
+    pub instance_id: InstanceId,
+    pub config_name: ConfigName,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProxyHandlerLogMessage {
+    pub upstream: Upstream,
+    pub instance_id: InstanceId,
+    pub config_name: ConfigName,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct S3BucketHandlerLogMessage {
+    pub region: SmolStr,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GcsBucketHandlerLogMessage {
+    pub bucket: SmolStr,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AuthHandlerLogMessage {
+    pub provider: Option<SmolStr>,
+    pub identity: Option<SmolStr>,
+    pub acl_entry: Option<SmolStr>,
+    pub allowed: bool,
+}
