@@ -1,91 +1,65 @@
 use crate::cache::{Cache, HandlerChecksum};
 use crate::clients::traffic_counter::{RecordedTrafficStatistics, TrafficCounters};
 use crate::clients::ClientTunnels;
-use crate::http_serve::auth;
-use crate::http_serve::auth::github::GithubOauth2Client;
-use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::http_serve::auth::{retrieve_assistant_key, AuthFinalizer, JwtEcdsa, Oauth2Provider};
-use crate::http_serve::templates::respond_with_login;
+use crate::http_serve::auth::JwtEcdsa;
 use crate::mime_helpers::{is_mime_match, ordered_by_quality};
 use crate::public_hyper_client::MeteredHttpsConnector;
 use crate::rules_counter::AccountCounters;
 use crate::webapp::{ConfigData, ConfigsResponse};
-use anyhow::Context;
 use byte_unit::Byte;
 use chrono::{DateTime, Utc};
-use cookie::Cookie;
-use core::{fmt, mem};
-use exogress_common::config_core::parametrized::acl::{Acl, AclEntry};
-use exogress_common::config_core::parametrized::google::bucket::GcsBucket;
+use core::mem;
 use exogress_common::config_core::{
-    parametrized, Action, AuthProvider, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
-    MatchingPath, RescueItem, ResponseBody, StaticDir, StaticResponse, StatusCodeRange,
-    TemplateEngine, UrlPathSegmentOrQueryPart,
+    Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception, MatchingPath, RescueItem,
+    ResponseBody, StaticResponse, StatusCodeRange, TemplateEngine, UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
     AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
     StaticResponseName,
 };
-use exogress_common::tunnel::ConnectTarget;
 use exogress_server_common::logging::{
-    AuthHandlerLogMessage, CompressProcessingStep, ExceptionProcessingStep,
-    GcsBucketHandlerLogMessage, HandlerProcessingStep, LogMessage, OptimizeProcessingStep,
-    ProcessingStep, S3BucketHandlerLogMessage, StaticDirHandlerLogMessage,
-    StaticResponseProcessingStep,
+    ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep,
 };
 use exogress_server_common::presence;
-use exogress_server_common::url_prefix::MountPointBaseUrl;
 use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, StreamExt, TryStreamExt};
-use globset::Glob;
+use futures::{SinkExt, StreamExt};
 use handlebars::Handlebars;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
 use itertools::Itertools;
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
-use magick_rust::{magick_wand_genesis, MagickWand};
 use parking_lot::Mutex;
-use resolved_proxy::ResolvedProxy;
-use rusty_s3::actions::S3Action;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
-use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::{Arc, Once};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::io::AsyncWriteExt;
-use tokio::task;
-use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
-use typed_headers::{Accept, ContentCoding, ContentType, HeaderMapExt};
+use typed_headers::{Accept, ContentType, HeaderMapExt};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
-
-static IMAGE_MAGIC: Once = Once::new();
 
 #[macro_use]
 mod macros;
 
+mod auth;
+mod gcs_bucket;
 mod helpers;
-mod resolved_proxy;
+mod post_processing;
+mod proxy;
+mod s3_bucket;
+mod static_dir;
 
-use helpers::{
-    add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
-};
-use http::header::{
-    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, LOCATION, RANGE,
-    SET_COOKIE,
-};
+use http::header::{LOCATION, RANGE};
 
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
     pub generated_at: DateTime<Utc>,
-    pub google_oauth2_client: auth::google::GoogleOauth2Client,
-    pub github_oauth2_client: auth::github::GithubOauth2Client,
+    pub google_oauth2_client: super::auth::google::GoogleOauth2Client,
+    pub github_oauth2_client: super::auth::github::GithubOauth2Client,
     pub assistant_base_url: Url,
     pub maybe_identity: Option<Vec<u8>>,
     rules_counter: AccountCounters,
@@ -98,13 +72,6 @@ pub struct RequestsProcessor {
     max_pop_cache_size_bytes: Byte,
     gw_location: SmolStr,
     log_messages_tx: mpsc::Sender<LogMessage>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    idp: String,
-    sub: String,
-    exp: usize,
 }
 
 impl RequestsProcessor {
@@ -443,745 +410,15 @@ impl RequestsProcessor {
 
         *res.body_mut() = Body::wrap_stream(resp_rx.map(Ok::<_, hyper::Error>));
     }
-
-    async fn optimize_image(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        log_message: &mut LogMessage,
-    ) -> Result<(), anyhow::Error> {
-        let is_webp_supported = req
-            .headers()
-            .typed_get::<typed_headers::Accept>()?
-            .ok_or_else(|| anyhow!("no accept header"))?
-            .iter()
-            .find(|&item| item.item == mime::Mime::from_str("image/webp").unwrap())
-            .is_some();
-        if !is_webp_supported {
-            return Ok(());
-        }
-        let content_type: mime::Mime = res
-            .headers()
-            .get(CONTENT_TYPE)
-            .ok_or_else(|| anyhow!("no content-type"))?
-            .to_str()?
-            .parse()?;
-        if content_type == mime::IMAGE_JPEG || content_type == mime::IMAGE_PNG {
-            IMAGE_MAGIC.call_once(|| {
-                magick_wand_genesis();
-            });
-
-            let image_body = Arc::new(
-                mem::replace(res.body_mut(), Body::empty())
-                    .try_fold(Vec::new(), |mut data, chunk| async move {
-                        data.extend_from_slice(&chunk);
-                        Ok(data)
-                    })
-                    .await?,
-            );
-
-            let source_image_len = image_body.len();
-
-            let converted_image_result = task::spawn_blocking({
-                shadow_clone!(image_body);
-
-                move || {
-                    let wand = MagickWand::new();
-                    wand.read_image_blob(image_body.as_ref())
-                        .map_err(|e| anyhow!("imagemagick read error: {}", e))?;
-                    let converted_image = wand
-                        .write_image_blob("webp")
-                        .map_err(|e| anyhow!("imagemagick write error: {}", e))?;
-                    Ok::<_, anyhow::Error>(converted_image)
-                }
-            })
-            .await?;
-
-            match converted_image_result {
-                Ok(buf) => {
-                    const WEBP_MIME: &str = "image/webp";
-                    let buf_len = buf.len();
-                    let ratio = source_image_len as f64 / buf_len as f64;
-                    log_message
-                        .steps
-                        .push(ProcessingStep::Optimize(OptimizeProcessingStep {
-                            from_content_type: content_type.essence_str().into(),
-                            to_content_type: WEBP_MIME.into(),
-                            compression_ratio: ratio,
-                        }));
-                    *res.body_mut() = Body::from(buf);
-                    res.headers_mut().typed_insert::<ContentType>(&ContentType(
-                        mime::Mime::from_str(WEBP_MIME.into()).unwrap(),
-                    ));
-                    res.headers_mut()
-                        .insert(CONTENT_LENGTH, HeaderValue::from(buf_len));
-                }
-                Err(e) => {
-                    warn!("error converting image to WebP: {}", e);
-                    assert_eq!(Arc::strong_count(&image_body), 1);
-                    // restore original image body
-                    *res.body_mut() = Body::from(Arc::try_unwrap(image_body).unwrap());
-                }
-            }
-
-            Ok(())
-        } else {
-            Ok(())
-        }
-    }
-
-    fn compress(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        log_message: &mut LogMessage,
-    ) {
-        let maybe_accept_encoding = req
-            .headers()
-            .typed_get::<typed_headers::AcceptEncoding>()
-            .ok()
-            .flatten();
-        let maybe_content_type = res
-            .headers()
-            .typed_get::<typed_headers::ContentType>()
-            .ok()
-            .flatten();
-
-        let maybe_compression = if maybe_content_type.is_none() {
-            None
-        } else if !COMPRESSABLE_MIME_TYPES.contains(maybe_content_type.unwrap().essence_str()) {
-            None
-        } else if let Some(accept_encoding) = maybe_accept_encoding {
-            accept_encoding
-                .iter()
-                .map(|qi| &qi.item)
-                .filter_map(|a| SupportedContentEncoding::try_from(a).ok())
-                .sorted_by(|&a, &b| a.weight().cmp(&b.weight()).reverse())
-                .next()
-        } else {
-            None
-        };
-
-        let compression = match maybe_compression {
-            None => return,
-            Some(compression) => compression,
-        };
-
-        let uncompressed_body = mem::replace(res.body_mut(), Body::empty())
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()));
-
-        res.headers_mut()
-            .insert("vary", HeaderValue::from_str("Accept-Encoding").unwrap());
-        let _ = res
-            .headers_mut()
-            .typed_remove::<typed_headers::ContentLength>();
-        let processed_stream = match compression {
-            SupportedContentEncoding::Brotli => {
-                let header = typed_headers::ContentCoding::BROTLI;
-                log_message
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
-
-                res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(header));
-
-                Either::Left(tokio_util::io::ReaderStream::new(
-                    async_compression::tokio::bufread::BrotliEncoder::with_quality(
-                        tokio_util::io::StreamReader::new(uncompressed_body),
-                        async_compression::Level::Precise(6),
-                    ),
-                ))
-            }
-            SupportedContentEncoding::Gzip => {
-                let header = typed_headers::ContentCoding::GZIP;
-
-                log_message
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
-
-                res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(header));
-
-                Either::Right(Either::Left(tokio_util::io::ReaderStream::new(
-                    async_compression::tokio::bufread::GzipEncoder::new(
-                        tokio_util::io::StreamReader::new(uncompressed_body),
-                    ),
-                )))
-            }
-            SupportedContentEncoding::Deflate => {
-                let header = typed_headers::ContentCoding::DEFLATE;
-
-                log_message
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
-
-                res.headers_mut()
-                    .typed_insert(&typed_headers::ContentEncoding::from(header));
-
-                Either::Right(Either::Right(tokio_util::io::ReaderStream::new(
-                    async_compression::tokio::bufread::DeflateEncoder::new(
-                        tokio_util::io::StreamReader::new(uncompressed_body),
-                    ),
-                )))
-            }
-        };
-
-        *res.body_mut() = Body::wrap_stream(processed_stream);
-    }
-}
-
-struct ResolvedStaticDir {
-    config: StaticDir,
-    handler_name: HandlerName,
-    instance_ids: Mutex<SmoothWeight<InstanceId>>,
-    client_tunnels: ClientTunnels,
-    config_id: ConfigId,
-    individual_hostname: SmolStr,
-    public_hostname: SmolStr,
-}
-
-impl fmt::Debug for ResolvedStaticDir {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResolvedStaticDir")
-            .field("config", &self.config)
-            .field("handler_name", &self.handler_name)
-            .field("config_id", &self.config_id)
-            .finish()
-    }
-}
-
-impl ResolvedStaticDir {
-    async fn invoke(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        requested_url: &Url,
-        local_addr: &SocketAddr,
-        remote_addr: &SocketAddr,
-        log_message: &mut LogMessage,
-    ) -> HandlerInvocationResult {
-        if req.headers().contains_key("x-exg-proxied") {
-            return HandlerInvocationResult::Exception {
-                name: "proxy-error:loop-detected".parse().unwrap(),
-                data: Default::default(),
-            };
-        }
-
-        if req.method() != &Method::GET {
-            return HandlerInvocationResult::ToNextHandler;
-        }
-
-        let instance_id = try_option_or_exception!(
-            Weight::next(&mut *self.instance_ids.lock()),
-            "proxy-error:no-instances"
-        );
-
-        log_message
-            .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep::StaticDir(
-                StaticDirHandlerLogMessage {
-                    instance_id: instance_id.clone(),
-                    config_name: self.config_id.config_name.clone(),
-                },
-            )));
-
-        let mut proxy_to = requested_url.clone();
-
-        let connect_target = ConnectTarget::Internal(self.handler_name.clone());
-        connect_target.update_url(&mut proxy_to);
-
-        proxy_to.set_port(None).unwrap();
-        if proxy_to.scheme() == "https" {
-            proxy_to.set_scheme("http").unwrap();
-        } else {
-            panic!("FIXME");
-        }
-
-        let mut proxy_req = Request::<Body>::new(Body::empty());
-        *proxy_req.method_mut() = req.method().clone();
-        *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
-
-        copy_headers_to_proxy_req(req, &mut proxy_req, false);
-
-        add_forwarded_headers(
-            &mut proxy_req,
-            local_addr,
-            remote_addr,
-            &self.public_hostname,
-            Some(proxy_to.host_str().unwrap()),
-        );
-
-        proxy_req
-            .headers_mut()
-            .append("x-exg", "1".parse().unwrap());
-
-        let http_client = try_option_or_exception!(
-            self.client_tunnels
-                .retrieve_http_connector(
-                    &self.config_id,
-                    &instance_id,
-                    self.individual_hostname.clone(),
-                )
-                .await,
-            "proxy-error:instance-unreachable"
-        );
-
-        let proxy_res = try_or_exception!(
-            http_client.request(proxy_req).await,
-            "proxy-error:instance-unreachable"
-        );
-
-        copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, false);
-
-        res.headers_mut()
-            .append("x-exg-proxied", "1".parse().unwrap());
-        *res.status_mut() = proxy_res.status();
-        *res.body_mut() = proxy_res.into_body();
-
-        HandlerInvocationResult::Responded
-    }
-}
-
-#[derive(Debug)]
-struct ResolvedAuth {
-    providers: Vec<(AuthProvider, Result<Acl, parametrized::Error>)>,
-    handler_name: HandlerName,
-    mount_point_base_url: MountPointBaseUrl,
-    jwt_ecdsa: JwtEcdsa,
-    google_oauth2_client: GoogleOauth2Client,
-    github_oauth2_client: GithubOauth2Client,
-    assistant_base_url: Url,
-    maybe_identity: Option<Vec<u8>>,
-}
-
-impl ResolvedAuth {
-    fn cookie_name(&self) -> String {
-        format!("exg-auth-{}", self.handler_name)
-    }
-
-    fn respond_not_authorized(&self, req: &Request<Body>, res: &mut Response<Body>) {
-        *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-        let mut redirect_to = self.mount_point_base_url.to_url();
-        redirect_to
-            .path_segments_mut()
-            .unwrap()
-            .push("_exg")
-            .push("auth");
-
-        redirect_to
-            .query_pairs_mut()
-            .append_pair("url", req.uri().to_string().as_str())
-            .append_pair("handler", self.handler_name.as_str());
-
-        redirect_to.set_host(Some("strip")).unwrap();
-        redirect_to.set_port(None).unwrap();
-        redirect_to.set_scheme("https").unwrap();
-
-        let auth_redirect_relative_url =
-            redirect_to.as_str().strip_prefix("https://strip").unwrap();
-
-        res.headers_mut()
-            .insert(LOCATION, auth_redirect_relative_url.try_into().unwrap());
-        res.headers_mut()
-            .typed_insert::<typed_headers::ContentType>(&typed_headers::ContentType(
-                mime::TEXT_HTML_UTF_8,
-            ));
-
-        *res.body_mut() =
-            Body::from("<HTML><BODY>Redirecting to authorization page...</BODY></HTML>");
-    }
-
-    fn auth_definition(
-        &self,
-        used_provider: &Oauth2Provider,
-    ) -> Option<&(AuthProvider, Result<Acl, parametrized::Error>)> {
-        self.providers
-            .iter()
-            .find(|provider| match (&provider.0, used_provider) {
-                (&AuthProvider::Google, &Oauth2Provider::Google) => true,
-                (&AuthProvider::Github, &Oauth2Provider::Github) => true,
-                _ => false,
-            })
-    }
-
-    fn acl_allowed_to<'a, 'b, 'c>(
-        &'c self,
-        identities: &'a [String],
-        acl_entries: &'b [AclEntry],
-    ) -> (Option<&'a String>, Option<&'b SmolStr>) {
-        let mut acl_allow_to = (None, None);
-        'acl: for acl_entry in acl_entries {
-            for identity in identities {
-                match acl_entry {
-                    AclEntry::Allow { identity: pass } => {
-                        let is_match = match Glob::new(pass) {
-                            Ok(glob) => glob.compile_matcher().is_match(identity),
-                            Err(_) => pass == identity,
-                        };
-                        if is_match {
-                            info!("Pass {} ", identity);
-                            acl_allow_to = (Some(identity), Some(pass));
-                            break 'acl;
-                        }
-                    }
-                    AclEntry::Deny { identity: deny } => {
-                        let is_match = match Glob::new(deny) {
-                            Ok(glob) => glob.compile_matcher().is_match(identity),
-                            Err(_) => deny == identity,
-                        };
-                        if is_match {
-                            info!("Deny {} ", identity);
-                            acl_allow_to = (None, Some(deny));
-                            break 'acl;
-                        }
-                    }
-                }
-            }
-        }
-
-        acl_allow_to
-    }
-
-    async fn invoke(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        requested_url: &Url,
-        log_message: &mut LogMessage,
-    ) -> HandlerInvocationResult {
-        let path_segments: Vec<_> = requested_url.path_segments().unwrap().collect();
-        let query = requested_url
-            .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect::<HashMap<String, String>>();
-
-        let path_segments_len = path_segments.len();
-
-        if path_segments_len >= 2 {
-            if path_segments[path_segments_len - 2] == "_exg" {
-                if path_segments[path_segments_len - 1] == "auth" {
-                    let result = (|| {
-                        let requested_url: Url = query.get("url")?.parse().ok()?;
-                        let handler_name: HandlerName =
-                            query.get("handler")?.as_str().parse().ok()?;
-
-                        let maybe_default_provider: Option<AuthProvider> = query
-                            .get("provider")
-                            .cloned()
-                            .or_else(|| {
-                                if self.providers.len() == 1 {
-                                    Some(self.providers.iter().next().unwrap().0.to_string())
-                                } else {
-                                    None
-                                }
-                            })
-                            .map(|p| p.parse().unwrap());
-
-                        Some((requested_url, handler_name, maybe_default_provider))
-                    })();
-
-                    match result {
-                        Some((requested_url, handler_name, maybe_provider)) => {
-                            if handler_name != self.handler_name {
-                                return HandlerInvocationResult::ToNextHandler;
-                            }
-
-                            respond_with_login(
-                                res,
-                                &self.mount_point_base_url,
-                                &maybe_provider,
-                                &requested_url,
-                                &handler_name,
-                                &self.providers,
-                                &self.jwt_ecdsa,
-                                &self.google_oauth2_client,
-                                &self.github_oauth2_client,
-                            )
-                            .await;
-
-                            return HandlerInvocationResult::Responded;
-                        }
-                        None => {
-                            *res.status_mut() = StatusCode::NOT_FOUND;
-
-                            return HandlerInvocationResult::Responded;
-                        }
-                    }
-                } else if path_segments[path_segments_len - 1] == "check_auth" {
-                    match query.get("secret") {
-                        Some(secret) => {
-                            match retrieve_assistant_key::<AuthFinalizer>(
-                                &self.assistant_base_url,
-                                &secret,
-                                self.maybe_identity.clone(),
-                            )
-                            .await
-                            {
-                                Ok(retrieved_flow_data) => {
-                                    let handler_name =
-                                        retrieved_flow_data.oauth2_flow_data.handler_name.clone();
-                                    let used_provider =
-                                        retrieved_flow_data.oauth2_flow_data.provider.clone();
-
-                                    if handler_name != self.handler_name {
-                                        return HandlerInvocationResult::ToNextHandler;
-                                    }
-
-                                    let maybe_auth_definition =
-                                        self.auth_definition(&used_provider);
-
-                                    match maybe_auth_definition {
-                                        Some((_provider, acl_result)) => {
-                                            let acl = try_or_to_exception!(acl_result.as_ref());
-
-                                            let acl_allow_to = self.acl_allowed_to(
-                                                &retrieved_flow_data.identities,
-                                                &acl.0,
-                                            );
-
-                                            if let (Some(allowed_identity), _) = acl_allow_to {
-                                                res.headers_mut().insert(
-                                                    CACHE_CONTROL,
-                                                    "no-cache".try_into().unwrap(),
-                                                );
-
-                                                res.headers_mut().insert(
-                                                    LOCATION,
-                                                    retrieved_flow_data
-                                                        .oauth2_flow_data
-                                                        .requested_url
-                                                        .to_string()
-                                                        .try_into()
-                                                        .unwrap(),
-                                                );
-
-                                                *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-
-                                                let claims = Claims {
-                                                    idp: retrieved_flow_data
-                                                        .oauth2_flow_data
-                                                        .provider
-                                                        .to_string(),
-                                                    sub: allowed_identity.to_string(),
-                                                    exp: (Utc::now() + chrono::Duration::hours(24))
-                                                        .timestamp()
-                                                        .try_into()
-                                                        .unwrap(),
-                                                };
-
-                                                let token = jsonwebtoken::encode(
-                                                    &Header {
-                                                        alg: jsonwebtoken::Algorithm::ES256,
-                                                        ..Default::default()
-                                                    },
-                                                    &claims,
-                                                    &EncodingKey::from_ec_pem(
-                                                        retrieved_flow_data
-                                                            .oauth2_flow_data
-                                                            .jwt_ecdsa
-                                                            .private_key
-                                                            .as_ref(),
-                                                    )
-                                                    .expect(
-                                                        "Could not create encoding key from EC PEM",
-                                                    ),
-                                                )
-                                                .expect("Could no encode JSON web token");
-
-                                                let auth_cookie_name = self.cookie_name();
-
-                                                let set_cookie =
-                                                    Cookie::build(auth_cookie_name, token)
-                                                        .path(
-                                                            retrieved_flow_data
-                                                                .oauth2_flow_data
-                                                                .base_url
-                                                                .path(),
-                                                        )
-                                                        .max_age(time::Duration::hours(24))
-                                                        .http_only(true)
-                                                        .secure(true)
-                                                        .finish();
-
-                                                res.headers_mut().insert(
-                                                    SET_COOKIE,
-                                                    set_cookie.to_string().try_into().unwrap(),
-                                                );
-                                            } else {
-                                                *res.status_mut() = StatusCode::FORBIDDEN;
-                                                *res.body_mut() = Body::from("Access Denied");
-                                            }
-                                        }
-                                        None => {
-                                            info!("could not find provider");
-                                            *res.status_mut() = StatusCode::BAD_REQUEST;
-                                            *res.body_mut() = Body::from("bad request");
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    info!("could not retrieve assistant oauth2 key: {}", e);
-                                    *res.status_mut() = StatusCode::UNAUTHORIZED;
-                                    *res.body_mut() = Body::from("error");
-                                }
-                            }
-                        }
-                        None => {
-                            *res.status_mut() = StatusCode::NOT_FOUND;
-                        }
-                    };
-
-                    return HandlerInvocationResult::Responded;
-                }
-            }
-        }
-
-        // otherwise, check authorization cookie
-
-        let auth_cookie_name = self.cookie_name();
-
-        let jwt_token = req
-            .headers()
-            .get_all(COOKIE)
-            .iter()
-            .map(|header| {
-                header
-                    .to_str()
-                    .unwrap()
-                    .split(';')
-                    .map(|s| s.trim_start().trim_end().to_string())
-            })
-            .flatten()
-            .filter_map(move |s| Cookie::parse(s).ok())
-            .find(|cookie| cookie.name() == auth_cookie_name);
-
-        if let Some(token) = jwt_token {
-            match jsonwebtoken::decode::<Claims>(
-                &token.value(),
-                &DecodingKey::from_ec_pem(&self.jwt_ecdsa.public_key).expect("FIXME"),
-                &Validation {
-                    algorithms: vec![jsonwebtoken::Algorithm::ES256],
-                    ..Default::default()
-                },
-            ) {
-                Ok(token) => {
-                    let granted_identity = token.claims.sub;
-                    let granted_provider = token.claims.idp.parse().expect("FIXME");
-
-                    let maybe_auth_definition = self.auth_definition(&granted_provider);
-
-                    match maybe_auth_definition {
-                        Some((_provider, acl_result)) => {
-                            let acl = try_or_to_exception!(acl_result.as_ref());
-
-                            let identities = [granted_identity.clone()];
-
-                            let (acl_allowed_to, acl_entry) =
-                                self.acl_allowed_to(&identities, &acl.0);
-
-                            if let Some(allow_to) = acl_allowed_to {
-                                info!(
-                                    "jwt-token parse and verified. go ahead. provider = {:?}, identity = {}, acl_entry = {:?}",
-                                    granted_provider, granted_identity, acl_entry
-                                );
-
-                                log_message.steps.push(ProcessingStep::Invoked(
-                                    HandlerProcessingStep::Auth(AuthHandlerLogMessage {
-                                        provider: Some(granted_provider.to_string().into()),
-                                        identity: Some(allow_to.into()),
-                                        acl_entry: acl_entry.cloned(),
-                                        allowed: true,
-                                    }),
-                                ));
-                            } else {
-                                self.respond_not_authorized(req, res);
-
-                                log_message.steps.push(ProcessingStep::Invoked(
-                                    HandlerProcessingStep::Auth(AuthHandlerLogMessage {
-                                        provider: Some(granted_provider.to_string().into()),
-                                        identity: Some(granted_identity.into()),
-                                        acl_entry: acl_entry.cloned(),
-                                        allowed: false,
-                                    }),
-                                ));
-
-                                return HandlerInvocationResult::Responded;
-                            }
-                        }
-                        None => {
-                            self.respond_not_authorized(req, res);
-
-                            log_message.steps.push(ProcessingStep::Invoked(
-                                HandlerProcessingStep::Auth(AuthHandlerLogMessage {
-                                    provider: Some(granted_provider.to_string().into()),
-                                    identity: Some(granted_identity.into()),
-                                    acl_entry: None,
-                                    allowed: false,
-                                }),
-                            ));
-
-                            return HandlerInvocationResult::Responded;
-                        }
-                    }
-                }
-                Err(e) => {
-                    if let jsonwebtoken::errors::ErrorKind::InvalidSignature = e.kind() {
-                        info!("jwt-token parsed but not verified");
-                    } else {
-                        info!("JWT token error: {:?}. Token: {}", e, token.value());
-                    };
-
-                    self.respond_not_authorized(req, res);
-
-                    log_message
-                        .steps
-                        .push(ProcessingStep::Invoked(HandlerProcessingStep::Auth(
-                            AuthHandlerLogMessage {
-                                provider: None,
-                                identity: None,
-                                acl_entry: None,
-                                allowed: false,
-                            },
-                        )));
-
-                    return HandlerInvocationResult::Responded;
-                }
-            }
-        } else {
-            info!("jwt-token not found");
-
-            log_message
-                .steps
-                .push(ProcessingStep::Invoked(HandlerProcessingStep::Auth(
-                    AuthHandlerLogMessage {
-                        provider: None,
-                        identity: None,
-                        acl_entry: None,
-                        allowed: false,
-                    },
-                )));
-
-            self.respond_not_authorized(req, res);
-            return HandlerInvocationResult::Responded;
-        }
-
-        HandlerInvocationResult::ToNextHandler
-    }
 }
 
 #[derive(Debug)]
 enum ResolvedHandlerVariant {
-    Proxy(ResolvedProxy),
-    StaticDir(ResolvedStaticDir),
-    Auth(ResolvedAuth),
-    S3Bucket(ResolvedS3Bucket),
-    GcsBucket(ResolvedGcsBucket),
+    Proxy(proxy::ResolvedProxy),
+    StaticDir(static_dir::ResolvedStaticDir),
+    Auth(auth::ResolvedAuth),
+    S3Bucket(s3_bucket::ResolvedS3Bucket),
+    GcsBucket(gcs_bucket::ResolvedGcsBucket),
 }
 
 #[derive(Debug)]
@@ -1192,78 +429,6 @@ pub enum HandlerInvocationResult {
         name: Exception,
         data: HashMap<SmolStr, SmolStr>,
     },
-}
-
-lazy_static! {
-    pub static ref COMPRESSABLE_MIME_TYPES: HashSet<&'static str> = vec![
-        mime::TEXT_CSS.essence_str(),
-        mime::TEXT_CSV.essence_str(),
-        mime::TEXT_HTML.essence_str(),
-        mime::TEXT_JAVASCRIPT.essence_str(),
-        mime::TEXT_PLAIN.essence_str(),
-        mime::TEXT_STAR.essence_str(),
-        mime::TEXT_TAB_SEPARATED_VALUES.essence_str(),
-        mime::TEXT_VCARD.essence_str(),
-        mime::TEXT_XML.essence_str(),
-        mime::IMAGE_BMP.essence_str(),
-        mime::IMAGE_SVG.essence_str(),
-        mime::APPLICATION_JAVASCRIPT.essence_str(),
-        mime::APPLICATION_JSON.essence_str(),
-        "application/atom+xml",
-        "application/geo+json",
-        "application/x-javascript",
-        "application/ld+json",
-        "application/manifest+json",
-        "application/rdf+xml",
-        "application/rss+xml",
-        "application/vnd.ms-fontobject",
-        "application/wasm",
-        "application/x-web-app-manifest+json",
-        "application/xhtml+xml",
-        "application/xml",
-        "font/eot",
-        "font/otf",
-        "font/ttf",
-        "text/cache-manifest",
-        "text/calendar",
-        "text/markdown",
-        "text/vnd.rim.location.xloc",
-        "text/vtt",
-        "text/x-component",
-        "text/x-cross-domain-policy",
-    ]
-    .into_iter()
-    .collect();
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum SupportedContentEncoding {
-    Brotli,
-    Gzip,
-    Deflate,
-}
-
-impl SupportedContentEncoding {
-    pub fn weight(&self) -> u8 {
-        match self {
-            SupportedContentEncoding::Brotli => 200,
-            SupportedContentEncoding::Gzip => 150,
-            SupportedContentEncoding::Deflate => 10,
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a ContentCoding> for SupportedContentEncoding {
-    type Error = ();
-
-    fn try_from(value: &'a ContentCoding) -> Result<Self, Self::Error> {
-        match value {
-            &ContentCoding::BROTLI => Ok(SupportedContentEncoding::Brotli),
-            &ContentCoding::GZIP | &ContentCoding::STAR => Ok(SupportedContentEncoding::Gzip),
-            &ContentCoding::DEFLATE => Ok(SupportedContentEncoding::Deflate),
-            _ => Err(()),
-        }
-    }
 }
 
 impl ResolvedHandlerVariant {
@@ -1387,9 +552,7 @@ impl ResolvedFilter {
             }
 
             while let Some(segment) = path_segments.next() {
-                if !segment.is_empty() {
-                    segments.push(segment.to_string());
-                }
+                segments.push(segment.to_string());
             }
         }
 
@@ -1966,8 +1129,8 @@ fn resolve_rescue_items(
 impl RequestsProcessor {
     pub fn new(
         resp: ConfigsResponse,
-        google_oauth2_client: auth::google::GoogleOauth2Client,
-        github_oauth2_client: auth::github::GithubOauth2Client,
+        google_oauth2_client: super::auth::google::GoogleOauth2Client,
+        github_oauth2_client: super::auth::github::GithubOauth2Client,
         assistant_base_url: Url,
         client_tunnels: ClientTunnels,
         rules_counter: AccountCounters,
@@ -2157,7 +1320,7 @@ impl RequestsProcessor {
                             config_name: config_name.clone(),
                             resolved_variant: match handler.variant {
                                 ClientHandlerVariant::Auth(auth) => {
-                                    ResolvedHandlerVariant::Auth(ResolvedAuth {
+                                    ResolvedHandlerVariant::Auth(auth::ResolvedAuth {
                                         providers: auth
                                             .providers
                                             .into_iter()
@@ -2178,7 +1341,7 @@ impl RequestsProcessor {
                                     })
                                 }
                                 ClientHandlerVariant::StaticDir(static_dir) => {
-                                    ResolvedHandlerVariant::StaticDir(ResolvedStaticDir {
+                                    ResolvedHandlerVariant::StaticDir(static_dir::ResolvedStaticDir {
                                         config: static_dir,
                                         handler_name: handler_name.clone(),
                                         instance_ids: {
@@ -2205,7 +1368,7 @@ impl RequestsProcessor {
                                     })
                                 }
                                 ClientHandlerVariant::Proxy(proxy) => {
-                                    ResolvedHandlerVariant::Proxy(ResolvedProxy {
+                                    ResolvedHandlerVariant::Proxy(proxy::ResolvedProxy {
                                         name: proxy.upstream.clone(),
                                         upstream: upstreams
                                             .as_ref()
@@ -2241,7 +1404,7 @@ impl RequestsProcessor {
                                     })
                                 }
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {
-                                    ResolvedHandlerVariant::S3Bucket(ResolvedS3Bucket {
+                                    ResolvedHandlerVariant::S3Bucket(s3_bucket::ResolvedS3Bucket {
                                         client: public_client.clone(),
                                         credentials:  s3_bucket
                                             .credentials
@@ -2265,7 +1428,7 @@ impl RequestsProcessor {
                                     })
                                 }
                                 ClientHandlerVariant::GcsBucket(gcs_bucket) => {
-                                    ResolvedHandlerVariant::GcsBucket(ResolvedGcsBucket {
+                                    ResolvedHandlerVariant::GcsBucket(gcs_bucket::ResolvedGcsBucket {
                                         client: public_client.clone(),
                                         bucket_name: gcs_bucket.bucket.resolve(&params),
                                         auth: gcs_bucket.credentials.resolve(&params).map(|creds| {
@@ -2381,187 +1544,6 @@ impl RequestsProcessor {
 impl Drop for RequestsProcessor {
     fn drop(&mut self) {
         crate::statistics::ACTIVE_REQUESTS_PROCESSORS.dec();
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ResolvedS3Bucket {
-    client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
-    credentials: Option<Result<rusty_s3::Credentials, parametrized::Error>>,
-    bucket: Result<rusty_s3::Bucket, parametrized::Error>,
-}
-
-impl ResolvedS3Bucket {
-    async fn invoke(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        requested_url: &Url,
-        log_message: &mut LogMessage,
-    ) -> HandlerInvocationResult {
-        if req.method() != &Method::GET {
-            return HandlerInvocationResult::ToNextHandler;
-        }
-
-        let bucket = try_or_to_exception!(self.bucket.as_ref());
-
-        log_message
-            .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep::S3Bucket(
-                S3BucketHandlerLogMessage {
-                    region: bucket.region().into(),
-                },
-            )));
-
-        let credentials = if let Some(creds) = &self.credentials {
-            Some(try_or_to_exception!(creds))
-        } else {
-            None
-        };
-
-        let action = rusty_s3::actions::GetObject::new(&bucket, credentials, requested_url.path());
-        let signed_url = action.sign(Duration::from_secs(60));
-
-        let mut proxy_resp = self
-            .client
-            .get(signed_url.as_str().parse().unwrap())
-            .await
-            .expect("FIXME");
-
-        copy_headers_from_proxy_res_to_res(proxy_resp.headers(), res, false);
-
-        *res.status_mut() = proxy_resp.status();
-
-        *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
-
-        HandlerInvocationResult::Responded
-    }
-}
-
-struct ResolvedGcsBucket {
-    client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
-    bucket_name: Result<GcsBucket, parametrized::Error>,
-    auth: Result<tame_oauth::gcp::ServiceAccountAccess, parametrized::Error>,
-    token: Mutex<Option<tame_oauth::Token>>,
-}
-
-impl fmt::Debug for ResolvedGcsBucket {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResolvedGcsBucket")
-            .field("bucket_name", &self.bucket_name)
-            .finish()
-    }
-}
-
-impl ResolvedGcsBucket {
-    async fn invoke(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        requested_url: &Url,
-        log_message: &mut LogMessage,
-    ) -> HandlerInvocationResult {
-        if req.method() != &Method::GET {
-            return HandlerInvocationResult::ToNextHandler;
-        }
-
-        let auth = try_or_to_exception!(self.auth.as_ref());
-        let bucket_name = try_or_to_exception!(self.bucket_name.as_ref());
-
-        log_message
-            .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep::GcsBucket(
-                GcsBucketHandlerLogMessage {
-                    bucket: bucket_name.name.clone(),
-                },
-            )));
-
-        let token_or_req = auth
-            .get_token(&[tame_gcs::Scopes::ReadOnly])
-            .expect("FIXME");
-
-        let token = async {
-            if let Some(token) = self.token.lock().clone() {
-                if !token.has_expired() {
-                    return token;
-                }
-            }
-
-            let new_token = match token_or_req {
-                tame_oauth::gcp::TokenOrRequest::Token(token) => token,
-                tame_oauth::gcp::TokenOrRequest::Request {
-                    request,
-                    scope_hash,
-                    ..
-                } => {
-                    let (parts, body) = request.into_parts();
-                    let read_body = Body::from(body);
-                    let auth_req = http::Request::from_parts(parts, read_body);
-
-                    let mut auth_res = self
-                        .client
-                        .request(auth_req)
-                        .await
-                        .context("failed to send token request")
-                        .expect("FIXME");
-
-                    let mut converted_res = Response::new(
-                        mem::replace(auth_res.body_mut(), Body::empty())
-                            .try_fold(Vec::new(), |mut data, chunk| async move {
-                                data.extend_from_slice(&chunk);
-                                Ok(data)
-                            })
-                            .await
-                            .expect("FIXME"),
-                    );
-
-                    *converted_res.headers_mut() = auth_res.headers().clone();
-                    *converted_res.status_mut() = auth_res.status();
-
-                    auth.parse_token_response(scope_hash, converted_res)
-                        .expect("FIXME")
-                }
-            };
-
-            *self.token.lock() = Some(new_token.clone());
-
-            new_token
-        }
-        .await;
-
-        let download_req_empty = tame_gcs::objects::Object::download(
-            &(
-                &tame_gcs::BucketName::try_from(bucket_name.name.as_str().to_string())
-                    .expect("FIXME"),
-                &tame_gcs::ObjectName::try_from(requested_url.path()[1..].to_string())
-                    .expect("FIXME"),
-            ),
-            None,
-        )
-        .expect("FIXME");
-
-        let mut req = Request::new(Body::empty());
-        *req.headers_mut() = download_req_empty.headers().clone();
-        req.headers_mut().insert(
-            http::header::AUTHORIZATION,
-            token.try_into().expect("FIXME"),
-        );
-        *req.uri_mut() = download_req_empty.uri().clone();
-        *req.method_mut() = download_req_empty.method().clone();
-
-        let mut proxy_resp = self.client.request(req).await.expect("FIXME");
-
-        copy_headers_from_proxy_res_to_res(proxy_resp.headers(), res, false);
-
-        *res.status_mut() = proxy_resp.status();
-        res.headers_mut().insert(
-            CONTENT_DISPOSITION,
-            HeaderValue::try_from("inline").unwrap(),
-        );
-
-        *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
-
-        HandlerInvocationResult::Responded
     }
 }
 
@@ -2699,5 +1681,18 @@ mod test {
         assert!(!matcher.is_matches(&url));
         assert!(matcher.is_matches(&url2));
         assert!(matcher.is_matches(&url3));
+    }
+
+    #[test]
+    fn test_matching_empty() {
+        let url1: Url = "https://a.b.c/a/b".parse().unwrap();
+        let url2: Url = "https://a.b.c/a/b/".parse().unwrap();
+        let matcher = ResolvedFilter {
+            path: MatchingPath::WildcardRight(vec![MatchPathSegment::Any, MatchPathSegment::Empty]),
+            base_path: vec![],
+        };
+
+        assert!(!matcher.is_matches(&url1));
+        assert!(matcher.is_matches(&url2));
     }
 }

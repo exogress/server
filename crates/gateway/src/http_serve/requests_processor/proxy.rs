@@ -8,7 +8,6 @@ use exogress_server_common::logging::{
     HandlerProcessingStep, LogMessage, ProcessingStep, ProxyHandlerLogMessage,
 };
 use exogress_server_common::presence;
-use hashbrown::HashMap;
 use http::header::CONNECTION;
 use http::{Method, Request, Response, StatusCode};
 use hyper::Body;
@@ -47,7 +46,7 @@ impl fmt::Debug for ResolvedProxy {
 }
 
 impl ResolvedProxy {
-    pub(crate) async fn invoke(
+    pub async fn invoke(
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,

@@ -27,7 +27,7 @@ macro_rules! try_or_exception {
         match $expr {
             core::result::Result::Ok(val) => val,
             core::result::Result::Err(err) => {
-                let mut data: HashMap<SmolStr, SmolStr> = HashMap::new();
+                let mut data: hashbrown::HashMap<SmolStr, SmolStr> = hashbrown::HashMap::new();
                 data.insert("error".into(), err.to_string().into());
                 return HandlerInvocationResult::Exception {
                     name: $exception.try_into().expect("Bad exception format"),
