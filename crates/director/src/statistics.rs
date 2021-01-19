@@ -13,8 +13,12 @@ lazy_static! {
         linear_buckets(50.0, 50.0, 30).unwrap()
     )
     .unwrap();
-    pub static ref NUM_PROXIED_REQUESTS: IntCounterVec =
-        register_int_counter_vec!("director_requests", "Number of requests processed", c).unwrap();
+    pub static ref NUM_PROXIED_REQUESTS: IntCounterVec = register_int_counter_vec!(
+        "director_requests",
+        "Number of requests processed",
+        &["successful_retry", "max_retries", "retries"]
+    )
+    .unwrap();
 }
 
 fn dump_prometheus() -> String {
