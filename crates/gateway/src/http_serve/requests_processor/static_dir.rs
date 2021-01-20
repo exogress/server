@@ -44,7 +44,8 @@ impl ResolvedStaticDir {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
+        _requested_url: &Url,
+        rebased_url: &Url,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         log_message: &mut LogMessage,
@@ -74,7 +75,7 @@ impl ResolvedStaticDir {
                 },
             )));
 
-        let mut proxy_to = requested_url.clone();
+        let mut proxy_to = rebased_url.clone();
 
         let connect_target = ConnectTarget::Internal(self.handler_name.clone());
         connect_target.update_url(&mut proxy_to);

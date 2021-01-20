@@ -24,7 +24,8 @@ impl ResolvedS3Bucket {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
+        _requested_url: &Url,
+        rebased_url: &Url,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
@@ -47,7 +48,7 @@ impl ResolvedS3Bucket {
             None
         };
 
-        let action = rusty_s3::actions::GetObject::new(&bucket, credentials, requested_url.path());
+        let action = rusty_s3::actions::GetObject::new(&bucket, credentials, rebased_url.path());
         let signed_url = action.sign(Duration::from_secs(60));
 
         let mut proxy_resp = self

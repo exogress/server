@@ -914,6 +914,7 @@ dependencies = [
  "semver 0.10.0",
  "serde",
  "serde_json",
+ "serde_with",
  "serde_yaml",
  "shadow-clone",
  "smol_str",
@@ -4518,8 +4519,9 @@ dependencies = [
 
 [[package]]
 name = "warp"
-version = "0.2.5"
-source = "git+https://github.com/seanmonstar/warp.git?branch=master#ffefea08050ffe8022d3391f4bd5e5ab4e95d7c9"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3dafd0aac2818a94a34df0df1100a7356c493d8ede4393875fd0b5c51bb6bc80"
 dependencies = [
  "async-compression",
  "bytes 1.0.1",

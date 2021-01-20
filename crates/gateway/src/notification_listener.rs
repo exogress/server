@@ -214,7 +214,7 @@ impl AssistantClient {
 
             async move {
                 while let Some(report) = gw_to_assistant_messages_rx.next().await {
-                    info!(
+                    debug!(
                         "received statistics report. will send to assistant WS: {:?}",
                         report
                     );

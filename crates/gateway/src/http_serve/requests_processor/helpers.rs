@@ -29,6 +29,7 @@ const HOP_BY_HOP_HEADERS: [HeaderName; 7] = [
 pub fn copy_headers_from_proxy_res_to_res(
     proxy_headers: &HeaderMap,
     res: &mut Response<Body>,
+    // modifications: &ModifyHeaders,
     is_upgrade_allowed: bool,
 ) {
     for (incoming_header_name, incoming_header_value) in proxy_headers.iter() {
@@ -58,11 +59,24 @@ pub fn copy_headers_from_proxy_res_to_res(
         res.headers_mut()
             .append(incoming_header_name, incoming_header_value.clone());
     }
+
+    // for (header_name, header_value) in &modifications.append.0 {
+    //     res.headers_mut()
+    //         .append(header_name.clone(), header_value.clone());
+    // }
+    // for (header_name, header_value) in &modifications.insert.0 {
+    //     res.headers_mut()
+    //         .insert(header_name.clone(), header_value.clone());
+    // }
+    // for header_name in &modifications.remove {
+    //     res.headers_mut().remove(header_name);
+    // }
 }
 
 pub fn copy_headers_to_proxy_req(
     req: &Request<Body>,
     proxy_req: &mut Request<Body>,
+    // modifications: &ModifyHeaders,
     is_upgrade_allowed: bool,
 ) {
     for (incoming_header_name, incoming_header_value) in req.headers() {

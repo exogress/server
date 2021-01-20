@@ -25,19 +25,19 @@ hashbrown = { version = "0.9", features = ["serde"] }
 chrono = { version = "0.4.11", features = ["serde"] }
 url = "2.1.1"
 bson = "1.1.0"
-tokio-stream = { version = "0.1.2" }
+tokio-stream = "0.1.2"
 prometheus = "0.11.0"
 lazy_static = "1.4.0"
 mimalloc = "0.1.22"
 simd-json = "0.3.23"
 
 elasticsearch =  { git = "https://github.com/krojew/elasticsearch-rs.git", branch = "master", default-features = false, features = ["rustls-tls"]}
-#mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "master" }
+#mongodb = { git = "https://github.com/rupansh/mongo-rust-driver.git", branch = "tcpstream_timeout" }
 mongodb = { path = "../../deps/mongo-rust-driver" }
 
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
-warp = { git = "https://github.com/seanmonstar/warp.git", branch = "master" }
+warp = { version = "0.3" }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }

@@ -37,7 +37,8 @@ impl ResolvedGcsBucket {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
+        _requested_url: &Url,
+        rebased_url: &Url,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
@@ -112,7 +113,7 @@ impl ResolvedGcsBucket {
             &(
                 &tame_gcs::BucketName::try_from(bucket_name.name.as_str().to_string())
                     .expect("FIXME"),
-                &tame_gcs::ObjectName::try_from(requested_url.path()[1..].to_string())
+                &tame_gcs::ObjectName::try_from(rebased_url.path()[1..].to_string())
                     .expect("FIXME"),
             ),
             None,
