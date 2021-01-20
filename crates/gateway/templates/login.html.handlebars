@@ -1,15 +1,28 @@
 <html>
+<head>
+    <title>This site requires authentication</title>
+    <link rel="stylesheet" href="https://unpkg.com/purecss@2.0.5/build/pure-min.css" integrity="sha384-LTIDeidl25h2dPxrB2Ekgc9c7sEC3CWGM6HeFmuDNUjX76Ert4Z4IY714dhZHPLd" crossorigin="anonymous">
+    <style>
+        .custom-restricted-width {
+            /* To limit the menu width to the content of the menu: */
+            display: inline-block;
+            /* Or set the width explicitly: */
+            /* width: 10em; */
+        }
+    </style>
+</head>
 <body>
-Login required:
-<ul>
-    {{#each providers}}
-        <li>
-            <a href="{{ this.link }}">
-                {{ this.name }}
-                <img height="64" width="64" src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg" />
-            </a>
-        </li>
-    {{/each}}
-</ul>
+<div>
+    <div class="pure-menu custom-restricted-width">
+        <span class="pure-menu-heading">Choose authentication provider:</span>
+        <ul class="pure-menu-list">
+            {{#each providers}}
+                <li class="pure-menu-item">
+                    <a href="{{ this.link }}" class="pure-menu-link"><img height="32"  src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg" />Github</a>
+                </li>
+            {{/each}}
+        </ul>
+    </div>
+</div>
 </body>
 </html>

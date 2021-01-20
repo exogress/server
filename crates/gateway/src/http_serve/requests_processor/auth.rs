@@ -156,13 +156,13 @@ impl ResolvedAuth {
                         let maybe_default_provider: Option<AuthProvider> = query
                             .get("provider")
                             .cloned()
-                            .or_else(|| {
-                                if self.providers.len() == 1 {
-                                    Some(self.providers.iter().next().unwrap().0.to_string())
-                                } else {
-                                    None
-                                }
-                            })
+                            // .or_else(|| {
+                            //     if self.providers.len() == 1 {
+                            //         Some(self.providers.iter().next().unwrap().0.to_string())
+                            //     } else {
+                            //         None
+                            //     }
+                            // })
                             .map(|p| p.parse().unwrap());
 
                         Some((requested_url, handler_name, maybe_default_provider))
