@@ -442,6 +442,8 @@ impl Cache {
 
         tokio::fs::copy(temp_file_path, storage_path).await?;
 
+        crate::statistics::CACHE_SAVED.inc_by(original_file_size.into());
+
         Ok(())
     }
 
@@ -728,6 +730,9 @@ impl Cache {
             let mut resp = Response::new(hyper::Body::wrap_stream(body));
             *resp.status_mut() = meta.status;
             *resp.headers_mut() = meta.headers;
+
+            crate::statistics::CACHE_SERVED.inc_by(original_file_size.into());
+
             if original_file_size > 0 {
                 resp.headers_mut()
                     .typed_insert::<typed_headers::ContentLength>(&typed_headers::ContentLength(
