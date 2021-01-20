@@ -55,7 +55,7 @@ mod proxy;
 mod s3_bucket;
 mod static_dir;
 
-use http::header::{HeaderName, LOCATION, RANGE};
+use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE};
 
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
@@ -101,16 +101,6 @@ impl RequestsProcessor {
                 // eligible for caching
                 // lookup for cache response and respond if exists
 
-                let accept = req
-                    .headers()
-                    .typed_get()
-                    .unwrap_or_else(|_e| Some(typed_headers::Accept(vec![])))
-                    .unwrap_or_else(|| typed_headers::Accept(vec![]));
-                let accept_encoding = req
-                    .headers()
-                    .typed_get()
-                    .unwrap_or_else(|_e| Some(typed_headers::AcceptEncoding(vec![])))
-                    .unwrap_or_else(|| typed_headers::AcceptEncoding(vec![]));
                 let cached_response = self
                     .cache
                     .serve_from_cache(
@@ -120,8 +110,6 @@ impl RequestsProcessor {
                         &handler.handler_name,
                         &handler.handler_checksum,
                         req.headers(),
-                        &accept,
-                        &accept_encoding,
                         req.method(),
                         req.uri().path_and_query().expect("FIXME").as_str(),
                         &self.xchacha20poly1305_secret_key,
@@ -131,11 +119,7 @@ impl RequestsProcessor {
                 match cached_response {
                     Ok(Some(resp)) => {
                         info!("found data in cache");
-                        // never actually respond from cache for now, just save
-                        if false
-                            && (resp.status().is_success()
-                                || resp.status() == StatusCode::NOT_MODIFIED)
-                        {
+                        if resp.status().is_success() || resp.status() == StatusCode::NOT_MODIFIED {
                             // respond from cache only if success response
 
                             *res = resp;
@@ -283,12 +267,42 @@ impl RequestsProcessor {
             return;
         }
 
-        let path_and_query = req.uri().path_and_query().expect("FIXME").to_string();
+        let cache_entries: Vec<_> = res
+            .headers()
+            .get_all(CACHE_CONTROL)
+            .iter()
+            .map(|cache_control_header| {
+                let cache_control = cache_control_header.to_str().unwrap();
+                cache_control
+                    .split(',')
+                    .map(|item: &str| item.trim_matches(' '))
+            })
+            .flatten()
+            .collect();
 
-        if !path_and_query.ends_with(".ts") {
-            // FIXME
+        let caching_allowed = cache_entries.iter().any(|&c| c == "public")
+            && !cache_entries
+                .iter()
+                .any(|&c| c == "no-cache" || c == "private" || c == "no-store");
+
+        let max_age = cache_entries
+            .iter()
+            .filter_map(|header| header.strip_prefix("max-age="))
+            .map(|h| Ok::<_, anyhow::Error>(chrono::Duration::seconds(h.parse()?)))
+            .flatten()
+            .next();
+
+        info!(
+            "cache entries: {:?} {:?}. caching_allowed = {:?}",
+            cache_entries, max_age, caching_allowed
+        );
+        if !caching_allowed || max_age.is_none() {
             return;
         }
+
+        let max_age = max_age.unwrap();
+
+        let path_and_query = req.uri().path_and_query().expect("FIXME").to_string();
 
         let cache = self.cache.clone();
         let account_unique_id = self.account_unique_id.clone();
@@ -377,7 +391,7 @@ impl RequestsProcessor {
                     original_file_size.try_into().unwrap(),
                     header,
                     max_pop_cache_size_bytes,
-                    Utc::now() + chrono::Duration::minutes(2),
+                    Utc::now() + max_age,
                     &xchacha20poly1305_secret_key,
                     tempfile_path,
                 )
@@ -674,11 +688,6 @@ impl ResolvedFilter {
             TrailingSlashFilterRule::Allow => true,
             TrailingSlashFilterRule::Deny => is_trailing_slash == false,
         };
-
-        info!(
-            "railing_slash_condition_met = {:?}",
-            trailing_slash_condition_met
-        );
 
         is_path_matched && trailing_slash_condition_met
     }

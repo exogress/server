@@ -565,19 +565,26 @@ impl Cache {
         handler_name: &HandlerName,
         handler_checksum: &HandlerChecksum,
         request_headers: &HeaderMap,
-        accept: &typed_headers::Accept,
-        accept_encoding: &typed_headers::AcceptEncoding,
         method: &http::Method,
         path_and_query: &str,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
     ) -> anyhow::Result<Option<Response<hyper::Body>>> {
+        let accept = request_headers
+            .typed_get()
+            .unwrap_or_else(|_e| Some(typed_headers::Accept(vec![])))
+            .unwrap_or_else(|| typed_headers::Accept(vec![]));
+        let accept_encoding = request_headers
+            .typed_get()
+            .unwrap_or_else(|_e| Some(typed_headers::AcceptEncoding(vec![])))
+            .unwrap_or_else(|| typed_headers::AcceptEncoding(vec![]));
+
         let file_name = self.sha_filename(
             project_name,
             mount_point_name,
             handler_name,
             handler_checksum,
-            accept,
-            accept_encoding,
+            &accept,
+            &accept_encoding,
             method,
             path_and_query,
         );
