@@ -5,7 +5,12 @@ pub const HTTP_ERROR_REQUEST_ERROR: &str = "request_error";
 pub const HTTP_ERROR_BAD_RESPONSE: &str = "bad_response";
 pub const HTTP_ERROR_BAD_STATUS: &str = "bad_status";
 
+pub const CACHE_ACTION_WRITE: &str = "write";
+pub const CACHE_ACTION_READ: &str = "read";
+
 lazy_static! {
+    pub static ref CACHE_ERRORS: IntCounterVec =
+        register_int_counter_vec!("gw_cache_errors", "Local cache errors", &["action"]).unwrap();
     pub static ref CONFIGS_CACHE_HIT: IntCounter =
         register_int_counter!("gw_configs_cache_hit", "Configs cache hit").unwrap();
     pub static ref CONFIGS_CACHE_MISS: IntCounter =

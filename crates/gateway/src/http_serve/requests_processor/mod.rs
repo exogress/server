@@ -146,6 +146,9 @@ impl RequestsProcessor {
                     }
                     Ok(None) => {}
                     Err(e) => {
+                        crate::statistics::CACHE_ERRORS
+                            .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
+                            .inc();
                         warn!("Error reading data from cache: {}", e);
                     }
                 }
@@ -398,6 +401,11 @@ impl RequestsProcessor {
                 .await;
 
             info!("cached save result = {:?}", cached_response);
+            if let Err(_e) = cached_response {
+                crate::statistics::CACHE_ERRORS
+                    .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
+                    .inc();
+            }
 
             Ok::<_, anyhow::Error>(())
         });
