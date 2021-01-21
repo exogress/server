@@ -4,7 +4,8 @@ use dashmap::DashSet;
 use etag::EntityTag;
 use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
 use futures::{StreamExt, TryStreamExt};
-use http::header::{ETAG, IF_NONE_MATCH, LAST_MODIFIED};
+use hashbrown::HashSet;
+use http::header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY};
 use http::{HeaderMap, Response, StatusCode};
 use sha2::Digest;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
@@ -12,6 +13,7 @@ use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
 use std::io;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -86,7 +88,9 @@ impl Cache {
             "CREATE TABLE IF NOT EXISTS  files (
                   id                       INTEGER PRIMARY KEY,
                   account_unique_id        TEXT NOT NULL,
-                  filename                 TEXT NOT NULL,
+                  request_hash             TEXT NOT NULL,
+                  vary                     TEXT NOT NULL,
+                  vary_hash                TEXT NOT NULL,
                   body_encryption_header   TEXT NOT NULL,
                   meta_encryption_header   TEXT NOT NULL,
                   original_file_size       INT4 NOT NULL,
@@ -104,7 +108,13 @@ impl Cache {
         .await?;
 
         sqlx::query(
-            "CREATE UNIQUE INDEX IF NOT EXISTS account_files ON files(account_unique_id, filename);")
+            "CREATE INDEX IF NOT EXISTS account_files ON files(account_unique_id, request_hash);",
+        )
+        .execute(&sqlite)
+        .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS account_files_variations ON files(account_unique_id, request_hash, vary, vary_hash);",
+        )
             .execute(&sqlite)
             .await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS expired_files ON files(expires_at);")
@@ -147,7 +157,12 @@ impl Cache {
     }
 
     /// Path to the file
-    fn storage_path(&self, account_unique_id: &AccountUniqueId, file_name: &str) -> PathBuf {
+    fn storage_path(
+        &self,
+        account_unique_id: &AccountUniqueId,
+        file_name: &str,
+        vary: &str,
+    ) -> PathBuf {
         let mut path = (*self.cache_files_dir).clone();
         path.push(account_unique_id.to_string());
         let first = file_name[..2].to_string();
@@ -155,19 +170,17 @@ impl Cache {
         let last = file_name[4..].to_string();
         path.push(first);
         path.push(second);
-        path.push(last);
+        path.push(format!("{}-{}", last, vary));
         path
     }
 
-    /// The filename used to store the data in blob storage
-    fn sha_filename(
+    /// The request_hash used to store the data in blob storage
+    fn sha_request_hash(
         &self,
         project_name: &ProjectName,
         mount_point_name: &MountPointName,
         handler_name: &HandlerName,
         handler_checksum: &HandlerChecksum,
-        accept: &typed_headers::Accept,
-        accept_encoding: &typed_headers::AcceptEncoding,
         method: &http::Method,
         path_and_query: &str,
     ) -> String {
@@ -176,14 +189,6 @@ impl Cache {
         content_sha2.update(mount_point_name.as_str());
         content_sha2.update(handler_name.as_str());
         content_sha2.update(&handler_checksum.0.to_be_bytes());
-        for qi in &accept.0 {
-            content_sha2.update(&qi.quality.as_u16().to_be_bytes());
-            content_sha2.update(qi.item.as_ref());
-        }
-        for qi in &accept_encoding.0 {
-            content_sha2.update(&qi.quality.as_u16().to_be_bytes());
-            content_sha2.update(qi.item.as_str());
-        }
         content_sha2.update(method.as_str());
         content_sha2.update(path_and_query);
         bs58::encode(content_sha2.finalize()).into_string()
@@ -191,18 +196,19 @@ impl Cache {
 
     async fn delete_evicted_files(
         &self,
-        evicted_files: Vec<(String, AccountUniqueId)>,
+        evicted_files: Vec<(String, String, AccountUniqueId)>,
     ) -> anyhow::Result<()> {
-        for (evicted_file, account_unique_id) in evicted_files {
+        for (evicted_file, vary, account_unique_id) in evicted_files {
             info!("evict file {} from cache", evicted_file);
 
-            sqlx::query("DELETE FROM files WHERE account_unique_id = ? AND filename = ?")
+            sqlx::query("DELETE FROM files WHERE account_unique_id = ? AND request_hash = ?")
                 .bind(account_unique_id.to_string().as_str())
                 .bind(evicted_file.as_str())
                 .execute(&self.sqlite)
                 .await?;
 
-            let mut storage_path = self.storage_path(&account_unique_id, evicted_file.as_str());
+            let mut storage_path =
+                self.storage_path(&account_unique_id, evicted_file.as_str(), vary.as_str());
 
             let _r = tokio::fs::remove_file(&storage_path).await;
             // Use remove_dir here, so that the command will fail if there are some files in the dir left
@@ -220,8 +226,8 @@ impl Cache {
     async fn delete_some_expired(&self, limit: isize) -> anyhow::Result<usize> {
         let now = Utc::now().timestamp();
 
-        let evicted_files: Vec<(String, AccountUniqueId)> = sqlx::query(
-            "SELECT account_unique_id, filename 
+        let evicted_files: Vec<(String, String, AccountUniqueId)> = sqlx::query(
+            "SELECT account_unique_id, request_hash, vary_hash
                  FROM files 
                  WHERE expires_at < ?1 
                  LIMIT ?2;",
@@ -232,8 +238,9 @@ impl Cache {
         .err_into::<anyhow::Error>()
         .and_then(|row: SqliteRow| async move {
             let account_unique_id: String = row.try_get("account_unique_id")?;
-            let filename: String = row.try_get("filename")?;
-            Ok::<_, anyhow::Error>((filename, account_unique_id.parse()?))
+            let request_hash: String = row.try_get("request_hash")?;
+            let vary_hash: String = row.try_get("vary_hash")?;
+            Ok::<_, anyhow::Error>((request_hash, vary_hash, account_unique_id.parse()?))
         })
         .try_collect()
         .await?;
@@ -256,8 +263,8 @@ impl Cache {
     ) -> anyhow::Result<usize> {
         let now = Utc::now().timestamp();
 
-        let evicted_files: Vec<(String, AccountUniqueId)> = sqlx::query(
-            "SELECT filename 
+        let evicted_files: Vec<(String, String, AccountUniqueId)> = sqlx::query(
+            "SELECT request_hash, vary_hash
                   FROM files 
                   WHERE expires_at < ? AND account_unique_id = ?
                   LIMIT ?",
@@ -267,8 +274,9 @@ impl Cache {
         .bind(limit as i64)
         .fetch(&self.sqlite)
         .and_then(|row: SqliteRow| async move {
-            let filename: String = row.try_get("filename")?;
-            Ok((filename, account_unique_id.clone()))
+            let request_hash: String = row.try_get("request_hash")?;
+            let vary_hash: String = row.try_get("vary_hash")?;
+            Ok((request_hash, vary_hash, account_unique_id.clone()))
         })
         .try_collect()
         .await?;
@@ -287,8 +295,8 @@ impl Cache {
         &self,
         account_unique_id: &AccountUniqueId,
     ) -> anyhow::Result<usize> {
-        let evicted_files: Vec<(String, AccountUniqueId)> = sqlx::query(
-            "SELECT filename 
+        let evicted_files: Vec<(String, String, AccountUniqueId)> = sqlx::query(
+            "SELECT request_hash, vary_hash
                  FROM files 
                  WHERE account_unique_id = ?
                  ORDER BY last_used_at
@@ -297,8 +305,9 @@ impl Cache {
         .bind(account_unique_id.to_string().as_str())
         .fetch(&self.sqlite)
         .and_then(|row: SqliteRow| async move {
-            let filename: String = row.try_get("filename")?;
-            Ok((filename, account_unique_id.clone()))
+            let request_hash: String = row.try_get("request_hash")?;
+            let vary_hash: String = row.try_get("vary_hash")?;
+            Ok((request_hash, vary_hash, account_unique_id.clone()))
         })
         .try_collect()
         .await?;
@@ -341,10 +350,25 @@ impl Cache {
         Ok(bytes_used)
     }
 
+    fn vary_hash(vary_headers_ordered_list: &Vec<String>, req_headers: &HeaderMap) -> String {
+        let mut content_sha = sha2::Sha224::default();
+
+        for vary_by_header_name in vary_headers_ordered_list {
+            let header_value = req_headers
+                .get(vary_by_header_name)
+                .map(|h| h.to_str().unwrap())
+                .unwrap_or_default();
+            content_sha.update(header_value);
+        }
+
+        bs58::encode(content_sha.finalize()).into_string()
+    }
+
     async fn add_file_without_checks(
         &self,
         account_unique_id: &AccountUniqueId,
-        headers: &HeaderMap,
+        req_headers: &HeaderMap,
+        res_headers: &HeaderMap,
         status: StatusCode,
         body_encryption_header: Header,
         valid_till: DateTime<Utc>,
@@ -353,12 +377,34 @@ impl Cache {
         file_name: &str,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
     ) -> anyhow::Result<()> {
-        let storage_path = self.storage_path(account_unique_id, file_name);
-
         let file_size = tokio::fs::metadata(&temp_file_path).await?.len();
 
+        let mut vary_header_names_set = res_headers
+            .get(VARY)
+            .map(|s| {
+                s.to_str()
+                    .unwrap()
+                    .split(", ")
+                    .map(|s| HeaderName::from_str(s).unwrap())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        vary_header_names_set.insert(ACCEPT_ENCODING);
+        vary_header_names_set.insert(ACCEPT);
+
+        let mut vary_headers_ordered_list: Vec<_> = vary_header_names_set
+            .into_iter()
+            .map(|h| h.to_string())
+            .collect();
+        vary_headers_ordered_list.sort();
+
+        let vary_json = serde_json::to_string(&vary_headers_ordered_list).unwrap();
+        let vary_hash = Self::vary_hash(&vary_headers_ordered_list, req_headers);
+
+        info!("vary_json = {} hash = {}", vary_json, vary_hash);
+
         let meta = Meta {
-            headers: headers.clone(),
+            headers: res_headers.clone(),
             status: status.clone(),
         };
 
@@ -376,12 +422,12 @@ impl Cache {
             )
             .unwrap();
 
-        let etag: Option<EntityTag> = headers
+        let etag: Option<EntityTag> = res_headers
             .get(ETAG)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse().ok());
 
-        let last_modified = headers.get(LAST_MODIFIED).and_then(|date| {
+        let last_modified = res_headers.get(LAST_MODIFIED).and_then(|date| {
             Some(
                 DateTime::parse_from_rfc2822(date.to_str().ok()?)
                     .ok()?
@@ -392,7 +438,7 @@ impl Cache {
         sqlx::query(
             "INSERT INTO files (
                       account_unique_id,
-                      filename,
+                      request_hash,
                       file_size,
                       original_file_size,
                       expires_at,
@@ -403,21 +449,23 @@ impl Cache {
                       meta_encryption_header,
                       etag,
                       is_weak_etag,
-                      last_modified
-                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                    ON CONFLICT(account_unique_id, filename) DO 
+                      last_modified,
+                      vary,
+                      vary_hash
+                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    ON CONFLICT(account_unique_id, request_hash, vary, vary_hash) DO 
                         UPDATE SET 
                             file_size=?3,
                             original_file_size=?4,
                             expires_at=?5,
                             last_used_at=?6,
                             meta=?7,
-                            used_times=?8,
-                            body_encryption_header=?9,
-                            meta_encryption_header=?10,
-                            etag=?11,
-                            is_weak_etag=?12,
-                            last_modified=?13;",
+                            used_times=0,
+                            body_encryption_header=?8,
+                            meta_encryption_header=?9,
+                            etag=?10,
+                            is_weak_etag=?11,
+                            last_modified=?12;",
         )
         .bind(account_unique_id.to_string())
         .bind(file_name)
@@ -432,9 +480,12 @@ impl Cache {
         .bind(etag.as_ref().map(|e| e.tag().to_string()))
         .bind(etag.as_ref().map(|e| e.weak))
         .bind(last_modified)
+        .bind(vary_json)
+        .bind(&vary_hash)
         .execute(&self.sqlite)
         .await?;
 
+        let storage_path = self.storage_path(account_unique_id, file_name, vary_hash.as_ref());
         let mut parent_dir = storage_path.clone();
         parent_dir.pop();
 
@@ -447,19 +498,14 @@ impl Cache {
         Ok(())
     }
 
-    async fn mark_lru_used(
-        &self,
-        account_unique_id: &AccountUniqueId,
-        file_name: &str,
-    ) -> anyhow::Result<()> {
+    async fn mark_lru_used(&self, file_id: i64) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE files 
-                 SET used_times=used_times+1, last_used_at=?
-                 WHERE account_unique_id = ? AND filename = ?",
+                 SET used_times=used_times+1, last_used_at=?1
+                 WHERE id = ?2",
         )
         .bind(Utc::now().timestamp())
-        .bind(account_unique_id.to_string())
-        .bind(file_name)
+        .bind(file_id)
         .execute(&self.sqlite)
         .await?;
 
@@ -473,10 +519,9 @@ impl Cache {
         mount_point_name: &MountPointName,
         handler_name: &HandlerName,
         handler_checksum: &HandlerChecksum,
-        accept: &typed_headers::Accept,
-        accept_encoding: &typed_headers::AcceptEncoding,
         method: &http::Method,
-        headers: &HeaderMap,
+        req_headers: &HeaderMap,
+        res_headers: &HeaderMap,
         status: StatusCode,
         path_and_query: &str,
         original_file_size: u32,
@@ -487,13 +532,11 @@ impl Cache {
         temp_file_path: PathBuf,
     ) -> anyhow::Result<()> {
         // TODO: ensure GET/HEAD and success resp
-        let file_name = self.sha_filename(
+        let file_name = self.sha_request_hash(
             project_name,
             mount_point_name,
             handler_name,
             handler_checksum,
-            accept,
-            accept_encoding,
             method,
             path_and_query,
         );
@@ -536,7 +579,8 @@ impl Cache {
 
                 self.add_file_without_checks(
                     account_unique_id,
-                    headers,
+                    req_headers,
+                    res_headers,
                     status,
                     encryption_header,
                     valid_till,
@@ -571,28 +615,18 @@ impl Cache {
         path_and_query: &str,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
     ) -> anyhow::Result<Option<Response<hyper::Body>>> {
-        let accept = request_headers
-            .typed_get()
-            .unwrap_or_else(|_e| Some(typed_headers::Accept(vec![])))
-            .unwrap_or_else(|| typed_headers::Accept(vec![]));
-        let accept_encoding = request_headers
-            .typed_get()
-            .unwrap_or_else(|_e| Some(typed_headers::AcceptEncoding(vec![])))
-            .unwrap_or_else(|| typed_headers::AcceptEncoding(vec![]));
-
-        let file_name = self.sha_filename(
+        let file_name = self.sha_request_hash(
             project_name,
             mount_point_name,
             handler_name,
             handler_checksum,
-            &accept,
-            &accept_encoding,
             method,
             path_and_query,
         );
 
-        let maybe_query_result = sqlx::query(
+        let mut variations = sqlx::query(
             "SELECT
+                    id,
                     expires_at,
                     meta,
                     original_file_size,
@@ -600,16 +634,40 @@ impl Cache {
                     meta_encryption_header,
                     etag,
                     is_weak_etag,
-                    last_modified
+                    last_modified,
+                    vary,
+                    vary_hash
                 FROM files 
-                WHERE filename = ? AND account_unique_id = ?",
+                WHERE request_hash = ? AND account_unique_id = ?",
         )
         .bind(file_name.as_str())
         .bind(account_unique_id.to_string())
-        .fetch_optional(&self.sqlite)
-        .await?;
+        .fetch_all(&self.sqlite)
+        .await?
+        .into_iter();
 
-        if let Some(row) = maybe_query_result {
+        while let Some(row) = variations.next() {
+            let vary_json = row.try_get::<String, _>("vary")?;
+            let stored_vary_hash = row.try_get::<String, _>("vary_hash")?;
+
+            let vary_headers_ordered_list: Vec<String> =
+                if let Ok(r) = serde_json::from_str(&vary_json) {
+                    r
+                } else {
+                    continue;
+                };
+
+            let vary_hash = Self::vary_hash(&vary_headers_ordered_list, request_headers);
+
+            if stored_vary_hash != vary_hash {
+                // vary hash doesn't match
+                continue;
+            }
+
+            // at this point we are sure that vary header math
+            info!("found matched vary header");
+
+            let id = row.try_get::<i64, _>("id")?;
             let original_file_size = row.try_get::<u32, _>("original_file_size")?;
             let etag = row.try_get::<Option<String>, _>("etag")?;
             let is_weak_etag = row.try_get::<Option<bool>, _>("is_weak_etag")?;
@@ -653,8 +711,7 @@ impl Cache {
                 return Ok(None);
             }
 
-            self.mark_lru_used(account_unique_id, file_name.as_str())
-                .await?;
+            self.mark_lru_used(id).await?;
 
             let req_if_none_match: Vec<EntityTag> = request_headers
                 .get_all(IF_NONE_MATCH)
@@ -693,7 +750,8 @@ impl Cache {
                 return Ok(Some(resp));
             }
 
-            let storage_path = self.storage_path(account_unique_id, file_name.as_ref());
+            let storage_path =
+                self.storage_path(account_unique_id, file_name.as_ref(), vary_hash.as_str());
 
             let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
                 &body_encryption_header,
@@ -739,9 +797,9 @@ impl Cache {
                         original_file_size.into(),
                     ));
             }
-            Ok(Some(resp))
-        } else {
-            Ok(None)
+            return Ok(Some(resp));
         }
+
+        Ok(None)
     }
 }

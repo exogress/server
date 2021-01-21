@@ -314,19 +314,9 @@ impl RequestsProcessor {
         let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
         let xchacha20poly1305_secret_key = self.xchacha20poly1305_secret_key.clone();
 
-        let accept = req
-            .headers()
-            .typed_get()
-            .unwrap_or_else(|_e| Some(typed_headers::Accept(vec![])))
-            .unwrap_or_else(|| typed_headers::Accept(vec![]));
-        let accept_encoding = req
-            .headers()
-            .typed_get()
-            .unwrap_or_else(|_e| Some(typed_headers::AcceptEncoding(vec![])))
-            .unwrap_or_else(|| typed_headers::AcceptEncoding(vec![]));
-
         let method = req.method().clone();
-        let headers = res.headers().clone();
+        let req_headers = req.headers().clone();
+        let res_headers = res.headers().clone();
         let status = res.status().clone();
         let handler_name = handler.handler_name.clone();
         let handler_checksum = handler.handler_checksum;
@@ -385,10 +375,9 @@ impl RequestsProcessor {
                     &mount_point_name,
                     &handler_name,
                     &handler_checksum,
-                    &accept,
-                    &accept_encoding,
                     &method,
-                    &headers,
+                    &req_headers,
+                    &res_headers,
                     status,
                     path_and_query.as_str(),
                     original_file_size.try_into().unwrap(),
