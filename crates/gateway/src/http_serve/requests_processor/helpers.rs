@@ -1,6 +1,6 @@
 use http::header::{
     HeaderName, ACCEPT_ENCODING, CONNECTION, FORWARDED, HOST, PROXY_AUTHENTICATE,
-    PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
+    PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING,
 };
 use http::{HeaderMap, Request, Response};
 use hyper::Body;
@@ -17,7 +17,7 @@ lazy_static! {
     ///     - Trailers
     ///     - Transfer-Encoding
     ///     - Upgrade
-    pub static ref HOP_BY_HOP_HEADERS: [HeaderName; 8] = [
+    pub static ref HOP_BY_HOP_HEADERS: [HeaderName; 7] = [
         CONNECTION,
         HeaderName::from_static("keep-alive"),
         PROXY_AUTHENTICATE,
@@ -25,7 +25,9 @@ lazy_static! {
         TE,
         TRAILER,
         TRANSFER_ENCODING,
-        UPGRADE,
+
+        // not sure why is it hop-by-hop
+        // UPGRADE,
     ];
 }
 pub fn copy_headers_from_proxy_res_to_res(
@@ -47,6 +49,9 @@ pub fn copy_headers_from_proxy_res_to_res(
                     .contains("upgrade")
                 {
                     continue;
+                } else {
+                    res.headers_mut()
+                        .insert(CONNECTION, "Upgrade".parse().unwrap());
                 }
             } else {
                 continue;
@@ -81,6 +86,10 @@ pub fn copy_headers_to_proxy_req(
                     .contains("upgrade")
                 {
                     continue;
+                } else {
+                    proxy_req
+                        .headers_mut()
+                        .insert(CONNECTION, "keep-alive, Upgrade".parse().unwrap());
                 }
             } else {
                 continue;

@@ -769,7 +769,7 @@ checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
 [[package]]
 name = "elasticsearch"
 version = "8.0.0-alpha.1"
-source = "git+https://github.com/krojew/elasticsearch-rs.git?branch=master#18ed6a34de4d11668fc780f4ff8714fc6f714a70"
+source = "git+https://github.com/krojew/elasticsearch-rs.git#18ed6a34de4d11668fc780f4ff8714fc6f714a70"
 dependencies = [
  "base64 0.11.0",
  "bytes 1.0.1",
@@ -3631,7 +3631,7 @@ dependencies = [
 [[package]]
 name = "sqlx"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -3640,7 +3640,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "ahash 0.6.3",
  "atoi",
@@ -3682,7 +3682,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "dotenv",
  "either",
@@ -3703,7 +3703,7 @@ dependencies = [
 [[package]]
 name = "sqlx-rt"
 version = "0.2.0"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "once_cell",
  "tokio",
