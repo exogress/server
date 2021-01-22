@@ -47,6 +47,7 @@ use weighted_rs::{SmoothWeight, Weight};
 #[macro_use]
 mod macros;
 
+mod application_firewall;
 mod auth;
 mod gcs_bucket;
 mod helpers;
@@ -461,6 +462,7 @@ enum ResolvedHandlerVariant {
     Auth(auth::ResolvedAuth),
     S3Bucket(s3_bucket::ResolvedS3Bucket),
     GcsBucket(gcs_bucket::ResolvedGcsBucket),
+    ApplicationFirewall(application_firewall::ResolvedApplicationFirewall),
 }
 
 #[derive(Debug)]
@@ -521,6 +523,11 @@ impl ResolvedHandlerVariant {
             }
             ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
                 gcs_bucket
+                    .invoke(req, res, requested_url, rebased_url, log_message)
+                    .await
+            }
+            ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
+                application_firewall
                     .invoke(req, res, requested_url, rebased_url, log_message)
                     .await
             }
@@ -1591,6 +1598,12 @@ impl RequestsProcessor {
                                             ).expect("FIXME")
                                         }),
                                         token: Default::default(),
+                                    })
+                                }
+                                ClientHandlerVariant::ApplicationFirewall(app_firewall) => {
+                                    ResolvedHandlerVariant::ApplicationFirewall(application_firewall::ResolvedApplicationFirewall {
+                                        uri_xss: app_firewall.uri_xss,
+                                        uri_sqli: app_firewall.uri_sqli,
                                     })
                                 }
                             },

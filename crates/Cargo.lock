@@ -250,6 +250,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.54.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66c0bb6167449588ff70803f4127f0684f9063097eca5016f37eb52b92c2cf36"
+dependencies = [
+ "bitflags",
+ "cexpr",
+ "cfg-if 0.1.10",
+ "clang-sys",
+ "clap",
+ "env_logger 0.7.1",
+ "lazy_static",
+ "lazycell",
+ "log",
+ "peeking_take_while",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex",
+ "which",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -769,7 +793,7 @@ checksum = "e78d4f1cc4ae33bbfc157ed5d5a5ef3bc29227303d595861deb238fcec4e9457"
 [[package]]
 name = "elasticsearch"
 version = "8.0.0-alpha.1"
-source = "git+https://github.com/krojew/elasticsearch-rs.git#18ed6a34de4d11668fc780f4ff8714fc6f714a70"
+source = "git+https://github.com/krojew/elasticsearch-rs.git?branch=master#18ed6a34de4d11668fc780f4ff8714fc6f714a70"
 dependencies = [
  "base64 0.11.0",
  "bytes 1.0.1",
@@ -1029,6 +1053,7 @@ dependencies = [
  "itertools 0.10.0",
  "jsonwebtoken",
  "lazy_static",
+ "libinjection",
  "lru_time_cache",
  "magick_rust",
  "maplit",
@@ -1379,6 +1404,21 @@ name = "gimli"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6503fe142514ca4799d4c26297c4248239fe8838d827db6bd6065c6ed29a6ce"
+
+[[package]]
+name = "git2"
+version = "0.13.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f28f83eecb0de4d4afb74aef4874963739d6d167752a7a5ba156e56b27a4ede7"
+dependencies = [
+ "bitflags",
+ "libc",
+ "libgit2-sys",
+ "log",
+ "openssl-probe",
+ "openssl-sys",
+ "url",
+]
 
 [[package]]
 name = "glob"
@@ -1824,6 +1864,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89203f3fba0a3795506acaad8ebce3c80c0af93f994d5a1d7a0b1eeb23271929"
 
 [[package]]
+name = "libgit2-sys"
+version = "0.12.18+1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3da6a42da88fc37ee1ecda212ffa254c25713532980005d5f7c0b0fbe7e6e885"
+dependencies = [
+ "cc",
+ "libc",
+ "libssh2-sys",
+ "libz-sys",
+ "openssl-sys",
+ "pkg-config",
+]
+
+[[package]]
+name = "libinjection"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6300be4a063814ce0b6d818afeaba7a179a8356d7f0311979392304a607e90bd"
+dependencies = [
+ "bindgen 0.54.0",
+ "git2",
+ "regex",
+]
+
+[[package]]
 name = "libloading"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1860,6 +1925,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64d31059f22935e6c31830db5249ba2b7ecd54fd73a9909286f0a67aa55c2fbd"
 dependencies = [
  "cc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
+name = "libssh2-sys"
+version = "0.2.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df40b13fe7ea1be9b9dffa365a51273816c345fc1811478b57ed7d964fbfc4ce"
+dependencies = [
+ "cc",
+ "libc",
+ "libz-sys",
+ "openssl-sys",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
+name = "libz-sys"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "602113192b08db8f38796c4e85c39e960c145965140e918018bcde1952429655"
+dependencies = [
+ "cc",
+ "libc",
  "pkg-config",
  "vcpkg",
 ]
@@ -1918,7 +2009,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef1258fe816e2f16c40532a167718321ec78178984a08b62fca6f6a45784bd33"
 dependencies = [
- "bindgen",
+ "bindgen 0.53.3",
  "libc",
  "pkg-config",
 ]
@@ -3631,7 +3722,7 @@ dependencies = [
 [[package]]
 name = "sqlx"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -3640,7 +3731,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "ahash 0.6.3",
  "atoi",
@@ -3682,7 +3773,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "dotenv",
  "either",
@@ -3703,7 +3794,7 @@ dependencies = [
 [[package]]
 name = "sqlx-rt"
 version = "0.2.0"
-source = "git+https://github.com/launchbadge/sqlx.git#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
 dependencies = [
  "once_cell",
  "tokio",
