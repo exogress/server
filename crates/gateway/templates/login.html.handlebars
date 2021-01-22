@@ -17,8 +17,11 @@
         <span class="pure-menu-heading">Choose authentication provider:</span>
         <ul class="pure-menu-list">
             {{#each providers}}
-                <li class="pure-menu-item">
-                    <a href="{{ this.link }}" class="pure-menu-link"><img height="32"  src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg" />Github</a>
+                <li class="pure-menu-item" style="height: 50px">
+                    <a href="{{ this.link }}" class="pure-menu-link">
+                        <img style="height: 32px" src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg" />
+                        {{ this.name }}
+                    </a>
                 </li>
             {{/each}}
         </ul>
