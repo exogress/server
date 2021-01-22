@@ -29,6 +29,12 @@ lazy_static! {
         DEFAULT_TIME_BUCKETS.clone()
     )
     .unwrap();
+    pub static ref ACCOUNT_LOGS_SAVE: Coun = register_int_counter_vec!(
+        "assistant_accounts_logs_save",
+        "Number of account logs saved",
+        &["error"]
+    )
+    .unwrap();
     pub static ref GW_MESSAGES_PARSED: IntCounterVec = register_int_counter_vec!(
         "assistant_gw_messages_parsed",
         "Number of parsed gateway messages",

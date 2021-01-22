@@ -4,8 +4,7 @@ RUN rustup component add clippy rustfmt
 RUN apk --update add build-base imagemagick imagemagick-dev \
     libffi-dev openssl-dev libsasl clang cmake \
     ca-certificates pkgconfig llvm-dev libgcc clang-libs \
-    sqlite-dev sqlite-libs python3
-RUN python3 -m ensurepip && pip3 install --no-cache --upgrade pip setuptools
+    sqlite-dev sqlite-libs python2
 
 COPY . /code
 WORKDIR /code/crates

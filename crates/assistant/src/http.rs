@@ -138,18 +138,26 @@ pub async fn server(
                                                     elastic_client.save_log_messages(&report)
                                                 ).await;
 
-                                                match res {
+                                                let is_ok = match res {
                                                     Err(e) => {
                                                         error!("Failed to save to elasticsearch: {}", e);
+                                                        false
                                                     }
                                                     Ok(Err(e)) => {
                                                         error!("Failed to save to elasticsearch: {}", e);
+                                                        false
                                                     }
                                                     Ok(Ok(_)) => {
                                                         start_time.observe_duration();
+                                                        true
                                                     }
-                                                }
+                                                };
 
+                                                crate::statistics::ACCOUNT_LOGS_SAVE
+                                                    .with_label_values(&[
+                                                        if is_ok { "" } else { "1" },
+                                                    ])
+                                                    .inc();
                                             }
 
                                             Ok::<_, anyhow::Error>(())
