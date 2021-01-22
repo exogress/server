@@ -98,19 +98,20 @@ pub enum HandlerProcessingStep {
     ApplicationFirewall(ApplicationFirewallLogMessage),
 }
 
-fn is_false(b: &bool) -> bool {
-    *b == false
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum ApplicationFirewallAction {
+    #[serde(rename = "permitted")]
+    Permitted,
+
+    #[serde(rename = "prohibited")]
+    Prohibited,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ApplicationFirewallLogMessage {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sqli_detected: Option<String>,
+    pub detected: Vec<String>,
 
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub xss_detected: bool,
-
-    pub is_passed: bool,
+    pub action: ApplicationFirewallAction,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -137,9 +138,18 @@ pub struct GcsBucketHandlerLogMessage {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum AclAction {
+    #[serde(rename = "allowed")]
+    Allowed,
+
+    #[serde(rename = "denied")]
+    Denied,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AuthHandlerLogMessage {
     pub provider: Option<SmolStr>,
     pub identity: Option<SmolStr>,
     pub acl_entry: Option<SmolStr>,
-    pub allowed: bool,
+    pub acl_action: AclAction,
 }

@@ -9,7 +9,7 @@ use exogress_common::config_core::parametrized::acl::{Acl, AclEntry};
 use exogress_common::config_core::{parametrized, AuthProvider};
 use exogress_common::entities::HandlerName;
 use exogress_server_common::logging::{
-    AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
+    AclAction, AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
 };
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use globset::Glob;
@@ -378,7 +378,7 @@ impl ResolvedAuth {
                                         provider: Some(granted_provider.to_string().into()),
                                         identity: Some(allow_to.into()),
                                         acl_entry: acl_entry.cloned(),
-                                        allowed: true,
+                                        acl_action: AclAction::Allowed,
                                     }),
                                 ));
                             } else {
@@ -389,7 +389,7 @@ impl ResolvedAuth {
                                         provider: Some(granted_provider.to_string().into()),
                                         identity: Some(granted_identity.into()),
                                         acl_entry: acl_entry.cloned(),
-                                        allowed: false,
+                                        acl_action: AclAction::Denied,
                                     }),
                                 ));
 
@@ -404,7 +404,7 @@ impl ResolvedAuth {
                                     provider: Some(granted_provider.to_string().into()),
                                     identity: Some(granted_identity.into()),
                                     acl_entry: None,
-                                    allowed: false,
+                                    acl_action: AclAction::Denied,
                                 }),
                             ));
 
@@ -428,7 +428,7 @@ impl ResolvedAuth {
                                 provider: None,
                                 identity: None,
                                 acl_entry: None,
-                                allowed: false,
+                                acl_action: AclAction::Denied,
                             },
                         )));
 
@@ -445,7 +445,7 @@ impl ResolvedAuth {
                         provider: None,
                         identity: None,
                         acl_entry: None,
-                        allowed: false,
+                        acl_action: AclAction::Denied,
                     },
                 )));
 
