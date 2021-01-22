@@ -55,9 +55,9 @@ impl ResolvedApplicationFirewall {
             HandlerProcessingStep::ApplicationFirewall(ApplicationFirewallLogMessage {
                 detected: detected.clone(),
                 action: if is_detected {
-                    ApplicationFirewallAction::Permitted
-                } else {
                     ApplicationFirewallAction::Prohibited
+                } else {
+                    ApplicationFirewallAction::Permitted
                 },
             }),
         ));
