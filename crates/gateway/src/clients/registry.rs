@@ -50,6 +50,18 @@ impl InstanceConnector {
             balancer.add(connected_tunnel.connector.clone(), 1);
         }
     }
+
+    pub fn retrieve_connection(
+        &self,
+        target: ConnectTarget,
+        compression: Compression,
+    ) -> BoxFuture<'static, Result<TunneledConnection, exogress_common::tunnel::Error>> {
+        self.inner
+            .lock()
+            .next()
+            .unwrap()
+            .retrieve_connection(target, compression)
+    }
 }
 
 #[inline]
@@ -74,12 +86,7 @@ impl hyper::service::Service<Uri> for InstanceConnector {
         let target_result: Result<ConnectTarget, exogress_common::tunnel::Error> =
             extract_connect_target(dst);
         match target_result {
-            Ok(target) => self
-                .inner
-                .lock()
-                .next()
-                .unwrap()
-                .retrieve_connection(target, Compression::Zstd),
+            Ok(target) => self.retrieve_connection(target, Compression::Zstd),
             Err(e) => futures::future::ready(Err(e)).boxed(),
         }
     }
@@ -126,6 +133,32 @@ pub struct ClientTunnels {
 
 const WAIT_TIME: Duration = Duration::from_secs(10);
 
+pub struct TcpConnector {}
+
+pub struct HttpConnector {}
+
+pub trait RetrieveConnector {
+    type Connector;
+
+    fn retrieve(instance_connections: &InstanceConnections) -> Self::Connector;
+}
+
+impl RetrieveConnector for HttpConnector {
+    type Connector = hyper::client::Client<InstanceConnector>;
+
+    fn retrieve(instance_connections: &InstanceConnections) -> Self::Connector {
+        instance_connections.http_client.clone()
+    }
+}
+
+impl RetrieveConnector for TcpConnector {
+    type Connector = InstanceConnector;
+
+    fn retrieve(instance_connections: &InstanceConnections) -> Self::Connector {
+        instance_connections.instance_connector.clone()
+    }
+}
+
 impl ClientTunnels {
     pub fn new(signaler_base_url: Url, maybe_identity: Option<Vec<u8>>) -> Self {
         ClientTunnels {
@@ -148,12 +181,15 @@ impl ClientTunnels {
     /// Return active client tunnel if exists.
     /// Otherwise, request a new tunnel through signalling channel and
     /// wait for the actual connection
-    pub async fn retrieve_http_connector(
+    pub async fn retrieve_connector<R>(
         &self,
         config_id: &ConfigId,
         instance_id: &InstanceId,
         individual_hostname: SmolStr,
-    ) -> Option<hyper::client::Client<InstanceConnector>> {
+    ) -> Option<R::Connector>
+    where
+        R: RetrieveConnector,
+    {
         let maybe_identity = self.maybe_identity.clone();
 
         let start_time = crate::statistics::TUNNEL_ESTABLISHMENT_TIME.start_timer();
@@ -218,9 +254,7 @@ impl ClientTunnels {
                 None => {}
                 Some(state) => {
                     if let TunnelConnectionState::Connected(connections) = state {
-                        return connections
-                            .get(&instance_id)
-                            .map(|instance_connections| instance_connections.http_client.clone());
+                        return connections.get(&instance_id).map(R::retrieve);
                     }
                 }
             }

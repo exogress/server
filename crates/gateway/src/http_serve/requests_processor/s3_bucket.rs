@@ -57,7 +57,7 @@ impl ResolvedS3Bucket {
             .await
             .expect("FIXME");
 
-        copy_headers_from_proxy_res_to_res(proxy_resp.headers(), res, false);
+        copy_headers_from_proxy_res_to_res(proxy_resp.headers(), res);
 
         *res.status_mut() = proxy_resp.status();
 

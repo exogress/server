@@ -1,21 +1,24 @@
-use crate::clients::ClientTunnels;
+use crate::clients::{ClientTunnels, HttpConnector, TcpConnector};
 use crate::http_serve::requests_processor::HandlerInvocationResult;
 use anyhow::Context;
 use core::{fmt, mem};
 use exogress_common::entities::{ConfigId, InstanceId, Upstream};
-use exogress_common::tunnel::ConnectTarget;
+use exogress_common::tunnel::{Compression, ConnectTarget};
 use exogress_server_common::logging::{
     HandlerProcessingStep, LogMessage, ProcessingStep, ProxyHandlerLogMessage,
 };
 use exogress_server_common::presence;
-use http::header::CONNECTION;
-use http::{Method, Request, Response, StatusCode};
+use futures::SinkExt;
+use http::header::{
+    CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE,
+};
+use http::{HeaderMap, HeaderValue, Request, Response};
 use hyper::Body;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
 
@@ -23,6 +26,10 @@ use super::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
 use exogress_common::config_core::UpstreamDefinition;
+use futures::StreamExt;
+use rand::{thread_rng, RngCore};
+use std::io;
+use tokio_tungstenite::WebSocketStream;
 
 pub struct ResolvedProxy {
     pub name: Upstream,
@@ -46,6 +53,25 @@ impl fmt::Debug for ResolvedProxy {
 }
 
 impl ResolvedProxy {
+    fn retrieve_connection_failed(&self, instance_id: &InstanceId) {
+        warn!(
+            "Failed to connect to instance {}. Try next instance",
+            instance_id
+        );
+        tokio::spawn({
+            let presence_client = self.presence_client.clone();
+            shadow_clone!(instance_id);
+
+            async move {
+                info!("Request instance {} to go offline", instance_id);
+                let res = presence_client.set_offline(&instance_id, "", true).await;
+                info!(
+                    "Request instance {} to go offline res = {:?}",
+                    instance_id, res
+                );
+            }
+        });
+    }
     pub async fn invoke(
         &self,
         req: &mut Request<Body>,
@@ -61,6 +87,19 @@ impl ResolvedProxy {
                 name: "proxy-error:loop-detected".parse().unwrap(),
                 data: Default::default(),
             };
+        }
+
+        let mut is_websocket = false;
+
+        if let Some(upgrade) = req.headers().get(UPGRADE) {
+            if upgrade
+                .to_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("websocket")
+            {
+                is_websocket = true;
+            }
         }
 
         let mut proxy_to = rebased_url.clone();
@@ -81,7 +120,7 @@ impl ResolvedProxy {
         *proxy_req.method_mut() = req.method().clone();
         *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
 
-        copy_headers_to_proxy_req(req, &mut proxy_req, true);
+        copy_headers_to_proxy_req(req, &mut proxy_req);
 
         add_forwarded_headers(
             &mut proxy_req,
@@ -95,127 +134,179 @@ impl ResolvedProxy {
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
 
-        if req.method() != &Method::GET
-            && req
-                .headers()
-                .get(CONNECTION)
-                .map(|h| h.to_str().unwrap().to_lowercase())
-                .map(|s| s.contains("upgrade"))
-                != Some(true)
-        {
-            *proxy_req.body_mut() = mem::replace(req.body_mut(), Body::empty());
-        }
-
         'instances: loop {
             let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
 
             match selected_instance_id {
                 Some(instance_id) => {
-                    let http_client = match self
-                        .client_tunnels
-                        .retrieve_http_connector(
-                            &self.config_id,
-                            &instance_id,
-                            self.individual_hostname.clone(),
-                        )
-                        .await
-                    {
-                        Some(http_client) => http_client,
-                        None => {
-                            warn!(
-                                "Failed to connect to instance {}. Try next instance",
-                                instance_id
-                            );
-                            tokio::spawn({
-                                let presence_client = self.presence_client.clone();
-                                shadow_clone!(instance_id);
+                    let proxy_res = if is_websocket {
+                        info!("proxy websocket");
+                        let mut ws_req = http::Request::new(());
 
-                                async move {
-                                    info!("Request instance {} to go offline", instance_id);
-                                    let res =
-                                        presence_client.set_offline(&instance_id, "", true).await;
-                                    info!(
-                                        "Request instance {} to go offline res = {:?}",
-                                        instance_id, res
-                                    );
-                                }
-                            });
-                            // TODO: request instance deletion
-                            continue 'instances;
-                        }
+                        *ws_req.headers_mut() = proxy_req.headers().clone();
+                        *ws_req.method_mut() = proxy_req.method().clone();
+
+                        let mut rand_key = vec![0u8; 16];
+                        thread_rng().fill_bytes(&mut rand_key[..]);
+
+                        ws_req
+                            .headers_mut()
+                            .insert(SEC_WEBSOCKET_KEY, base64::encode(rand_key).parse().unwrap());
+                        ws_req
+                            .headers_mut()
+                            .insert(SEC_WEBSOCKET_VERSION, HeaderValue::try_from("13").unwrap());
+
+                        info!("ws_req = {:?}", ws_req);
+
+                        proxy_to.set_scheme("ws").unwrap();
+                        *ws_req.uri_mut() = proxy_to.as_str().parse().unwrap();
+
+                        let maybe_tcp = match self
+                            .client_tunnels
+                            .retrieve_connector::<TcpConnector>(
+                                &self.config_id,
+                                &instance_id,
+                                self.individual_hostname.clone(),
+                            )
+                            .await
+                        {
+                            Some(tcp) => {
+                                tcp.retrieve_connection(connect_target, Compression::Plain)
+                                    .await
+                            }
+                            None => {
+                                self.retrieve_connection_failed(&instance_id);
+                                continue 'instances;
+                            }
+                        };
+
+                        let tcp = try_or_exception!(
+                            maybe_tcp,
+                            "proxy-error:upstream-unreachable:connection-rejected"
+                        );
+
+                        let (proxy_ws, mut res) = try_or_exception!(
+                            tokio_tungstenite::client_async(ws_req, tcp).await,
+                            "proxy-error:websocket:connect-error"
+                        );
+
+                        let req_for_upgrade = mem::replace(req, Request::new(Body::empty()));
+                        *req.headers_mut() = req_for_upgrade.headers().clone();
+                        *req.uri_mut() = req_for_upgrade.uri().clone();
+                        *req.method_mut() = req_for_upgrade.method().clone();
+
+                        tokio::spawn(
+                            #[allow(unreachable_code)]
+                            async move {
+                                let forwarder = async move {
+                                    let req_upgraded = hyper::upgrade::on(req_for_upgrade)
+                                        .await
+                                        .with_context(|| "error upgrading connection")?;
+
+                                    let (mut proxy_ws_tx, mut proxy_ws_rx) = proxy_ws.split();
+
+                                    let proxy_ws = WebSocketStream::from_raw_socket(
+                                        req_upgraded,
+                                        tokio_tungstenite::tungstenite::protocol::Role::Server,
+                                        None,
+                                    )
+                                    .await;
+
+                                    let (mut client_ws_tx, mut client_ws_rx) = proxy_ws.split();
+
+                                    loop {
+                                        tokio::select! {
+                                            maybe_msg = proxy_ws_rx.next() => {
+                                                if let Some(Ok(msg)) = maybe_msg  {
+                                                    client_ws_tx.send(msg).await.with_context(|| "could not send WS msg to client")?;
+                                                } else {
+                                                    break;
+                                                }
+                                            },
+
+                                            maybe_msg = client_ws_rx.next() => {
+                                                if let Some(Ok(msg)) = maybe_msg  {
+                                                    proxy_ws_tx.send(msg).await.with_context(|| "could not send WS msg to proxy")?;
+                                                } else {
+                                                    break;
+                                                }
+                                            },
+                                        }
+                                    }
+
+                                    info!("websocket forwarder finished!");
+
+                                    Ok::<_, anyhow::Error>(())
+                                };
+
+                                info!("spawn forwarder");
+                                let forwarder_result = forwarder.await;
+                                info!("forwarder result = {:?}", forwarder_result);
+                            },
+                        );
+
+                        // using wrap_stream here prevents hyper to automatically set content-length
+                        let mut hyper_res =
+                            Response::new(Body::wrap_stream(futures::stream::empty::<
+                                Result<Vec<u8>, io::Error>,
+                            >()));
+
+                        *hyper_res.headers_mut() =
+                            mem::replace(res.headers_mut(), HeaderMap::new());
+                        *hyper_res.status_mut() = res.status();
+
+                        hyper_res
+                    } else {
+                        let http_client = match self
+                            .client_tunnels
+                            .retrieve_connector::<HttpConnector>(
+                                &self.config_id,
+                                &instance_id,
+                                self.individual_hostname.clone(),
+                            )
+                            .await
+                        {
+                            Some(http_client) => http_client,
+                            None => {
+                                self.retrieve_connection_failed(&instance_id);
+                                continue 'instances;
+                            }
+                        };
+
+                        try_or_exception!(
+                            http_client.request(proxy_req).await,
+                            "proxy-error:upstream-unreachable"
+                        )
                     };
 
-                    let mut proxy_res = try_or_exception!(
-                        http_client.request(proxy_req).await,
-                        "proxy-error:upstream-unreachable"
-                    );
+                    copy_headers_from_proxy_res_to_res(proxy_res.headers(), res);
 
-                    copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, true);
+                    if is_websocket {
+                        res.headers_mut()
+                            .insert(UPGRADE, "websocket".parse().unwrap());
+                        res.headers_mut()
+                            .insert(CONNECTION, "Upgrade".parse().unwrap());
+
+                        if let Some(ws_key) = req.headers().get(SEC_WEBSOCKET_KEY) {
+                            let s = format!(
+                                "{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
+                                ws_key.to_str().unwrap()
+                            );
+
+                            let mut m = sha1::Sha1::new();
+                            m.update(s.as_ref());
+                            let accept = base64::encode(m.digest().bytes().as_ref());
+
+                            res.headers_mut()
+                                .insert(SEC_WEBSOCKET_ACCEPT, accept.parse().unwrap());
+                        }
+                    }
 
                     res.headers_mut()
                         .append("x-exg-proxied", "1".parse().unwrap());
 
                     *res.status_mut() = proxy_res.status();
-
-                    if res.status_mut() == &StatusCode::SWITCHING_PROTOCOLS {
-                        let req_body = mem::replace(req.body_mut(), Body::empty());
-                        let req_for_upgrade = Request::new(req_body);
-
-                        tokio::spawn(
-                            #[allow(unreachable_code)]
-                            async move {
-                                let mut proxy_upgraded =
-                                    hyper::upgrade::on(&mut proxy_res)
-                                        .await
-                                        .with_context(|| "error upgrading proxy connection")?;
-                                let mut req_upgraded = hyper::upgrade::on(req_for_upgrade)
-                                    .await
-                                    .with_context(|| "error upgrading connection")?;
-
-                                let mut buf1 = vec![0u8; 1024];
-                                let mut buf2 = vec![0u8; 1024];
-
-                                loop {
-                                    tokio::select! {
-                                        bytes_read_result = proxy_upgraded.read(&mut buf1) => {
-                                            let bytes_read = bytes_read_result
-                                                .with_context(|| "error reading from incoming")?;
-                                            if bytes_read == 0 {
-                                                return Ok(());
-                                            } else {
-                                                req_upgraded
-                                                    .write_all(&buf1[..bytes_read])
-                                                    .await
-                                                    .with_context(|| "error writing to forwarded")?;
-                                                req_upgraded.flush().await.with_context(|| "error flushing data to cliet")?;
-                                            }
-                                        },
-
-                                        bytes_read_result = req_upgraded.read(&mut buf2) => {
-                                            let bytes_read = bytes_read_result
-                                                .with_context(|| "error reading from forwarded")?;
-                                            if bytes_read == 0 {
-                                                return Ok(());
-                                            } else {
-                                                proxy_upgraded
-                                                    .write_all(&buf2[..bytes_read])
-                                                    .await
-                                                    .with_context(|| "error writing to incoming")?;
-                                                proxy_upgraded
-                                                    .flush()
-                                                    .await
-                                                    .with_context(|| "error flushing data to proxy")?;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Ok::<_, anyhow::Error>(())
-                            },
-                        );
-                    } else {
-                        *res.body_mut() = proxy_res.into_body();
-                    }
+                    *res.body_mut() = proxy_res.into_body();
 
                     log_message
                         .steps

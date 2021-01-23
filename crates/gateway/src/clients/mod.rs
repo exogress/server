@@ -1,4 +1,4 @@
-pub use registry::{ClientTunnels, ConnectedTunnel};
+pub use registry::{ClientTunnels, ConnectedTunnel, HttpConnector, TcpConnector};
 pub use tunnel::tunnels_acceptor;
 
 mod registry;

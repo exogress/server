@@ -1,6 +1,6 @@
 use http::header::{
     HeaderName, ACCEPT_ENCODING, CONNECTION, FORWARDED, HOST, PROXY_AUTHENTICATE,
-    PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING,
+    PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
 use http::{HeaderMap, Request, Response};
 use hyper::Body;
@@ -17,7 +17,7 @@ lazy_static! {
     ///     - Trailers
     ///     - Transfer-Encoding
     ///     - Upgrade
-    pub static ref HOP_BY_HOP_HEADERS: [HeaderName; 7] = [
+    pub static ref HOP_BY_HOP_HEADERS: [HeaderName; 8] = [
         CONNECTION,
         HeaderName::from_static("keep-alive"),
         PROXY_AUTHENTICATE,
@@ -25,40 +25,24 @@ lazy_static! {
         TE,
         TRAILER,
         TRANSFER_ENCODING,
-
-        // not sure why is it hop-by-hop
-        // UPGRADE,
+        UPGRADE,
     ];
 }
-pub fn copy_headers_from_proxy_res_to_res(
-    proxy_headers: &HeaderMap,
-    res: &mut Response<Body>,
-    is_upgrade_allowed: bool,
-) {
+pub fn copy_headers_from_proxy_res_to_res(proxy_headers: &HeaderMap, res: &mut Response<Body>) {
     for (incoming_header_name, incoming_header_value) in proxy_headers.iter() {
         if incoming_header_name == ACCEPT_ENCODING {
             continue;
         }
 
-        if incoming_header_name == CONNECTION {
-            if is_upgrade_allowed {
-                if !incoming_header_value
-                    .to_str()
-                    .unwrap()
-                    .to_lowercase()
-                    .contains("upgrade")
-                {
-                    continue;
-                } else {
-                    res.headers_mut()
-                        .insert(CONNECTION, "Upgrade".parse().unwrap());
-                }
-            } else {
-                continue;
-            }
+        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
+            continue;
         }
 
-        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
+        if incoming_header_name
+            .as_str()
+            .to_lowercase()
+            .starts_with("sec-websocket")
+        {
             continue;
         }
 
@@ -67,36 +51,21 @@ pub fn copy_headers_from_proxy_res_to_res(
     }
 }
 
-pub fn copy_headers_to_proxy_req(
-    req: &Request<Body>,
-    proxy_req: &mut Request<Body>,
-    is_upgrade_allowed: bool,
-) {
+pub fn copy_headers_to_proxy_req(req: &Request<Body>, proxy_req: &mut Request<Body>) {
     for (incoming_header_name, incoming_header_value) in req.headers() {
         if incoming_header_name == ACCEPT_ENCODING || incoming_header_name == HOST {
             continue;
         }
 
-        if incoming_header_name == CONNECTION {
-            if is_upgrade_allowed {
-                if !incoming_header_value
-                    .to_str()
-                    .unwrap()
-                    .to_lowercase()
-                    .contains("upgrade")
-                {
-                    continue;
-                } else {
-                    proxy_req
-                        .headers_mut()
-                        .insert(CONNECTION, "keep-alive, Upgrade".parse().unwrap());
-                }
-            } else {
-                continue;
-            }
+        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
+            continue;
         }
 
-        if HOP_BY_HOP_HEADERS.contains(incoming_header_name) {
+        if incoming_header_name
+            .as_str()
+            .to_lowercase()
+            .starts_with("sec-websocket")
+        {
             continue;
         }
 
@@ -149,6 +118,4 @@ pub fn add_forwarded_headers(
 
     let host_header = force_host_header.unwrap_or(public_hostname);
     req.headers_mut().insert(HOST, host_header.parse().unwrap());
-
-    info!("with forwarded headers = {:?}", req.headers());
 }

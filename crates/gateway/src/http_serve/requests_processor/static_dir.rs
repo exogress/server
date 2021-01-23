@@ -1,4 +1,4 @@
-use crate::clients::ClientTunnels;
+use crate::clients::{ClientTunnels, HttpConnector};
 use crate::http_serve::requests_processor::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
@@ -91,7 +91,7 @@ impl ResolvedStaticDir {
         *proxy_req.method_mut() = req.method().clone();
         *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
 
-        copy_headers_to_proxy_req(req, &mut proxy_req, false);
+        copy_headers_to_proxy_req(req, &mut proxy_req);
 
         add_forwarded_headers(
             &mut proxy_req,
@@ -107,7 +107,7 @@ impl ResolvedStaticDir {
 
         let http_client = try_option_or_exception!(
             self.client_tunnels
-                .retrieve_http_connector(
+                .retrieve_connector::<HttpConnector>(
                     &self.config_id,
                     &instance_id,
                     self.individual_hostname.clone(),
@@ -118,10 +118,10 @@ impl ResolvedStaticDir {
 
         let proxy_res = try_or_exception!(
             http_client.request(proxy_req).await,
-            "proxy-error:instance-unreachable"
+            "proxy-error:upstream-unreachable"
         );
 
-        copy_headers_from_proxy_res_to_res(proxy_res.headers(), res, false);
+        copy_headers_from_proxy_res_to_res(proxy_res.headers(), res);
 
         res.headers_mut()
             .append("x-exg-proxied", "1".parse().unwrap());
