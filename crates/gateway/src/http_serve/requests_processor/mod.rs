@@ -59,7 +59,7 @@ mod static_dir;
 
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
-use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE};
+use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use memmap::Mmap;
 use std::sync::Arc;
 
@@ -70,6 +70,7 @@ pub struct RequestsProcessor {
     pub github_oauth2_client: super::auth::github::GithubOauth2Client,
     pub assistant_base_url: Url,
     pub maybe_identity: Option<Vec<u8>>,
+    strict_transport_security: Option<u64>,
     rules_counter: AccountCounters,
     pub account_unique_id: AccountUniqueId,
     _stop_public_counter_tx: oneshot::Sender<()>,
@@ -229,6 +230,15 @@ impl RequestsProcessor {
 
         if let Ok(Some(len)) = res.headers().typed_get::<typed_headers::ContentLength>() {
             log_message.content_len = Some(len.0);
+        }
+
+        if let Some(strict_transport_security) = &self.strict_transport_security {
+            res.headers_mut().insert(
+                STRICT_TRANSPORT_SECURITY,
+                format!("max-age={}", strict_transport_security)
+                    .parse()
+                    .unwrap(),
+            );
         }
     }
 
@@ -1741,6 +1751,7 @@ impl RequestsProcessor {
             github_oauth2_client,
             assistant_base_url,
             maybe_identity,
+            strict_transport_security: resp.strict_transport_security,
             rules_counter,
             account_unique_id,
             _stop_public_counter_tx: stop_public_counter_tx,

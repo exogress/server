@@ -190,6 +190,7 @@ pub struct JwtEcdsaResponse {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct ConfigsResponse {
+    pub strict_transport_security: Option<u64>,
     #[serde(with = "ts_milliseconds")]
     pub generated_at: DateTime<Utc>,
     pub url_prefix: MountPointBaseUrl,
