@@ -650,6 +650,7 @@ fn main() {
             log_messages_tx,
             int_client_cert.clone(),
             cache,
+            dbip.clone(),
             resolver.clone(),
         );
 
@@ -829,7 +830,6 @@ fn main() {
             assistant_base_url,
             int_client_cert,
             https_counters_tx,
-            dbip,
         );
 
         let acme_server = acme_server(webroot, listen_http_acme_challenge_addr);

@@ -24,6 +24,7 @@ use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use http::StatusCode;
 use lru_time_cache::LruCache;
+use memmap::Mmap;
 use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
 use reqwest::Identity;
@@ -64,6 +65,9 @@ pub struct Client {
 
     traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
     presence_client: presence::Client,
+
+    dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
+
     cache: Cache,
     resolver: TokioAsyncResolver,
 }
@@ -215,6 +219,7 @@ impl Client {
         log_messages_tx: mpsc::Sender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
+        dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
         resolver: TokioAsyncResolver,
     ) -> Self {
         let presence_client = presence::Client::new(
@@ -252,6 +257,7 @@ impl Client {
             traffic_counters_tx,
             presence_client,
             cache,
+            dbip,
             resolver,
         }
     }
@@ -353,6 +359,7 @@ impl Client {
                 let rules_counters = self.rules_counters.clone();
                 let presence_client = self.presence_client.clone();
                 let log_messages_tx = self.log_messages_tx.clone();
+                let dbip = self.dbip.clone();
 
                 let requests_processors_registry = self.requests_processors_registry.clone();
 
@@ -373,6 +380,7 @@ impl Client {
                         shadow_clone!(config_error);
                         shadow_clone!(cache);
                         shadow_clone!(presence_client);
+                        shadow_clone!(dbip);
 
                         async move {
                             let retrieval_started_at = crate::statistics::CONFIGS_RETRIEVAL_TIME.start_timer();
@@ -433,6 +441,7 @@ impl Client {
                                                         &gw_location,
                                                         cache,
                                                         presence_client.clone(),
+                                                        dbip.clone(),
                                                         resolver,
                                                     ) {
                                                         Ok(rp) => rp,

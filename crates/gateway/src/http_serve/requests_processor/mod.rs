@@ -56,7 +56,10 @@ mod proxy;
 mod s3_bucket;
 mod static_dir;
 
+use crate::dbip::LocationAndIsp;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE};
+use memmap::Mmap;
+use std::sync::Arc;
 
 pub struct RequestsProcessor {
     ordered_handlers: Vec<ResolvedHandler>,
@@ -75,6 +78,7 @@ pub struct RequestsProcessor {
     max_pop_cache_size_bytes: Byte,
     gw_location: SmolStr,
     log_messages_tx: mpsc::Sender<LogMessage>,
+    dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
 }
 
 impl RequestsProcessor {
@@ -87,6 +91,27 @@ impl RequestsProcessor {
         remote_addr: &SocketAddr,
         log_message: &mut LogMessage,
     ) {
+        let mut facts = HashMap::<SmolStr, SmolStr>::new();
+
+        if let Some(db) = self.dbip.as_ref() {
+            if let Ok(loc) = db.lookup::<LocationAndIsp>(remote_addr.ip()) {
+                if let Some(isp) = loc.isp {
+                    facts.insert("isp".into(), isp);
+                };
+                if let Some(organization) = loc.organization {
+                    facts.insert("organization".into(), organization);
+                };
+                if let Some(city) = loc.city.and_then(|c| c.names.and_then(|c| c.en)) {
+                    facts.insert("city".into(), city);
+                };
+                if let Some(country) = loc.country.map(|c| c.iso_code).flatten() {
+                    facts.insert("country".into(), country);
+                };
+            }
+        }
+
+        info!("facts = {:?}", facts);
+
         self.rules_counter.register_request(&self.account_unique_id);
 
         let mut processed_by = None;
@@ -1295,6 +1320,7 @@ impl RequestsProcessor {
         gw_location: &str,
         cache: Cache,
         presence_client: presence::Client,
+        dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
         resolver: TokioAsyncResolver,
     ) -> anyhow::Result<RequestsProcessor> {
         let xchacha20poly1305_secret_key =
@@ -1713,6 +1739,7 @@ impl RequestsProcessor {
             max_pop_cache_size_bytes,
             gw_location: gw_location.into(),
             log_messages_tx,
+            dbip,
         })
     }
 }

@@ -7,7 +7,6 @@ use http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION};
 use http::status::StatusCode;
 use http::{Request, Response, Version};
 use hyper::Body;
-use memmap::Mmap;
 use std::convert::TryInto;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,7 +19,6 @@ use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
 use crate::clients::ClientTunnels;
-use crate::dbip::LocationAndIsp;
 use crate::http_serve::auth::{save_assistant_key, AuthFinalizer};
 use crate::http_serve::{auth, director};
 use crate::stop_reasons::AppStopWait;
@@ -149,7 +147,6 @@ pub async fn server(
     assistant_base_url: Url,
     maybe_identity: Option<Vec<u8>>,
     https_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
-    dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
 ) {
     let (https_stop_handle, https_stop_wait) = stop_handle();
 
@@ -516,16 +513,9 @@ pub async fn server(
         shadow_clone!(github_oauth2_client);
         shadow_clone!(assistant_base_url);
         shadow_clone!(maybe_identity);
-        shadow_clone!(dbip);
 
         let local_addr = socket.local_addr();
         let remote_addr = socket.remote_addr();
-
-        if let Some(db) = dbip {
-            if let Ok(loc) = db.lookup::<LocationAndIsp>(remote_addr.ip()) {
-                info!("request from: {:?}", loc);
-            }
-        }
 
         async move {
             Ok::<_, hyper::Error>(service_fn(move |mut req: Request<Body>| {
