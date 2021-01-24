@@ -51,12 +51,14 @@ mod application_firewall;
 mod auth;
 mod gcs_bucket;
 mod helpers;
+mod pass_through;
 mod post_processing;
 mod proxy;
 mod s3_bucket;
 mod static_dir;
 
 use crate::dbip::LocationAndIsp;
+use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE};
 use memmap::Mmap;
 use std::sync::Arc;
@@ -489,6 +491,7 @@ enum ResolvedHandlerVariant {
     S3Bucket(s3_bucket::ResolvedS3Bucket),
     GcsBucket(gcs_bucket::ResolvedGcsBucket),
     ApplicationFirewall(application_firewall::ResolvedApplicationFirewall),
+    PassThrough(pass_through::ResolvedPassThrough),
 }
 
 #[derive(Debug)]
@@ -554,6 +557,11 @@ impl ResolvedHandlerVariant {
             }
             ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
                 application_firewall
+                    .invoke(req, res, requested_url, rebased_url, log_message)
+                    .await
+            }
+            ResolvedHandlerVariant::PassThrough(pass_through) => {
+                pass_through
                     .invoke(req, res, requested_url, rebased_url, log_message)
                     .await
             }
@@ -1632,6 +1640,9 @@ impl RequestsProcessor {
                                         uri_xss: app_firewall.uri_xss,
                                         uri_sqli: app_firewall.uri_sqli,
                                     })
+                                }
+                                ClientHandlerVariant::PassThrough(_) => {
+                                    ResolvedHandlerVariant::PassThrough(ResolvedPassThrough {})
                                 }
                             },
                             priority: handler.priority,
