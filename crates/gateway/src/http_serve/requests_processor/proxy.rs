@@ -9,14 +9,11 @@ use exogress_server_common::logging::{
 };
 use exogress_server_common::presence;
 use futures::SinkExt;
-use http::header::{
-    CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE,
-};
-use http::{HeaderMap, HeaderValue, Request, Response};
+use http::header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
+use http::{HeaderMap, Request, Response};
 use hyper::Body;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
-use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::net::SocketAddr;
 use url::Url;
@@ -53,6 +50,14 @@ impl fmt::Debug for ResolvedProxy {
 }
 
 impl ResolvedProxy {
+    fn sec_websocket_accept(key: &str) -> String {
+        let s = format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
+
+        let mut m = sha1::Sha1::new();
+        m.update(s.as_ref());
+        base64::encode(m.digest().bytes().as_ref())
+    }
+
     fn retrieve_connection_failed(&self, instance_id: &InstanceId) {
         warn!(
             "Failed to connect to instance {}. Try next instance",
@@ -149,15 +154,6 @@ impl ResolvedProxy {
                         let mut rand_key = vec![0u8; 16];
                         thread_rng().fill_bytes(&mut rand_key[..]);
 
-                        ws_req
-                            .headers_mut()
-                            .insert(SEC_WEBSOCKET_KEY, base64::encode(rand_key).parse().unwrap());
-                        ws_req
-                            .headers_mut()
-                            .insert(SEC_WEBSOCKET_VERSION, HeaderValue::try_from("13").unwrap());
-
-                        info!("ws_req = {:?}", ws_req);
-
                         proxy_to.set_scheme("ws").unwrap();
                         *ws_req.uri_mut() = proxy_to.as_str().parse().unwrap();
 
@@ -234,14 +230,12 @@ impl ResolvedProxy {
                                         }
                                     }
 
-                                    info!("websocket forwarder finished!");
-
                                     Ok::<_, anyhow::Error>(())
                                 };
 
-                                info!("spawn forwarder");
-                                let forwarder_result = forwarder.await;
-                                info!("forwarder result = {:?}", forwarder_result);
+                                if let Err(e) = forwarder.await {
+                                    warn!("error in Websocket forwarder: {}", e);
+                                }
                             },
                         );
 
@@ -257,6 +251,10 @@ impl ResolvedProxy {
 
                         hyper_res
                     } else {
+                        let request_body = mem::replace(req.body_mut(), Body::empty());
+
+                        *proxy_req.body_mut() = request_body;
+
                         let http_client = match self
                             .client_tunnels
                             .retrieve_connector::<HttpConnector>(
@@ -288,14 +286,7 @@ impl ResolvedProxy {
                             .insert(CONNECTION, "Upgrade".parse().unwrap());
 
                         if let Some(ws_key) = req.headers().get(SEC_WEBSOCKET_KEY) {
-                            let s = format!(
-                                "{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
-                                ws_key.to_str().unwrap()
-                            );
-
-                            let mut m = sha1::Sha1::new();
-                            m.update(s.as_ref());
-                            let accept = base64::encode(m.digest().bytes().as_ref());
+                            let accept = Self::sec_websocket_accept(ws_key.to_str().unwrap());
 
                             res.headers_mut()
                                 .insert(SEC_WEBSOCKET_ACCEPT, accept.parse().unwrap());
@@ -330,5 +321,19 @@ impl ResolvedProxy {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_sec_websocket() {
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        assert_eq!(
+            ResolvedProxy::sec_websocket_accept(key),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        )
     }
 }

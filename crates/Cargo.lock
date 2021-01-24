@@ -708,9 +708,9 @@ dependencies = [
 
 [[package]]
 name = "derivative"
-version = "2.1.3"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaed5874effa6cde088c644ddcdcb4ffd1511391c5be4fdd7a5ccd02c7e4a183"
+checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3444,9 +3444,9 @@ dependencies = [
 
 [[package]]
 name = "serde"
-version = "1.0.120"
+version = "1.0.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "166b2349061381baf54a58e4b13c89369feb0ef2eaa57198899e2312aac30aab"
+checksum = "6159e3c76cab06f6bc466244d43b35e77e9500cd685da87620addadc2a4c40b1"
 dependencies = [
  "serde_derive",
 ]
@@ -3462,9 +3462,9 @@ dependencies = [
 
 [[package]]
 name = "serde_derive"
-version = "1.0.120"
+version = "1.0.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ca2a8cb5805ce9e3b95435e3765b7b553cecc762d938d409434338386cb5775"
+checksum = "f3fcab8778dc651bc65cfab2e4eb64996f3c912b74002fb379c94517e1f27c46"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3723,7 +3723,7 @@ dependencies = [
 [[package]]
 name = "sqlx"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#af7f2594457e991fd84a97a2170f79801fbdf1df"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -3732,7 +3732,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#af7f2594457e991fd84a97a2170f79801fbdf1df"
 dependencies = [
  "ahash 0.6.3",
  "atoi",
@@ -3774,7 +3774,7 @@ dependencies = [
 [[package]]
 name = "sqlx-macros"
 version = "0.4.2"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#af7f2594457e991fd84a97a2170f79801fbdf1df"
 dependencies = [
  "dotenv",
  "either",
@@ -3795,7 +3795,7 @@ dependencies = [
 [[package]]
 name = "sqlx-rt"
 version = "0.2.0"
-source = "git+https://github.com/launchbadge/sqlx.git?branch=master#df393128f8b07e3b858e65446b2a508a73bf5135"
+source = "git+https://github.com/launchbadge/sqlx.git?branch=master#af7f2594457e991fd84a97a2170f79801fbdf1df"
 dependencies = [
  "once_cell",
  "tokio",
