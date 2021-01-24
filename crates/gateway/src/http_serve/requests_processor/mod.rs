@@ -89,28 +89,26 @@ impl RequestsProcessor {
         requested_url: &Url,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
         log_message: &mut LogMessage,
     ) {
-        let mut facts = HashMap::<SmolStr, SmolStr>::new();
-
         if let Some(db) = self.dbip.as_ref() {
             if let Ok(loc) = db.lookup::<LocationAndIsp>(remote_addr.ip()) {
+                let mut locked = facts.lock();
                 if let Some(isp) = loc.isp {
-                    facts.insert("isp".into(), isp);
+                    locked.insert("isp".into(), isp);
                 };
                 if let Some(organization) = loc.organization {
-                    facts.insert("organization".into(), organization);
+                    locked.insert("organization".into(), organization);
                 };
                 if let Some(city) = loc.city.and_then(|c| c.names.and_then(|c| c.en)) {
-                    facts.insert("city".into(), city);
+                    locked.insert("city".into(), city);
                 };
                 if let Some(country) = loc.country.map(|c| c.iso_code).flatten() {
-                    facts.insert("country".into(), country);
+                    locked.insert("country".into(), country);
                 };
             }
         }
-
-        info!("facts = {:?}", facts);
 
         self.rules_counter.register_request(&self.account_unique_id);
 
@@ -241,6 +239,7 @@ impl RequestsProcessor {
         remote_addr: &SocketAddr,
     ) {
         let started_at = Instant::now();
+        let facts = Arc::new(Mutex::new(HashMap::<SmolStr, SmolStr>::new()));
 
         let mut log_message = LogMessage {
             gw_location: self.gw_location.clone(),
@@ -255,6 +254,7 @@ impl RequestsProcessor {
             time_taken: None,
             content_len: None,
             steps: vec![],
+            facts: facts.clone(),
         };
 
         self.do_process(
@@ -263,6 +263,7 @@ impl RequestsProcessor {
             requested_url,
             local_addr,
             remote_addr,
+            facts,
             &mut log_message,
         )
         .await;

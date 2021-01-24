@@ -5,9 +5,11 @@ use exogress_common::entities::{
     StaticResponseName, Upstream,
 };
 use hashbrown::HashMap;
+use parking_lot::Mutex;
 use serde_with::serde_as;
 use serde_with::DurationSecondsWithFrac;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[serde_as]
@@ -32,6 +34,8 @@ pub struct LogMessage {
     pub content_len: Option<u64>,
 
     pub steps: Vec<ProcessingStep>,
+
+    pub facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
