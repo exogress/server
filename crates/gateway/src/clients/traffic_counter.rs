@@ -171,24 +171,29 @@ impl<I: AsyncRead + AsyncWrite + Unpin> AsyncRead for TrafficCountedStream<I> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        let was_filled = buf.filled().len();
+
         let res = (|| {
             ready!(Pin::new(&mut self.io).poll_read(cx, buf))?;
             Poll::Ready(Ok(()))
         })();
 
-        let num_bytes = buf.filled().len();
+        let became_filled = buf.filled().len();
+
+        let num_bytes = became_filled - was_filled;
 
         match (&res, num_bytes) {
             (Poll::Ready(Err(_)), _) | (_, 0) => {
                 self.counters.is_closed.store(true, Ordering::Relaxed);
             }
+            (Poll::Ready(Ok(_)), num_bytes) => {
+                self.recv_counter.inc_by(num_bytes as u64);
+                self.counters
+                    .bytes_read
+                    .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
+            }
             _ => {}
         }
-
-        self.recv_counter.inc_by(num_bytes as u64);
-        self.counters
-            .bytes_read
-            .fetch_add(num_bytes.try_into().unwrap(), Ordering::Relaxed);
 
         res
     }
