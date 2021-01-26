@@ -31,6 +31,7 @@ use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
 use itertools::Itertools;
 use parking_lot::Mutex;
+use serde_json::json;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
 use std::collections::BTreeMap;
@@ -59,6 +60,7 @@ mod static_dir;
 
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
+use exogress_server_common::url_prefix::MountPointBaseUrl;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use memmap::Mmap;
 use std::sync::Arc;
@@ -76,6 +78,7 @@ pub struct RequestsProcessor {
     _stop_public_counter_tx: oneshot::Sender<()>,
     cache: Cache,
     project_name: ProjectName,
+    url_prefix: MountPointBaseUrl,
     mount_point_name: MountPointName,
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     max_pop_cache_size_bytes: Byte,
@@ -112,6 +115,9 @@ impl RequestsProcessor {
                 };
             }
         }
+        facts
+            .lock()
+            .insert("mount_point_hostname".into(), self.url_prefix.host().into());
 
         self.rules_counter.register_request(&self.account_unique_id);
 
@@ -1155,6 +1161,8 @@ impl ResolvedHandler {
             },
         ));
 
+        let facts = log_message.facts.clone();
+
         *res = Response::new(Body::empty());
 
         match maybe_static_response {
@@ -1172,7 +1180,8 @@ impl ResolvedHandler {
                     log_message,
                 );
             }
-            Some(static_response) => match static_response.invoke(req, res, additional_data) {
+            Some(static_response) => match static_response.invoke(req, res, additional_data, facts)
+            {
                 Ok(()) => ResolvedHandlerProcessingResult::Processed,
                 Err((exception, data)) => {
                     *res = Response::new(Body::empty());
@@ -1744,6 +1753,7 @@ impl RequestsProcessor {
                                                     &status_code,
                                                     &data,
                                                     &available_static_responses,
+
                                                 ),
                                                 data: Default::default(), // TODO: what data should be here? argh, need integrateion test suite
                                                 rescue: resolve_rescue_items(
@@ -1781,6 +1791,7 @@ impl RequestsProcessor {
             _stop_public_counter_tx: stop_public_counter_tx,
             cache,
             project_name,
+            url_prefix: mount_point_base_url.clone(),
             mount_point_name,
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,
@@ -1811,6 +1822,7 @@ impl ResolvedStaticResponse {
         req: &Request<Body>,
         res: &mut Response<Body>,
         additional_data: HashMap<SmolStr, SmolStr>,
+        facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
         *res = Response::new(Body::empty());
 
@@ -1871,8 +1883,14 @@ impl ResolvedStaticResponse {
 
                     Some(TemplateEngine::Handlebars) => {
                         let handlebars = Handlebars::new();
+
+                        let rendering_data = json!({
+                            "data": merged_data.clone(),
+                            "facts": facts,
+                        });
+
                         handlebars
-                            .render_template(&resp.content, &merged_data)
+                            .render_template(&resp.content, &rendering_data)
                             .map_err(|e| {
                                 merged_data.insert("error".into(), e.to_string().into());
                                 (
