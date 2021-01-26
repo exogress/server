@@ -456,9 +456,9 @@ pub struct Rebase {
 
 impl Rebase {
     /// Return rebased url if matched
-    pub fn rebase_url(_rebase: &Option<Rebase>, _requested_url: &Url) -> Option<Url> {
+    pub fn rebase_url(_rebase: &Option<Rebase>, requested_url: &Url) -> Option<Url> {
         // FIXME: error on sych types of requests (curl -vk "https://local.sexg.link:4443/_matrix/client/r0/user/%40gleb.pomykalov%3Asasha-demo.exg.link/filter")
-        return None;
+        return Some(requested_url.clone());
 
         // let mut rebased_url = requested_url.clone();
         //
