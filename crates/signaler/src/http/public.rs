@@ -4,7 +4,7 @@ use futures::channel::mpsc;
 use futures::{pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
 use tokio::time::Duration;
 
-use exogress_common::entities::{AccountName, ProjectName};
+use exogress_common::entities::{AccountName, ProfileName, ProjectName};
 use exogress_common::signaling::{
     InstanceConfigMessage, SignalerHandshakeResponse, WsInstanceToCloudMessage,
 };
@@ -25,6 +25,7 @@ struct ChannelConnectParams {
     project: ProjectName,
     account: AccountName,
     labels: String,
+    active_profile: Option<ProfileName>,
 }
 
 pub async fn server(
@@ -92,6 +93,7 @@ pub async fn server(
                                         &channel_connect_params.account,
                                         &channel_connect_params.labels,
                                         &config,
+                                        &channel_connect_params.active_profile,
                                     )
                                     .await
                                 {

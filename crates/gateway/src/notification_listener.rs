@@ -201,7 +201,7 @@ impl AssistantClient {
             pin_mut!(timeout_stream);
 
             while let Some(r) = timeout_stream.next().await {
-                info!("New pong received. Will wait next 30 seconds until the next one");
+                // info!("New pong received. Will wait next 30 seconds until the next one");
                 r?;
             }
 

@@ -14,7 +14,7 @@ use exogress_common::config_core::parametrized::Parameter;
 use exogress_common::config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
 use exogress_common::entities::{
     AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
-    ParameterName, ProjectName, Upstream,
+    ParameterName, ProfileName, ProjectName, Upstream,
 };
 use exogress_server_common::logging::LogMessage;
 use exogress_server_common::presence;
@@ -180,6 +180,7 @@ pub struct ConfigData {
     pub config: ClientConfig,
     pub revision: ClientConfigRevision,
     pub config_name: ConfigName,
+    pub active_profile: Option<ProfileName>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

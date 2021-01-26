@@ -1,8 +1,8 @@
 //! Presence API
 use exogress_common::config_core::ClientConfig;
 use exogress_common::entities::{
-    AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProjectName,
-    SmolStr, Upstream,
+    AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProfileName,
+    ProjectName, SmolStr, Upstream,
 };
 use exogress_common::signaling::ProbeHealthStatus;
 use hashbrown::HashMap;
@@ -159,13 +159,19 @@ impl Client {
         account: &AccountName,
         labels_json: &String,
         config: &ClientConfig,
+        active_profile: &Option<ProfileName>,
     ) -> Result<InstanceRegistered, Error> {
-        let args = format!(
+        let mut args = format!(
             "project={}&account={}&labels_json={}",
             urlencoding::encode(project),
             urlencoding::encode(account),
-            urlencoding::encode(&labels_json)
+            urlencoding::encode(&labels_json),
         );
+
+        if let Some(profile) = active_profile {
+            args.push_str("&active_profile=");
+            args.push_str(urlencoding::encode(&profile).as_ref());
+        }
 
         self.execute_presence(
             true,

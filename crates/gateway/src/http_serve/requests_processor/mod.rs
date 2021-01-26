@@ -16,8 +16,8 @@ use exogress_common::config_core::{
     TrailingSlashFilterRule, UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
-    AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
-    StaticResponseName,
+    AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProfileName,
+    ProjectName, StaticResponseName,
 };
 use exogress_server_common::logging::{
     ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep,
@@ -1281,7 +1281,7 @@ fn resolve_static_response(
     Some(resolved)
 }
 
-fn resolve_cache_action(
+fn resolve_catch_action(
     catch_action: &CatchAction,
     static_responses: &HashMap<StaticResponseName, StaticResponse>,
 ) -> Option<ResolvedCatchAction> {
@@ -1319,7 +1319,7 @@ fn resolve_rescue_items(
                         ResolvedCatchMatcher::Exception(exception.clone())
                     }
                 },
-                handle: resolve_cache_action(&rescue_item.handle, &static_responses)?,
+                handle: resolve_catch_action(&rescue_item.handle, &static_responses)?,
             })
         })
         .collect::<Option<_>>()
@@ -1375,7 +1375,7 @@ impl RequestsProcessor {
             .project_config
             .mount_points
             .into_iter()
-            .map(|(k, v)| (k, (None, None, None, None, None, v.into())));
+            .map(|(k, v)| (k, (None, None, None, None, None, None, v.into())));
 
         let grouped_mount_points = grouped
             .into_iter()
@@ -1391,6 +1391,7 @@ impl RequestsProcessor {
 
                 let config = &entry.config;
                 let instance_ids = entry.instance_ids.clone();
+                let active_profile = entry.active_profile.clone();
 
                 let upstreams = &config.upstreams;
 
@@ -1401,6 +1402,11 @@ impl RequestsProcessor {
                     .mount_points
                     .clone()
                     .into_iter()
+                    .filter({
+                        shadow_clone!(active_profile);
+
+                        move |(_, mp)| is_profile_active(&mp.profiles, &active_profile)
+                    })
                     .map(move |(mp_name, mp)| {
                         (
                             mp_name,
@@ -1410,6 +1416,7 @@ impl RequestsProcessor {
                                 Some(instance_ids.clone()),
                                 Some(client_rescue.clone()),
                                 Some(client_config_static_responses.clone()),
+                                Some(active_profile.clone()),
                                 mp,
                             ),
                         )
@@ -1441,6 +1448,7 @@ impl RequestsProcessor {
                 instance_ids,
                 client_config_rescue,
                 client_config_static_responses,
+                active_profile,
                 mp,
             ),
         ) in grouped_mount_points.into_iter()
@@ -1466,6 +1474,7 @@ impl RequestsProcessor {
             shadow_clone!(presence_client);
             shadow_clone!(params);
             shadow_clone!(project_static_responses);
+            shadow_clone!(active_profile);
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
                 resolver: resolver.clone(),
@@ -1478,8 +1487,16 @@ impl RequestsProcessor {
 
             let mut r = mp.handlers
                 .into_iter()
+                .filter(|(_, handler)| {
+                    if let Some(active_profile) = &active_profile {
+                        is_profile_active(&handler.profiles, active_profile)
+                    } else {
+                        true
+                    }
+                })
                 .map({
                     shadow_clone!(project_static_responses);
+                    shadow_clone!(active_profile);
 
                     move |(handler_name, handler)| {
                         let replace_base_path = handler
@@ -1679,6 +1696,13 @@ impl RequestsProcessor {
                             resolved_rules: handler
                                 .rules
                                 .into_iter()
+                                .filter(|rule| {
+                                    if let Some(active_profile) = &active_profile {
+                                        is_profile_active(&rule.profiles, active_profile)
+                                    } else {
+                                        true
+                                    }
+                                })
                                 .map(|rule: Rule| {
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
@@ -1887,6 +1911,19 @@ pub struct ResolvedRescueItem {
 struct ResolvedStatusCodeRangeHandler {
     status_codes_range: StatusCodeRange,
     catch: ResolvedCatchAction,
+}
+
+fn is_profile_active(
+    profiles: &Option<Vec<ProfileName>>,
+    active_profile: &Option<ProfileName>,
+) -> bool {
+    match profiles {
+        None => true,
+        Some(allowed_profiles) => match active_profile {
+            None => false,
+            Some(profile) => allowed_profiles.iter().any(|allowed| allowed == profile),
+        },
+    }
 }
 
 #[cfg(test)]
