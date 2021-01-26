@@ -10,14 +10,14 @@ use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use core::mem;
 use exogress_common::config_core::{
-    self, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
+    self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
     MatchedResponseModification, MatchingPath, MethodMatcher, ModifyHeaders, RequestModifications,
     RescueItem, ResponseBody, Rule, StaticResponse, StatusCodeRange, TemplateEngine,
     TrailingSlashFilterRule, UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
-    AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProfileName,
-    ProjectName, StaticResponseName,
+    AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
+    StaticResponseName,
 };
 use exogress_server_common::logging::{
     ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep,
@@ -1911,19 +1911,6 @@ pub struct ResolvedRescueItem {
 struct ResolvedStatusCodeRangeHandler {
     status_codes_range: StatusCodeRange,
     catch: ResolvedCatchAction,
-}
-
-fn is_profile_active(
-    profiles: &Option<Vec<ProfileName>>,
-    active_profile: &Option<ProfileName>,
-) -> bool {
-    match profiles {
-        None => true,
-        Some(allowed_profiles) => match active_profile {
-            None => false,
-            Some(profile) => allowed_profiles.iter().any(|allowed| allowed == profile),
-        },
-    }
 }
 
 #[cfg(test)]
