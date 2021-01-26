@@ -456,37 +456,45 @@ pub struct Rebase {
 
 impl Rebase {
     /// Return rebased url if matched
-    pub fn rebase_url(rebase: &Option<Rebase>, requested_url: &Url) -> Option<Url> {
-        let mut rebased_url = requested_url.clone();
+    pub fn rebase_url(_rebase: &Option<Rebase>, _requested_url: &Url) -> Option<Url> {
+        // FIXME: error on sych types of requests (curl -vk "https://local.sexg.link:4443/_matrix/client/r0/user/%40gleb.pomykalov%3Asasha-demo.exg.link/filter")
+        return None;
 
-        if let Some(rebase) = rebase {
-            let mut requested_segments = requested_url.path_segments().unwrap();
-
-            let matched_segments_count = rebase
-                .base_path
-                .iter()
-                .zip(&mut requested_segments)
-                .take_while(|(a, b)| &a.as_ref() == b)
-                .count();
-
-            if matched_segments_count == rebase.base_path.len() {
-                let mut replaced_segments = rebased_url.path_segments_mut().unwrap();
-                replaced_segments.clear();
-                for segment in &rebase.replace_base_path {
-                    replaced_segments.push(segment.as_str());
-                }
-
-                // add rest part
-                for segment in requested_segments {
-                    replaced_segments.push(segment);
-                }
-            } else {
-                // path don't match the base path. move on to the next handler
-                return None;
-            }
-        }
-
-        return Some(rebased_url);
+        // let mut rebased_url = requested_url.clone();
+        //
+        // if let Some(rebase) = rebase {
+        //     let mut requested_segments = requested_url.path_segments().unwrap();
+        //
+        //     let matched_segments_count = rebase
+        //         .base_path
+        //         .iter()
+        //         .zip(&mut requested_segments)
+        //         .take_while(|(a, b)| &a.as_ref() == b)
+        //         .count();
+        //
+        //     if matched_segments_count == rebase.base_path.len() {
+        //         let mut replaced_segments = rebased_url.path_segments_mut().unwrap();
+        //         replaced_segments.clear();
+        //         for segment in &rebase.replace_base_path {
+        //             replaced_segments.push(segment.as_str());
+        //         }
+        //
+        //         // add rest part
+        //         for segment in requested_segments {
+        //             replaced_segments.push(
+        //                 percent_encoding::percent_decode_str(segment)
+        //                     .decode_utf8()
+        //                     .unwrap()
+        //                     .as_ref(),
+        //             );
+        //         }
+        //     } else {
+        //         // path don't match the base path. move on to the next handler
+        //         return None;
+        //     }
+        // }
+        //
+        // return Some(rebased_url);
     }
 }
 
@@ -1010,10 +1018,10 @@ impl ResolvedHandler {
             })
             .inspect(|(_, request_modifications, response_modifications)| {
                 request_modifications_list.push(*request_modifications);
-                info!(
-                    "request_modifications = {:?}; response_modifications = {:?}",
-                    request_modifications, response_modifications
-                );
+                // info!(
+                //     "request_modifications = {:?}; response_modifications = {:?}",
+                //     request_modifications, response_modifications
+                // );
             })
             .filter(|(action, _, _)| action.is_finalizing())
             .map(|(action, _, response_modifications)| (action, response_modifications))
