@@ -1267,11 +1267,20 @@ fn resolve_static_response(
         StaticResponse::Raw(raw) => raw.status_code,
     };
 
+    let fallback_to_accept = match &static_response {
+        StaticResponse::Redirect(_) => None,
+        StaticResponse::Raw(raw) => raw
+            .fallback_accept
+            .as_ref()
+            .and_then(|accept| mime::Mime::from_str(&accept).ok()),
+    };
+
     let resolved = ResolvedStaticResponse {
         status_code: status_code
             .as_ref()
             .map(|s| s.0)
             .unwrap_or(static_response_status_code),
+        fallback_to_accept,
         body: match &static_response {
             StaticResponse::Raw(raw) => (&raw.body).clone(),
             StaticResponse::Redirect(_) => {
@@ -1819,12 +1828,34 @@ impl Drop for RequestsProcessor {
 #[derive(Clone, Debug)]
 struct ResolvedStaticResponse {
     status_code: StatusCode,
+    fallback_to_accept: Option<mime::Mime>,
     body: Vec<ResponseBody>,
     headers: HeaderMap,
     data: HashMap<SmolStr, SmolStr>,
 }
 
 impl ResolvedStaticResponse {
+    fn select_best_response<'a>(
+        &self,
+        items: impl Iterator<Item = &'a mime::Mime>,
+    ) -> Option<(mime::Mime, &ResponseBody)> {
+        items
+            .filter_map(|mime_pattern| {
+                self.body
+                    .iter()
+                    .filter_map(|resp_candidate| {
+                        Some((
+                            resp_candidate.content_type.as_str().parse().ok()?,
+                            resp_candidate,
+                        ))
+                    })
+                    .find(|(content_type, _resp_candidate)| {
+                        is_mime_match(mime_pattern, &content_type)
+                    })
+            })
+            .next()
+    }
+
     fn invoke(
         &self,
         req: &Request<Body>,
@@ -1850,37 +1881,24 @@ impl ResolvedStaticResponse {
             return Ok(());
         }
 
-        let accept = req
-            .headers()
-            .typed_get::<Accept>()
-            .map_err(|_| {
-                (
+        let parsed_accept = req.headers().typed_get::<Accept>();
+
+        let best_content_type = match (parsed_accept, self.fallback_to_accept.as_ref()) {
+            (Ok(Some(accept)), _) => self.select_best_response(ordered_by_quality(&accept)),
+            (_, Some(fallback)) => self.select_best_response(std::iter::once(fallback)),
+            (Err(_), _) => {
+                return Err((
                     Exception::from_str("static-response-error:bad-accept-header").unwrap(),
                     merged_data.clone(),
-                )
-            })?
-            .ok_or_else(|| {
-                (
+                ));
+            }
+            (Ok(None), _) => {
+                return Err((
                     Exception::from_str("static-response-error:no-accept-header").unwrap(),
                     merged_data.clone(),
-                )
-            })?;
-
-        let best_content_type = ordered_by_quality(&accept)
-            .filter_map(|mime_pattern| {
-                self.body
-                    .iter()
-                    .filter_map(|resp_candidate| {
-                        Some((
-                            resp_candidate.content_type.as_str().parse().ok()?,
-                            resp_candidate,
-                        ))
-                    })
-                    .find(|(content_type, _resp_candidate)| {
-                        is_mime_match(mime_pattern, &content_type)
-                    })
-            })
-            .next();
+                ));
+            }
+        };
 
         match best_content_type {
             Some((resp_content_type, resp)) => {
