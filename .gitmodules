@@ -7,6 +7,3 @@
 [submodule "deps/tracing-gelf"]
 	path = deps/tracing-gelf
 	url = https://github.com/glebpom/tracing-gelf.git
-[submodule "deps/mongo-rust-driver"]
-	path = deps/mongo-rust-driver
-	url = https://github.com/rupansh/mongo-rust-driver.git

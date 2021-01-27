@@ -1034,7 +1034,7 @@ dependencies = [
  "exogress-common",
  "exogress-server-common",
  "futures",
- "futures-intrusive 0.4.0",
+ "futures-intrusive",
  "futures-util",
  "globset",
  "handlebars",
@@ -1277,17 +1277,6 @@ dependencies = [
  "futures-core",
  "futures-task",
  "futures-util",
-]
-
-[[package]]
-name = "futures-intrusive"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc1529d07bd55fa54fc6c2d8460f621cfde0ae3fd2b96b2fa7eb4883478e1703"
-dependencies = [
- "futures-core",
- "lock_api 0.3.4",
- "parking_lot 0.10.2",
 ]
 
 [[package]]
@@ -2137,6 +2126,7 @@ dependencies = [
 [[package]]
 name = "mongodb"
 version = "1.1.1"
+source = "git+https://github.com/saghm/mongo-rust-driver.git?branch=tokio10-alpha#e3c9e3c058ba83a666b2e4269d84895f5ada96bc"
 dependencies = [
  "async-trait",
  "base64 0.11.0",
@@ -2146,7 +2136,6 @@ dependencies = [
  "derivative",
  "err-derive",
  "futures",
- "futures-intrusive 0.3.1",
  "hex",
  "hmac 0.7.1",
  "lazy_static",
@@ -2169,6 +2158,7 @@ dependencies = [
  "time 0.1.44",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "trust-dns-proto",
  "trust-dns-resolver",
  "typed-builder",
@@ -2391,9 +2381,9 @@ dependencies = [
 
 [[package]]
 name = "os_info"
-version = "2.0.8"
+version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2cc1b4330bb29087e791ae2a5cf56be64fb8946a4ff5aec2ba11c6ca51f5d60"
+checksum = "a2127a5da3c69035537febc04cd07008bb643653303b213a49b036d944531207"
 dependencies = [
  "log",
  "winapi",

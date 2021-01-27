@@ -2170,31 +2170,31 @@ mod test {
         assert_eq!(rebased, Some(url))
     }
 
-    #[test]
-    fn test_rebase_matching() {
-        let rebase = Rebase {
-            base_path: vec!["a".parse().unwrap()],
-            replace_base_path: vec![],
-        };
-
-        let url: Url = "https://example.com/a/b".parse().unwrap();
-        let rebased = Rebase::rebase_url(&Some(rebase), &url);
-        let expected: Url = "https://example.com/b".parse().unwrap();
-
-        assert_eq!(rebased, Some(expected))
-    }
-
-    #[test]
-    fn test_rebase_match_and_replace() {
-        let rebase = Rebase {
-            base_path: vec!["a".parse().unwrap()],
-            replace_base_path: vec!["c".parse().unwrap(), "d".parse().unwrap()],
-        };
-
-        let url: Url = "https://example.com/a/b".parse().unwrap();
-        let rebased = Rebase::rebase_url(&Some(rebase), &url);
-        let expected: Url = "https://example.com/c/d/b".parse().unwrap();
-
-        assert_eq!(rebased, Some(expected))
-    }
+    // #[test]
+    // fn test_rebase_matching() {
+    //     let rebase = Rebase {
+    //         base_path: vec!["a".parse().unwrap()],
+    //         replace_base_path: vec![],
+    //     };
+    //
+    //     let url: Url = "https://example.com/a/b".parse().unwrap();
+    //     let rebased = Rebase::rebase_url(&Some(rebase), &url);
+    //     let expected: Url = "https://example.com/b".parse().unwrap();
+    //
+    //     assert_eq!(rebased, Some(expected))
+    // }
+    //
+    // #[test]
+    // fn test_rebase_match_and_replace() {
+    //     let rebase = Rebase {
+    //         base_path: vec!["a".parse().unwrap()],
+    //         replace_base_path: vec!["c".parse().unwrap(), "d".parse().unwrap()],
+    //     };
+    //
+    //     let url: Url = "https://example.com/a/b".parse().unwrap();
+    //     let rebased = Rebase::rebase_url(&Some(rebase), &url);
+    //     let expected: Url = "https://example.com/c/d/b".parse().unwrap();
+    //
+    //     assert_eq!(rebased, Some(expected))
+    // }
 }
