@@ -1,8 +1,8 @@
+use exogress_common::common_utils::uri_ext::UriExt;
 use futures::TryFutureExt;
 use futures::{ready, FutureExt};
 use futures_util::sink::SinkExt;
 use futures_util::stream::Stream;
-use hashbrown::HashMap;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION};
 use http::status::StatusCode;
 use http::{Request, Response, Version};
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use stop_handle::stop_handle;
 use tokio_rustls::{rustls, TlsAcceptor};
-use url::{Host, Url};
+use url::Url;
 
 use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
@@ -541,42 +541,32 @@ pub async fn server(
                             }])
                             .inc();
 
-                        let req_uri = req.uri().to_string();
+                        let mut requested_url = req.uri().clone();
 
-                        let requested_url: Url = if req_uri.starts_with("/") {
+                        if requested_url.host().is_none() {
                             if let Some(host) = req.headers_mut().remove(HOST) {
-                                format!("https://{}{}", host.to_str().unwrap(), req.uri())
+                                requested_url =
+                                    format!("https://{}{}", host.to_str().unwrap(), req.uri())
+                                        .parse()
+                                        .expect("FIXME");
                             } else {
                                 panic!("fixme")
                             }
-                        } else {
-                            req_uri
                         }
-                        .parse()
-                        .expect("FIXME");
-
                         let mut res = Response::new(Body::empty());
 
-                        let host_without_port = if let Some(Host::Domain(s)) = requested_url.host()
-                        {
-                            s
-                        } else {
-                            panic!("FIXME not domain")
-                        };
+                        let host_without_port = requested_url.host().expect("FIXME");
 
                         if req.uri().host() == public_gw_base_url.host_str() {
                             let url = requested_url.clone();
 
-                            let path_segments: Vec<_> = url.path_segments().unwrap().collect();
+                            let path_segments = url.path_segments();
 
                             if path_segments.len() == 3
                                 && path_segments[0] == "_exg"
                                 && path_segments[2] == "callback"
                             {
-                                let query_pairs: HashMap<String, String> = url
-                                    .query_pairs()
-                                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                                    .collect();
+                                let query_pairs = url.query_pairs();
                                 let provider = path_segments[1];
 
                                 let oauth2_result = match provider {

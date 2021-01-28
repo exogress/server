@@ -15,7 +15,6 @@ use http::{Method, Request, Response};
 use hyper::Body;
 use parking_lot::Mutex;
 use std::convert::{TryFrom, TryInto};
-use url::Url;
 
 pub struct ResolvedGcsBucket {
     pub client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
@@ -37,8 +36,8 @@ impl ResolvedGcsBucket {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        _requested_url: &Url,
-        rebased_url: &Url,
+        _requested_url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {

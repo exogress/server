@@ -60,6 +60,7 @@ mod static_dir;
 
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
+use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use memmap::Mmap;
@@ -92,7 +93,7 @@ impl RequestsProcessor {
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
+        requested_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
@@ -252,7 +253,7 @@ impl RequestsProcessor {
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
+        requested_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
     ) {
@@ -456,45 +457,40 @@ pub struct Rebase {
 
 impl Rebase {
     /// Return rebased url if matched
-    pub fn rebase_url(_rebase: &Option<Rebase>, requested_url: &Url) -> Option<Url> {
-        // FIXME: error on sych types of requests (curl -vk "https://local.sexg.link:4443/_matrix/client/r0/user/%40gleb.pomykalov%3Asasha-demo.exg.link/filter")
-        return Some(requested_url.clone());
+    pub fn rebase_url(
+        rebase: &Option<Rebase>,
+        requested_url: &http::uri::Uri,
+    ) -> Option<http::uri::Uri> {
+        let mut rebased_url = requested_url.clone();
 
-        // let mut rebased_url = requested_url.clone();
-        //
-        // if let Some(rebase) = rebase {
-        //     let mut requested_segments = requested_url.path_segments().unwrap();
-        //
-        //     let matched_segments_count = rebase
-        //         .base_path
-        //         .iter()
-        //         .zip(&mut requested_segments)
-        //         .take_while(|(a, b)| &a.as_ref() == b)
-        //         .count();
-        //
-        //     if matched_segments_count == rebase.base_path.len() {
-        //         let mut replaced_segments = rebased_url.path_segments_mut().unwrap();
-        //         replaced_segments.clear();
-        //         for segment in &rebase.replace_base_path {
-        //             replaced_segments.push(segment.as_str());
-        //         }
-        //
-        //         // add rest part
-        //         for segment in requested_segments {
-        //             replaced_segments.push(
-        //                 percent_encoding::percent_decode_str(segment)
-        //                     .decode_utf8()
-        //                     .unwrap()
-        //                     .as_ref(),
-        //             );
-        //         }
-        //     } else {
-        //         // path don't match the base path. move on to the next handler
-        //         return None;
-        //     }
-        // }
-        //
-        // return Some(rebased_url);
+        if let Some(rebase) = rebase {
+            let mut requested_segments = requested_url.path_segments().into_iter();
+
+            let matched_segments_count = rebase
+                .base_path
+                .iter()
+                .zip(&mut requested_segments)
+                .take_while(|(a, b)| &a.as_ref() == b)
+                .count();
+
+            if matched_segments_count == rebase.base_path.len() {
+                rebased_url.clear_segments();
+
+                for segment in &rebase.replace_base_path {
+                    rebased_url.push_segment(segment.as_str());
+                }
+
+                // add rest part
+                for segment in requested_segments {
+                    rebased_url.push_segment(segment);
+                }
+            } else {
+                // path don't match the base path. move on to the next handler
+                return None;
+            }
+        }
+
+        return Some(rebased_url);
     }
 }
 
@@ -533,8 +529,8 @@ impl ResolvedHandlerVariant {
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
-        rebased_url: &Url,
+        requested_url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         log_message: &mut LogMessage,
@@ -649,7 +645,7 @@ pub struct ResolvedFilter {
 }
 
 impl ResolvedFilter {
-    fn is_matches(&self, url: &Url, method: &http::Method) -> bool {
+    fn is_matches(&self, url: &http::uri::Uri, method: &http::Method) -> bool {
         let is_trailing_slash = url.path().ends_with("/");
 
         if !self.method.is_match(method) {
@@ -658,7 +654,7 @@ impl ResolvedFilter {
 
         let mut segments = vec![];
         {
-            let mut path_segments = url.path_segments().unwrap();
+            let mut path_segments = url.path_segments().into_iter();
             let mut base_segments = self.base_path.iter();
 
             while let Some(expected_base_segment) = base_segments.next() {
@@ -773,7 +769,7 @@ struct ResolvedRule {
 impl ResolvedRule {
     fn get_action(
         &self,
-        url: &Url,
+        url: &http::uri::Uri,
         method: &http::Method,
     ) -> Option<(
         &ResolvedRuleAction,
@@ -1000,7 +996,7 @@ impl ResolvedHandler {
     /// Find appropriate final action, which should be executed
     fn find_action(
         &self,
-        url: &Url,
+        url: &http::uri::Uri,
         method: &http::Method,
     ) -> Option<(
         &ResolvedRuleAction,
@@ -1016,7 +1012,7 @@ impl ResolvedHandler {
             .inspect(|_| {
                 self.rules_counter.register_rule(&self.account_unique_id);
             })
-            .inspect(|(_, request_modifications, response_modifications)| {
+            .inspect(|(_, request_modifications, _response_modifications)| {
                 request_modifications_list.push(*request_modifications);
                 // info!(
                 //     "request_modifications = {:?}; response_modifications = {:?}",
@@ -1042,8 +1038,8 @@ impl ResolvedHandler {
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
-        rebased_url: &Url,
+        requested_url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         log_message: &mut LogMessage,
@@ -1964,9 +1960,9 @@ mod test {
 
     #[test]
     fn test_matching() {
-        let url: Url = "https://a.b.c/".parse().unwrap();
-        let url2: Url = "https://a.b.c/a".parse().unwrap();
-        let url3: Url = "https://a.b.c/a/b".parse().unwrap();
+        let url: http::Uri = "https://a.b.c/".parse().unwrap();
+        let url2: http::Uri = "https://a.b.c/a".parse().unwrap();
+        let url3: http::Uri = "https://a.b.c/a/b".parse().unwrap();
         let matcher = ResolvedFilter {
             path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Any]),
             method: Default::default(),
@@ -2164,37 +2160,37 @@ mod test {
             replace_base_path: vec![],
         };
 
-        let url: Url = "https://example.com/a/b".parse().unwrap();
+        let url: http::Uri = "https://example.com/a/b".parse().unwrap();
         let rebased = Rebase::rebase_url(&Some(rebase), &url);
 
         assert_eq!(rebased, Some(url))
     }
 
-    // #[test]
-    // fn test_rebase_matching() {
-    //     let rebase = Rebase {
-    //         base_path: vec!["a".parse().unwrap()],
-    //         replace_base_path: vec![],
-    //     };
-    //
-    //     let url: Url = "https://example.com/a/b".parse().unwrap();
-    //     let rebased = Rebase::rebase_url(&Some(rebase), &url);
-    //     let expected: Url = "https://example.com/b".parse().unwrap();
-    //
-    //     assert_eq!(rebased, Some(expected))
-    // }
-    //
-    // #[test]
-    // fn test_rebase_match_and_replace() {
-    //     let rebase = Rebase {
-    //         base_path: vec!["a".parse().unwrap()],
-    //         replace_base_path: vec!["c".parse().unwrap(), "d".parse().unwrap()],
-    //     };
-    //
-    //     let url: Url = "https://example.com/a/b".parse().unwrap();
-    //     let rebased = Rebase::rebase_url(&Some(rebase), &url);
-    //     let expected: Url = "https://example.com/c/d/b".parse().unwrap();
-    //
-    //     assert_eq!(rebased, Some(expected))
-    // }
+    #[test]
+    fn test_rebase_matching() {
+        let rebase = Rebase {
+            base_path: vec!["a".parse().unwrap()],
+            replace_base_path: vec![],
+        };
+
+        let url: http::Uri = "https://example.com/a/b".parse().unwrap();
+        let rebased = Rebase::rebase_url(&Some(rebase), &url);
+        let expected: http::Uri = "https://example.com/b".parse().unwrap();
+
+        assert_eq!(rebased, Some(expected))
+    }
+
+    #[test]
+    fn test_rebase_match_and_replace() {
+        let rebase = Rebase {
+            base_path: vec!["a".parse().unwrap()],
+            replace_base_path: vec!["c".parse().unwrap(), "d".parse().unwrap()],
+        };
+
+        let url: http::Uri = "https://example.com/a/b?f=2".parse().unwrap();
+        let rebased = Rebase::rebase_url(&Some(rebase.clone()), &url);
+        let expected: http::Uri = "https://example.com/c/d/b?f=2".parse().unwrap();
+
+        assert_eq!(rebased, Some(expected));
+    }
 }

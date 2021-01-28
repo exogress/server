@@ -5,6 +5,7 @@ use crate::http_serve::requests_processor::HandlerInvocationResult;
 use crate::http_serve::templates::respond_with_login;
 use chrono::Utc;
 use cookie::Cookie;
+use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_common::config_core::parametrized::acl::{Acl, AclEntry};
 use exogress_common::config_core::{parametrized, AuthProvider};
 use exogress_common::entities::HandlerName;
@@ -13,7 +14,6 @@ use exogress_server_common::logging::{
 };
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use globset::Glob;
-use hashbrown::HashMap;
 use http::header::{CACHE_CONTROL, COOKIE, LOCATION, SET_COOKIE};
 use http::{Request, Response, StatusCode};
 use hyper::Body;
@@ -134,14 +134,11 @@ impl ResolvedAuth {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        requested_url: &Url,
+        requested_url: &http::uri::Uri,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
-        let path_segments: Vec<_> = requested_url.path_segments().unwrap().collect();
-        let query = requested_url
-            .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect::<HashMap<String, String>>();
+        let path_segments: Vec<_> = requested_url.path_segments();
+        let query = requested_url.query_pairs();
 
         let path_segments_len = path_segments.len();
 

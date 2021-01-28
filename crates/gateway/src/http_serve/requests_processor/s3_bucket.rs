@@ -10,7 +10,6 @@ use http::{Method, Request, Response};
 use hyper::Body;
 use rusty_s3::S3Action;
 use std::time::Duration;
-use url::Url;
 
 #[derive(Clone, Debug)]
 pub struct ResolvedS3Bucket {
@@ -24,8 +23,8 @@ impl ResolvedS3Bucket {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        _requested_url: &Url,
-        rebased_url: &Url,
+        _requested_url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {

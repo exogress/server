@@ -1844,9 +1844,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.82"
+version = "0.2.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89203f3fba0a3795506acaad8ebce3c80c0af93f994d5a1d7a0b1eeb23271929"
+checksum = "7eb0c4e9c72ee9d69b767adebc5f4788462a3b45624acd919475c92597bcaf4f"
 
 [[package]]
 name = "libgit2-sys"
@@ -2126,7 +2126,7 @@ dependencies = [
 [[package]]
 name = "mongodb"
 version = "1.1.1"
-source = "git+https://github.com/saghm/mongo-rust-driver.git?branch=tokio10-alpha#e3c9e3c058ba83a666b2e4269d84895f5ada96bc"
+source = "git+https://github.com/mongodb/mongo-rust-driver.git?branch=master#64e00e8bda290b56f3ff7b850373f2ed102ce4ad"
 dependencies = [
  "async-trait",
  "base64 0.11.0",

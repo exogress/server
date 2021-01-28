@@ -16,7 +16,6 @@ use parking_lot::Mutex;
 use smol_str::SmolStr;
 use std::convert::TryInto;
 use std::net::SocketAddr;
-use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
 
 pub struct ResolvedStaticDir {
@@ -44,8 +43,8 @@ impl ResolvedStaticDir {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
-        _requested_url: &Url,
-        rebased_url: &Url,
+        _requested_url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         log_message: &mut LogMessage,
@@ -80,16 +79,9 @@ impl ResolvedStaticDir {
         let connect_target = ConnectTarget::Internal(self.handler_name.clone());
         connect_target.update_url(&mut proxy_to);
 
-        proxy_to.set_port(None).unwrap();
-        if proxy_to.scheme() == "https" {
-            proxy_to.set_scheme("http").unwrap();
-        } else {
-            panic!("FIXME");
-        }
-
         let mut proxy_req = Request::<Body>::new(Body::empty());
         *proxy_req.method_mut() = req.method().clone();
-        *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
+        *proxy_req.uri_mut() = proxy_to.clone();
 
         copy_headers_to_proxy_req(req, &mut proxy_req);
 
@@ -98,7 +90,7 @@ impl ResolvedStaticDir {
             local_addr,
             remote_addr,
             &self.public_hostname,
-            Some(proxy_to.host_str().unwrap()),
+            Some(proxy_to.host().unwrap()),
         );
 
         proxy_req

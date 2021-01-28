@@ -6,7 +6,6 @@ use exogress_server_common::logging::{
 use hashbrown::HashMap;
 use http::{Request, Response};
 use hyper::Body;
-use url::Url;
 
 #[derive(Debug)]
 pub struct ResolvedApplicationFirewall {
@@ -19,8 +18,8 @@ impl ResolvedApplicationFirewall {
         &self,
         req: &Request<Body>,
         _res: &mut Response<Body>,
-        _requested_url: &Url,
-        _rebased_url: &Url,
+        _requested_url: &http::uri::Uri,
+        _rebased_url: &http::uri::Uri,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         let raw_path_and_query = req.uri().path_and_query().unwrap().to_string();

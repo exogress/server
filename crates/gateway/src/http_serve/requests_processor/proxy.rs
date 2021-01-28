@@ -16,12 +16,12 @@ use parking_lot::Mutex;
 use smol_str::SmolStr;
 use std::convert::TryInto;
 use std::net::SocketAddr;
-use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
 
 use super::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
+use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_common::config_core::UpstreamDefinition;
 use futures::StreamExt;
 use rand::{thread_rng, RngCore};
@@ -81,8 +81,8 @@ impl ResolvedProxy {
         &self,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
-        _requested_url: &Url,
-        rebased_url: &Url,
+        _requested_url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         log_message: &mut LogMessage,
@@ -112,18 +112,17 @@ impl ResolvedProxy {
         let connect_target = ConnectTarget::Upstream(self.name.clone());
         connect_target.update_url(&mut proxy_to);
 
-        proxy_to.set_port(None).unwrap();
-        if proxy_to.scheme() == "https" {
-            proxy_to.set_scheme("http").unwrap();
-        } else if proxy_to.scheme() == "wss" {
-            proxy_to.set_scheme("ws").unwrap();
+        if proxy_to.scheme().unwrap() == "https" {
+            proxy_to.set_scheme("http");
+        } else if proxy_to.scheme().unwrap() == "wss" {
+            proxy_to.set_scheme("ws");
         } else {
-            unreachable!("unknown scheme: {}", proxy_to.scheme());
+            unreachable!("unknown scheme: {}", proxy_to);
         }
 
         let mut proxy_req = Request::<Body>::new(Body::empty());
         *proxy_req.method_mut() = req.method().clone();
-        *proxy_req.uri_mut() = proxy_to.as_str().parse().unwrap();
+        *proxy_req.uri_mut() = proxy_to.clone();
 
         copy_headers_to_proxy_req(req, &mut proxy_req);
 
@@ -154,8 +153,8 @@ impl ResolvedProxy {
                         let mut rand_key = vec![0u8; 16];
                         thread_rng().fill_bytes(&mut rand_key[..]);
 
-                        proxy_to.set_scheme("ws").unwrap();
-                        *ws_req.uri_mut() = proxy_to.as_str().parse().unwrap();
+                        proxy_to.set_scheme("ws");
+                        *ws_req.uri_mut() = proxy_to.clone();
 
                         let maybe_tcp = match self
                             .client_tunnels
