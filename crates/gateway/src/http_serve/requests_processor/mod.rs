@@ -1076,7 +1076,11 @@ impl ResolvedHandler {
                 match invocation_result {
                     HandlerInvocationResult::Responded => {
                         for modification in response_modification {
-                            if modification.status_code.is_belongs(&res.status()) {
+                            if modification
+                                .conditions
+                                .status_code
+                                .is_belongs(&res.status())
+                            {
                                 apply_headers(
                                     res.headers_mut(),
                                     &modification.modifications.headers,

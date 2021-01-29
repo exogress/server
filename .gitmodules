@@ -1,6 +1,3 @@
-[submodule "exogress"]
-	path = deps/exogress
-	url = git@github.com:exogress/exogress.git
 [submodule "lifecycle-scripts"]
 	path = lifecycle-scripts
 	url = git@github.com:lancastr/lifecycle-scripts.git

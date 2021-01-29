@@ -86,5 +86,5 @@ warp = { version = "0.3", features = ["websocket", "tls", "compression"] }
 weighted-rs = "0.1.2"
 
 exogress-server-common = { path = "../common", version = "0.1" }
-exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"], default-features = false }
 

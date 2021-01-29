@@ -146,7 +146,12 @@ impl ResolvedAuth {
             if path_segments[path_segments_len - 2] == "_exg" {
                 if path_segments[path_segments_len - 1] == "auth" {
                     let result = (|| {
-                        let requested_url: Url = query.get("url")?.parse().ok()?;
+                        let requested_url: Url =
+                            percent_encoding::percent_decode_str(query.get("url")?)
+                                .decode_utf8()
+                                .expect("FIXME")
+                                .parse()
+                                .ok()?;
                         let handler_name: HandlerName =
                             query.get("handler")?.as_str().parse().ok()?;
 

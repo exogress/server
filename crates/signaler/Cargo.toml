@@ -38,4 +38,4 @@ warp = { version = "0.3" }
 
 exogress-server-common = { path = "../common" }
 
-exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities", "config-core", "signaling"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", version = "0.0.1-beta", features = ["common-utils", "entities", "config-core", "signaling"], default-features = false }

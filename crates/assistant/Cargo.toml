@@ -31,7 +31,7 @@ lazy_static = "1.4.0"
 mimalloc = "0.1.22"
 simd-json = "0.3.23"
 
-elasticsearch =  { git = "https://github.com/krojew/elasticsearch-rs.git", branch = "master", default-features = false, features = ["rustls-tls"]}
+elasticsearch =  { version = "7.10.1-alpha.1", default-features = false, features = ["rustls-tls"]}
 mongodb = { git = "https://github.com/mongodb/mongo-rust-driver.git", branch = "master" }
 
 trust-dns-resolver = "0.20"
@@ -39,4 +39,4 @@ reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "st
 warp = { version = "0.3" }
 
 exogress-server-common = { path = "../common" }
-exogress-common = { path = "../../deps/exogress", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }
