@@ -5,6 +5,7 @@ authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
 [dependencies]
+aho-corasick = "0.7.15"
 anyhow = "1.0.31"
 async-compression = { version = "0.3.7", features = ["gzip", "futures-write", "brotli", "deflate"] }
 base64 = "0.13.0"
@@ -48,6 +49,7 @@ pin-utils = "0.1.0"
 progress_bar = "0.1.3"
 prometheus = "0.11.0"
 rand = { version = "0.8" }
+regex = "1.4.3"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
 rustls-native-certs = "0.5"
 rusty-s3 = "0.1.0"
@@ -86,5 +88,5 @@ warp = { version = "0.3", features = ["websocket", "tls", "compression"] }
 weighted-rs = "0.1.2"
 
 exogress-server-common = { path = "../common", version = "0.1" }
-exogress-common = { git = "https://github.com/exogress/exogress.git", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"], default-features = false }
 

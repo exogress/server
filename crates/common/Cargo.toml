@@ -29,4 +29,4 @@ parking_lot = { version = "0.11", features = ["serde"] }
 
 trust-dns-resolver = "0.20"
 
-exogress-common = { git = "https://github.com/exogress/exogress.git", version = "0.0.1-beta", features = ["entities", "config-core", "signaling"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "config-core", "signaling"], default-features = false }

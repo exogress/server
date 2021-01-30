@@ -20,6 +20,7 @@ FROM dirs as builder
 #ENV RUSTC_WRAPPER=/usr/local/bin/sccache
 #ENV SCCACHE_GCS_KEY_PATH=/gcs.json
 
+RUN cargo update -p exogress-common
 RUN cargo build --release
 #&& sccache --show-stats
 

@@ -32,11 +32,11 @@ mimalloc = "0.1.22"
 simd-json = "0.3.23"
 
 elasticsearch =  { version = "7.10.1-alpha.1", default-features = false, features = ["rustls-tls"]}
-mongodb = { git = "https://github.com/mongodb/mongo-rust-driver.git", branch = "master" }
+mongodb = "2.0.0-alpha"
 
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
 warp = { version = "0.3" }
 
 exogress-server-common = { path = "../common" }
-exogress-common = { git = "https://github.com/exogress/exogress.git", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }

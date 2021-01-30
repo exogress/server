@@ -11,9 +11,9 @@ use chrono::{DateTime, Utc};
 use core::mem;
 use exogress_common::config_core::{
     self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
-    MatchedResponseModification, MatchingPath, MethodMatcher, ModifyHeaders, RequestModifications,
-    RescueItem, ResponseBody, Rule, StaticResponse, StatusCodeRange, TemplateEngine,
-    TrailingSlashFilterRule, UrlPathSegmentOrQueryPart,
+    MatchPathSegment, MatchPathSingleSegment, MatchingPath, MethodMatcher, ModifyHeaders,
+    OnResponse, RequestModifications, RescueItem, ResponseBody, Rule, StaticResponse,
+    StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
     AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
@@ -60,10 +60,12 @@ mod static_dir;
 
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use memmap::Mmap;
+use regex::Regex;
 use std::sync::Arc;
 
 pub struct RequestsProcessor {
@@ -470,7 +472,7 @@ impl Rebase {
                 .base_path
                 .iter()
                 .zip(&mut requested_segments)
-                .take_while(|(a, b)| &a.as_ref() == b)
+                .take_while(|(a, b)| &AsRef::<str>::as_ref(a) == b)
                 .count();
 
             if matched_segments_count == rebase.base_path.len() {
@@ -638,10 +640,93 @@ enum ResolvedCatchAction {
 
 #[derive(Debug)]
 pub struct ResolvedFilter {
-    pub path: MatchingPath,
+    pub path: ResolvedMatchingPath,
     pub method: MethodMatcher,
     pub trailing_slash: TrailingSlashFilterRule,
     pub base_path: Vec<UrlPathSegmentOrQueryPart>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResolvedMatchingPath {
+    // /
+    Root,
+    // *
+    Wildcard,
+    // A / B / C
+    Strict(Vec<ResolvedMatchPathSegment>),
+    // Left / * / Right
+    LeftWildcardRight(Vec<ResolvedMatchPathSegment>, Vec<ResolvedMatchPathSegment>),
+    // Left / *
+    LeftWildcard(Vec<ResolvedMatchPathSegment>),
+    // * / Right
+    WildcardRight(Vec<ResolvedMatchPathSegment>),
+}
+
+impl From<MatchingPath> for ResolvedMatchingPath {
+    fn from(natching_path: MatchingPath) -> Self {
+        match natching_path {
+            MatchingPath::Root => ResolvedMatchingPath::Root,
+            MatchingPath::Wildcard => ResolvedMatchingPath::Wildcard,
+            MatchingPath::Strict(s) => {
+                ResolvedMatchingPath::Strict(s.into_iter().map(From::from).collect())
+            }
+            MatchingPath::LeftWildcardRight(l, r) => ResolvedMatchingPath::LeftWildcardRight(
+                l.into_iter().map(From::from).collect(),
+                r.into_iter().map(From::from).collect(),
+            ),
+            MatchingPath::LeftWildcard(l) => {
+                ResolvedMatchingPath::LeftWildcard(l.into_iter().map(From::from).collect())
+            }
+            MatchingPath::WildcardRight(r) => {
+                ResolvedMatchingPath::WildcardRight(r.into_iter().map(From::from).collect())
+            }
+        }
+    }
+}
+
+impl From<MatchPathSegment> for ResolvedMatchPathSegment {
+    fn from(segment: MatchPathSegment) -> Self {
+        match segment {
+            MatchPathSegment::Single(MatchPathSingleSegment::Any) => ResolvedMatchPathSegment::Any,
+            MatchPathSegment::Single(MatchPathSingleSegment::Exact(e)) => {
+                ResolvedMatchPathSegment::Exact(e)
+            }
+            MatchPathSegment::Single(MatchPathSingleSegment::Regex(r)) => {
+                ResolvedMatchPathSegment::Regex(r)
+            }
+            MatchPathSegment::Choice(variants) => {
+                let aho_corasick = AhoCorasickBuilder::new()
+                    .match_kind(MatchKind::LeftmostLongest)
+                    .build(variants);
+                ResolvedMatchPathSegment::Choice(aho_corasick)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ResolvedMatchPathSegment {
+    Any,
+    Exact(UrlPathSegmentOrQueryPart),
+    Regex(Regex),
+    Choice(AhoCorasick),
+}
+
+impl ResolvedMatchPathSegment {
+    pub fn is_match(&self, s: &str) -> bool {
+        match self {
+            ResolvedMatchPathSegment::Any => true,
+            ResolvedMatchPathSegment::Exact(segment) => s == AsRef::<str>::as_ref(segment),
+            ResolvedMatchPathSegment::Regex(re) => re.is_match(s),
+            ResolvedMatchPathSegment::Choice(aho_corasick) => {
+                if let Some(res) = aho_corasick.find(s) {
+                    (res.end() - res.start()) == s.len()
+                } else {
+                    false
+                }
+            }
+        }
+    }
 }
 
 impl ResolvedFilter {
@@ -675,15 +760,15 @@ impl ResolvedFilter {
         }
 
         let matcher = || match &self.path {
-            MatchingPath::Root
+            ResolvedMatchingPath::Root
                 if segments.len() == 0 || (segments.len() == 1 && segments[0].is_empty()) =>
             {
                 return true;
             }
-            MatchingPath::Wildcard => {
+            ResolvedMatchingPath::Wildcard => {
                 return true;
             }
-            MatchingPath::Strict(match_segments) => {
+            ResolvedMatchingPath::Strict(match_segments) => {
                 if match_segments.len() != segments.len() {
                     return false;
                 }
@@ -694,7 +779,7 @@ impl ResolvedFilter {
                 }
                 return true;
             }
-            MatchingPath::LeftWildcardRight(left_match_segments, right_match_segments) => {
+            ResolvedMatchingPath::LeftWildcardRight(left_match_segments, right_match_segments) => {
                 if left_match_segments.len() + right_match_segments.len() > segments.len() {
                     return false;
                 }
@@ -712,7 +797,7 @@ impl ResolvedFilter {
                 }
                 return true;
             }
-            MatchingPath::LeftWildcard(left_match_segments) => {
+            ResolvedMatchingPath::LeftWildcard(left_match_segments) => {
                 if left_match_segments.len() > segments.len() {
                     return false;
                 }
@@ -723,7 +808,7 @@ impl ResolvedFilter {
                 }
                 return true;
             }
-            MatchingPath::WildcardRight(right_match_segments) => {
+            ResolvedMatchingPath::WildcardRight(right_match_segments) => {
                 if right_match_segments.len() > segments.len() {
                     return false;
                 }
@@ -762,7 +847,7 @@ struct RuleModifications {
 struct ResolvedRule {
     filter: ResolvedFilter,
     request_modifications: RequestModifications,
-    response_modifications: Vec<MatchedResponseModification>,
+    on_response: Vec<OnResponse>,
     action: ResolvedRuleAction,
 }
 
@@ -771,22 +856,14 @@ impl ResolvedRule {
         &self,
         url: &http::uri::Uri,
         method: &http::Method,
-    ) -> Option<(
-        &ResolvedRuleAction,
-        &RequestModifications,
-        &Vec<MatchedResponseModification>,
-    )> {
+    ) -> Option<(&ResolvedRuleAction, &RequestModifications, &Vec<OnResponse>)> {
         if !self.filter.is_matches(url, method) {
             return None;
         } else {
             info!("{} matches {:?} action {:?}", url, self.filter, self.action);
         }
 
-        Some((
-            &self.action,
-            &self.request_modifications,
-            &self.response_modifications,
-        ))
+        Some((&self.action, &self.request_modifications, &self.on_response))
     }
 }
 
@@ -1001,7 +1078,7 @@ impl ResolvedHandler {
     ) -> Option<(
         &ResolvedRuleAction,
         Vec<&RequestModifications>,
-        &Vec<MatchedResponseModification>,
+        &Vec<OnResponse>,
     )> {
         let mut request_modifications_list = Vec::new();
 
@@ -1076,11 +1153,7 @@ impl ResolvedHandler {
                 match invocation_result {
                     HandlerInvocationResult::Responded => {
                         for modification in response_modification {
-                            if modification
-                                .conditions
-                                .status_code
-                                .is_belongs(&res.status())
-                            {
+                            if modification.when.status_code.is_belongs(&res.status()) {
                                 apply_headers(
                                     res.headers_mut(),
                                     &modification.modifications.headers,
@@ -1732,7 +1805,7 @@ impl RequestsProcessor {
                                 .map(|rule: Rule| {
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
-                                            path: rule.filter.path,
+                                            path: rule.filter.path.into(),
                                             method: rule.filter.methods,
                                             trailing_slash: rule.filter.trailing_slash,
                                             base_path: replace_base_path.clone(),
@@ -1742,9 +1815,9 @@ impl RequestsProcessor {
                                             .modify_request()
                                             .cloned()
                                             .unwrap_or_default(),
-                                        response_modifications: rule
+                                        on_response: rule
                                             .action
-                                            .modify_response()
+                                            .on_response()
                                             .into_iter()
                                             .cloned()
                                             .collect(),
@@ -1960,7 +2033,7 @@ struct ResolvedStatusCodeRangeHandler {
 #[cfg(test)]
 mod test {
     use super::*;
-    use exogress_common::config_core::MatchPathSegment;
+    use exogress_common::config_core::MatchPathSingleSegment;
 
     #[test]
     fn test_matching() {
@@ -1968,7 +2041,10 @@ mod test {
         let url2: http::Uri = "https://a.b.c/a".parse().unwrap();
         let url3: http::Uri = "https://a.b.c/a/b".parse().unwrap();
         let matcher = ResolvedFilter {
-            path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Any]),
+            path: MatchingPath::LeftWildcard(vec![MatchPathSegment::Single(
+                MatchPathSingleSegment::Any,
+            )])
+            .into(),
             method: Default::default(),
             trailing_slash: Default::default(),
             base_path: vec![],
