@@ -24,6 +24,7 @@ use super::helpers::{
 use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_common::config_core::UpstreamDefinition;
 use futures::StreamExt;
+use langtag::LanguageTagBuf;
 use rand::{thread_rng, RngCore};
 use std::io;
 use tokio_tungstenite::WebSocketStream;
@@ -85,6 +86,7 @@ impl ResolvedProxy {
         rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
@@ -305,6 +307,7 @@ impl ResolvedProxy {
                                 upstream: self.name.clone(),
                                 instance_id,
                                 config_name: self.config_id.config_name.clone(),
+                                language: language.clone(),
                             },
                         )));
 

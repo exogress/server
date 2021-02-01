@@ -26,6 +26,7 @@ urlencoding = "1.1.1"
 lazy_static = "1.4.0"
 serde_with = "1.6.0"
 parking_lot = { version = "0.11", features = ["serde"] }
+langtag = { git = "https://github.com/glebpom/langtag.git", branch = "master" }
 
 trust-dns-resolver = "0.20"
 

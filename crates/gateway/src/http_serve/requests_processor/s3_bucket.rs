@@ -8,6 +8,7 @@ use exogress_server_common::logging::{
 };
 use http::{Method, Request, Response};
 use hyper::Body;
+use langtag::LanguageTagBuf;
 use rusty_s3::S3Action;
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ impl ResolvedS3Bucket {
         res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
@@ -38,6 +40,7 @@ impl ResolvedS3Bucket {
             .push(ProcessingStep::Invoked(HandlerProcessingStep::S3Bucket(
                 S3BucketHandlerLogMessage {
                     region: bucket.region().into(),
+                    language: language.clone(),
                 },
             )));
 

@@ -6,6 +6,7 @@ use exogress_server_common::logging::{
 use hashbrown::HashMap;
 use http::{Request, Response};
 use hyper::Body;
+use langtag::LanguageTagBuf;
 
 #[derive(Debug)]
 pub struct ResolvedApplicationFirewall {
@@ -20,6 +21,7 @@ impl ResolvedApplicationFirewall {
         _res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
         _rebased_url: &http::uri::Uri,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         let raw_path_and_query = req.uri().path_and_query().unwrap().to_string();
@@ -58,6 +60,7 @@ impl ResolvedApplicationFirewall {
                 } else {
                     ApplicationFirewallAction::Permitted
                 },
+                language: language.clone(),
             }),
         ));
 

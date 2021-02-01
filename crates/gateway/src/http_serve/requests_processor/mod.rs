@@ -64,6 +64,7 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
+use langtag::LanguageTagBuf;
 use memmap::Mmap;
 use regex::Regex;
 use std::sync::Arc;
@@ -156,7 +157,7 @@ impl RequestsProcessor {
                     Ok(Some(resp)) => {
                         info!("found data in cache");
                         if resp.status().is_success() || resp.status() == StatusCode::NOT_MODIFIED {
-                            // respond from cache only if success response
+                            // respond from the cache only if success response
 
                             *res = resp;
 
@@ -191,6 +192,32 @@ impl RequestsProcessor {
             }
 
             if let Some(rebased_url) = Rebase::rebase_url(&handler.rebase, &requested_url) {
+                let best_language = if let (Some(languages), Ok(Some(accept_languages))) = (
+                    &handler.languages,
+                    req.headers().typed_get::<typed_headers::AcceptLanguage>(),
+                ) {
+                    ordered_by_quality(&accept_languages)
+                        .filter_map(|accepted| {
+                            languages.iter().find(|supported_lang| {
+                                if let Some(rest) =
+                                    supported_lang.as_str().strip_prefix(accepted.as_str())
+                                {
+                                    if rest.is_empty() || rest.starts_with("-") {
+                                        return true;
+                                    }
+                                }
+
+                                false
+                            })
+                        })
+                        .next()
+                        .cloned()
+                } else {
+                    None
+                };
+
+                info!("best_language = {:?}", best_language);
+
                 let result = handler
                     .handle_request(
                         req,
@@ -199,6 +226,7 @@ impl RequestsProcessor {
                         &rebased_url,
                         local_addr,
                         remote_addr,
+                        &best_language,
                         log_message,
                     )
                     .await;
@@ -535,6 +563,7 @@ impl ResolvedHandlerVariant {
         rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         match self {
@@ -547,6 +576,7 @@ impl ResolvedHandlerVariant {
                         rebased_url,
                         local_addr,
                         remote_addr,
+                        language,
                         log_message,
                     )
                     .await
@@ -560,26 +590,28 @@ impl ResolvedHandlerVariant {
                         rebased_url,
                         local_addr,
                         remote_addr,
+                        language,
                         log_message,
                     )
                     .await
             }
             ResolvedHandlerVariant::Auth(auth) => {
-                auth.invoke(req, res, requested_url, log_message).await
+                auth.invoke(req, res, requested_url, language, log_message)
+                    .await
             }
             ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
                 s3_bucket
-                    .invoke(req, res, requested_url, rebased_url, log_message)
+                    .invoke(req, res, requested_url, rebased_url, language, log_message)
                     .await
             }
             ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
                 gcs_bucket
-                    .invoke(req, res, requested_url, rebased_url, log_message)
+                    .invoke(req, res, requested_url, rebased_url, language, log_message)
                     .await
             }
             ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
                 application_firewall
-                    .invoke(req, res, requested_url, rebased_url, log_message)
+                    .invoke(req, res, requested_url, rebased_url, language, log_message)
                     .await
             }
             ResolvedHandlerVariant::PassThrough(pass_through) => {
@@ -663,8 +695,8 @@ pub enum ResolvedMatchingPath {
 }
 
 impl From<MatchingPath> for ResolvedMatchingPath {
-    fn from(natching_path: MatchingPath) -> Self {
-        match natching_path {
+    fn from(matching_path: MatchingPath) -> Self {
+        match matching_path {
             MatchingPath::Root => ResolvedMatchingPath::Root,
             MatchingPath::Wildcard => ResolvedMatchingPath::Wildcard,
             MatchingPath::Strict(s) => {
@@ -763,11 +795,9 @@ impl ResolvedFilter {
             ResolvedMatchingPath::Root
                 if segments.len() == 0 || (segments.len() == 1 && segments[0].is_empty()) =>
             {
-                return true;
+                true
             }
-            ResolvedMatchingPath::Wildcard => {
-                return true;
-            }
+            ResolvedMatchingPath::Wildcard => true,
             ResolvedMatchingPath::Strict(match_segments) => {
                 if match_segments.len() != segments.len() {
                     return false;
@@ -777,7 +807,7 @@ impl ResolvedFilter {
                         return false;
                     }
                 }
-                return true;
+                true
             }
             ResolvedMatchingPath::LeftWildcardRight(left_match_segments, right_match_segments) => {
                 if left_match_segments.len() + right_match_segments.len() > segments.len() {
@@ -795,7 +825,7 @@ impl ResolvedFilter {
                         return false;
                     }
                 }
-                return true;
+                true
             }
             ResolvedMatchingPath::LeftWildcard(left_match_segments) => {
                 if left_match_segments.len() > segments.len() {
@@ -806,7 +836,7 @@ impl ResolvedFilter {
                         return false;
                     }
                 }
-                return true;
+                true
             }
             ResolvedMatchingPath::WildcardRight(right_match_segments) => {
                 if right_match_segments.len() > segments.len() {
@@ -819,9 +849,9 @@ impl ResolvedFilter {
                         return false;
                     }
                 }
-                return true;
+                true
             }
-            _ => return false,
+            _ => false,
         };
 
         let is_path_matched = (matcher)();
@@ -859,8 +889,6 @@ impl ResolvedRule {
     ) -> Option<(&ResolvedRuleAction, &RequestModifications, &Vec<OnResponse>)> {
         if !self.filter.is_matches(url, method) {
             return None;
-        } else {
-            info!("{} matches {:?} action {:?}", url, self.filter, self.action);
         }
 
         Some((&self.action, &self.request_modifications, &self.on_response))
@@ -888,6 +916,8 @@ struct ResolvedHandler {
 
     account_unique_id: AccountUniqueId,
     rules_counter: AccountCounters,
+
+    languages: Option<Vec<langtag::LanguageTagBuf>>,
 }
 
 #[derive(Debug)]
@@ -985,6 +1015,7 @@ impl ResolvedHandler {
         rescueable: &Rescueable<'_>,
         is_in_exception: bool,
         maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
         info!("handle rescueable: {:?}", rescueable);
@@ -1043,7 +1074,7 @@ impl ResolvedHandler {
                 if let Some(additional_data) = rescueable.data() {
                     data.extend(additional_data.iter().map(|(k, v)| (k.clone(), v.clone())));
                 }
-                return self.handle_static_response(
+                self.handle_static_response(
                     req,
                     res,
                     &static_response_name,
@@ -1051,21 +1082,22 @@ impl ResolvedHandler {
                     data,
                     rescueable.is_exception() || is_in_exception,
                     maybe_rule_invoke_catch,
+                    &language,
                     log_message,
-                );
+                )
             }
             RescueableHandleResult::NextHandler => {
                 info!("move on to next handler");
-                return ResolvedHandlerProcessingResult::NextHandler;
+                ResolvedHandlerProcessingResult::NextHandler
             }
             RescueableHandleResult::UnhandledException { exception_name, .. } => {
                 warn!("unhandled exception: {}", exception_name);
                 self.respond_server_error(res);
-                return ResolvedHandlerProcessingResult::Processed;
+                ResolvedHandlerProcessingResult::Processed
             }
             RescueableHandleResult::FinishProcessing => {
                 info!("processing finished");
-                return ResolvedHandlerProcessingResult::Processed;
+                ResolvedHandlerProcessingResult::Processed
             }
         }
     }
@@ -1119,6 +1151,7 @@ impl ResolvedHandler {
         rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
         let (action, request_modifications, response_modification) =
@@ -1146,6 +1179,7 @@ impl ResolvedHandler {
                         rebased_url,
                         local_addr,
                         remote_addr,
+                        language,
                         log_message,
                     )
                     .await;
@@ -1162,31 +1196,33 @@ impl ResolvedHandler {
                         }
 
                         let rescueable = Rescueable::StatusCode(res.status());
-                        return self.handle_rescueable(
+                        self.handle_rescueable(
                             req,
                             res,
                             &rescueable,
                             false,
                             Some(catch),
+                            &language,
                             log_message,
-                        );
+                        )
                     }
                     HandlerInvocationResult::ToNextHandler => {
-                        return ResolvedHandlerProcessingResult::NextHandler;
+                        ResolvedHandlerProcessingResult::NextHandler
                     }
                     HandlerInvocationResult::Exception { name, data } => {
                         let rescueable = Rescueable::Exception {
                             exception: &name,
                             data: &data,
                         };
-                        return self.handle_rescueable(
+                        self.handle_rescueable(
                             req,
                             res,
                             &rescueable,
                             false,
                             Some(catch),
+                            &language,
                             log_message,
-                        );
+                        )
                     }
                 }
             }
@@ -1198,7 +1234,15 @@ impl ResolvedHandler {
                 data,
             }) => {
                 let rescueable = Rescueable::Exception { exception, data };
-                return self.handle_rescueable(req, res, &rescueable, false, None, log_message);
+                return self.handle_rescueable(
+                    req,
+                    res,
+                    &rescueable,
+                    false,
+                    None,
+                    &language,
+                    log_message,
+                );
             }
             ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
                 static_response_name,
@@ -1214,6 +1258,7 @@ impl ResolvedHandler {
                     data.clone(),
                     false,
                     Some(rescue),
+                    &language,
                     log_message,
                 );
             }
@@ -1232,6 +1277,7 @@ impl ResolvedHandler {
         additional_data: HashMap<SmolStr, SmolStr>,
         is_in_exception: bool,
         maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
         log_message.steps.push(ProcessingStep::StaticResponse(
@@ -1239,6 +1285,7 @@ impl ResolvedHandler {
                 static_response: static_response_name.clone(),
                 data: additional_data.clone(),
                 config_name: self.config_name.clone(),
+                language: language.clone(),
             },
         ));
 
@@ -1258,39 +1305,42 @@ impl ResolvedHandler {
                     &rescueable,
                     true,
                     maybe_rule_invoke_catch,
+                    &language,
                     log_message,
                 );
             }
-            Some(static_response) => match static_response.invoke(req, res, additional_data, facts)
-            {
-                Ok(()) => ResolvedHandlerProcessingResult::Processed,
-                Err((exception, data)) => {
-                    *res = Response::new(Body::empty());
-                    if !is_in_exception {
-                        let rescueable = Rescueable::Exception {
-                            exception: &exception,
-                            data: &data,
-                        };
-                        return self.handle_rescueable(
-                            req,
-                            res,
-                            &rescueable,
-                            false,
-                            maybe_rule_invoke_catch,
-                            log_message,
-                        );
-                    } else {
-                        error!(
-                            "error evaluating static response while in exception handling: {:?}. {:?}",
-                            exception, data
-                        );
-                        *res.body_mut() = Body::from("Internal server error");
-                        *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            Some(static_response) => {
+                match static_response.invoke(req, res, additional_data, &language, facts) {
+                    Ok(()) => ResolvedHandlerProcessingResult::Processed,
+                    Err((exception, data)) => {
+                        *res = Response::new(Body::empty());
+                        if !is_in_exception {
+                            let rescueable = Rescueable::Exception {
+                                exception: &exception,
+                                data: &data,
+                            };
+                            self.handle_rescueable(
+                                req,
+                                res,
+                                &rescueable,
+                                false,
+                                maybe_rule_invoke_catch,
+                                &language,
+                                log_message,
+                            )
+                        } else {
+                            error!(
+                                "error evaluating static response while in exception handling: {:?}. {:?}",
+                                exception, data
+                            );
+                            *res.body_mut() = Body::from("Internal server error");
+                            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
 
-                        return ResolvedHandlerProcessingResult::Processed;
+                            ResolvedHandlerProcessingResult::Processed
+                        }
                     }
                 }
-            },
+            }
         }
     }
 }
@@ -1857,6 +1907,7 @@ impl RequestsProcessor {
                                 .collect::<Option<_>>()?,
                             account_unique_id,
                             rules_counter: rules_counter.clone(),
+                            languages: handler.languages,
                         })
                     }
                 })
@@ -1934,6 +1985,7 @@ impl ResolvedStaticResponse {
         req: &Request<Body>,
         res: &mut Response<Body>,
         additional_data: HashMap<SmolStr, SmolStr>,
+        handler_best_language: &Option<LanguageTagBuf>,
         facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
         *res = Response::new(Body::empty());

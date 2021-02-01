@@ -13,6 +13,7 @@ use http::header::CONTENT_DISPOSITION;
 use http::HeaderValue;
 use http::{Method, Request, Response};
 use hyper::Body;
+use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
 use std::convert::{TryFrom, TryInto};
 
@@ -38,6 +39,7 @@ impl ResolvedGcsBucket {
         res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
@@ -52,6 +54,7 @@ impl ResolvedGcsBucket {
             .push(ProcessingStep::Invoked(HandlerProcessingStep::GcsBucket(
                 GcsBucketHandlerLogMessage {
                     bucket: bucket_name.name.clone(),
+                    language: language.clone(),
                 },
             )));
 

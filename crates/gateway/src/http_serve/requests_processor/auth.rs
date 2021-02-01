@@ -18,6 +18,7 @@ use http::header::{CACHE_CONTROL, COOKIE, LOCATION, SET_COOKIE};
 use http::{Request, Response, StatusCode};
 use hyper::Body;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
+use langtag::LanguageTagBuf;
 use smol_str::SmolStr;
 use std::convert::TryInto;
 use typed_headers::HeaderMapExt;
@@ -135,6 +136,7 @@ impl ResolvedAuth {
         req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         let path_segments: Vec<_> = requested_url.path_segments();
@@ -381,6 +383,7 @@ impl ResolvedAuth {
                                         identity: Some(allow_to.into()),
                                         acl_entry: acl_entry.cloned(),
                                         acl_action: AclAction::Allowed,
+                                        language: language.clone(),
                                     }),
                                 ));
                             } else {
@@ -392,6 +395,7 @@ impl ResolvedAuth {
                                         identity: Some(granted_identity.into()),
                                         acl_entry: acl_entry.cloned(),
                                         acl_action: AclAction::Denied,
+                                        language: language.clone(),
                                     }),
                                 ));
 
@@ -407,6 +411,7 @@ impl ResolvedAuth {
                                     identity: Some(granted_identity.into()),
                                     acl_entry: None,
                                     acl_action: AclAction::Denied,
+                                    language: language.clone(),
                                 }),
                             ));
 
@@ -431,6 +436,7 @@ impl ResolvedAuth {
                                 identity: None,
                                 acl_entry: None,
                                 acl_action: AclAction::Denied,
+                                language: language.clone(),
                             },
                         )));
 
@@ -448,6 +454,7 @@ impl ResolvedAuth {
                         identity: None,
                         acl_entry: None,
                         acl_action: AclAction::Denied,
+                        language: language.clone(),
                     },
                 )));
 

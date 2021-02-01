@@ -12,6 +12,7 @@ WORKDIR /code/crates
 ENV RUSTFLAGS="-Ctarget-feature=-crt-static -Ctarget-feature=+sse4.2"
 
 FROM dirs as builder
+
 #ADD ci/gcs.json /gcs.json
 #ADD ci/sccache /usr/local/bin/sccache
 

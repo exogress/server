@@ -5,6 +5,7 @@ use exogress_common::entities::{
     StaticResponseName, Upstream,
 };
 use hashbrown::HashMap;
+use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
 use serde_with::serde_as;
 use serde_with::DurationSecondsWithFrac;
@@ -77,6 +78,7 @@ pub struct StaticResponseProcessingStep {
     pub static_response: StaticResponseName,
     pub data: HashMap<SmolStr, SmolStr>,
     pub config_name: Option<ConfigName>,
+    pub language: Option<LanguageTagBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -114,14 +116,15 @@ pub enum ApplicationFirewallAction {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ApplicationFirewallLogMessage {
     pub detected: Vec<String>,
-
     pub action: ApplicationFirewallAction,
+    pub language: Option<LanguageTagBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StaticDirHandlerLogMessage {
     pub instance_id: InstanceId,
     pub config_name: ConfigName,
+    pub language: Option<LanguageTagBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -129,16 +132,20 @@ pub struct ProxyHandlerLogMessage {
     pub upstream: Upstream,
     pub instance_id: InstanceId,
     pub config_name: ConfigName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<LanguageTagBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct S3BucketHandlerLogMessage {
     pub region: SmolStr,
+    pub language: Option<LanguageTagBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GcsBucketHandlerLogMessage {
     pub bucket: SmolStr,
+    pub language: Option<LanguageTagBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -156,4 +163,5 @@ pub struct AuthHandlerLogMessage {
     pub identity: Option<SmolStr>,
     pub acl_entry: Option<SmolStr>,
     pub acl_action: AclAction,
+    pub language: Option<LanguageTagBuf>,
 }

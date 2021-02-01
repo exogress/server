@@ -12,6 +12,7 @@ use exogress_server_common::logging::{
 };
 use http::{Method, Request, Response};
 use hyper::Body;
+use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
 use std::convert::TryInto;
@@ -47,6 +48,7 @@ impl ResolvedStaticDir {
         rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
+        language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
@@ -71,6 +73,7 @@ impl ResolvedStaticDir {
                 StaticDirHandlerLogMessage {
                     instance_id: instance_id.clone(),
                     config_name: self.config_id.config_name.clone(),
+                    language: language.clone(),
                 },
             )));
 
