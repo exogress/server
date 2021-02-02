@@ -191,12 +191,12 @@ impl ResolvedAuth {
                             )
                             .await;
 
-                            return HandlerInvocationResult::Responded;
+                            return HandlerInvocationResult::Responded(None);
                         }
                         None => {
                             *res.status_mut() = StatusCode::NOT_FOUND;
 
-                            return HandlerInvocationResult::Responded;
+                            return HandlerInvocationResult::Responded(None);
                         }
                     }
                 } else if path_segments[path_segments_len - 1] == "check_auth" {
@@ -323,7 +323,7 @@ impl ResolvedAuth {
                         }
                     };
 
-                    return HandlerInvocationResult::Responded;
+                    return HandlerInvocationResult::Responded(None);
                 }
             }
         }
@@ -399,7 +399,7 @@ impl ResolvedAuth {
                                     }),
                                 ));
 
-                                return HandlerInvocationResult::Responded;
+                                return HandlerInvocationResult::Responded(None);
                             }
                         }
                         None => {
@@ -415,7 +415,7 @@ impl ResolvedAuth {
                                 }),
                             ));
 
-                            return HandlerInvocationResult::Responded;
+                            return HandlerInvocationResult::Responded(None);
                         }
                     }
                 }
@@ -440,7 +440,7 @@ impl ResolvedAuth {
                             },
                         )));
 
-                    return HandlerInvocationResult::Responded;
+                    return HandlerInvocationResult::Responded(None);
                 }
             }
         } else {
@@ -459,7 +459,7 @@ impl ResolvedAuth {
                 )));
 
             self.respond_not_authorized(req, res);
-            return HandlerInvocationResult::Responded;
+            return HandlerInvocationResult::Responded(None);
         }
 
         HandlerInvocationResult::ToNextHandler

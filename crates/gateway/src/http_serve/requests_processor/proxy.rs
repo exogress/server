@@ -21,6 +21,8 @@ use weighted_rs::{SmoothWeight, Weight};
 use super::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
+use crate::http_serve::cache::cache_scope::ResolvedCacheScope;
+use crate::http_serve::requests_processor::cache::Cacheable;
 use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_common::config_core::UpstreamDefinition;
 use futures::StreamExt;
@@ -38,6 +40,7 @@ pub struct ResolvedProxy {
     pub individual_hostname: SmolStr,
     pub public_hostname: SmolStr,
     pub presence_client: presence::Client,
+    pub cacheable: Cacheable,
 }
 
 impl fmt::Debug for ResolvedProxy {
@@ -109,217 +112,239 @@ impl ResolvedProxy {
             }
         }
 
-        let mut proxy_to = rebased_url.clone();
+        let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
 
-        let connect_target = ConnectTarget::Upstream(self.name.clone());
-        connect_target.update_url(&mut proxy_to);
-
-        if proxy_to.scheme().unwrap() == "https" {
-            proxy_to.set_scheme("http");
-        } else if proxy_to.scheme().unwrap() == "wss" {
-            proxy_to.set_scheme("ws");
-        } else {
-            unreachable!("unknown scheme: {}", proxy_to);
+        if !is_websocket {
+            if let Some(instance_id) = selected_instance_id {
+                if self
+                    .cacheable
+                    .try_serve_from_cache(req, res, instance_id, log_message)
+                    .await
+                {
+                    return;
+                }
+            }
         }
 
-        let mut proxy_req = Request::<Body>::new(Body::empty());
-        *proxy_req.method_mut() = req.method().clone();
-        *proxy_req.uri_mut() = proxy_to.clone();
+        match selected_instance_id {
+            Some(instance_id) => {
+                let mut proxy_to = rebased_url.clone();
 
-        copy_headers_to_proxy_req(req, &mut proxy_req);
+                let connect_target = ConnectTarget::Upstream(self.name.clone());
+                connect_target.update_url(&mut proxy_to);
 
-        add_forwarded_headers(
-            &mut proxy_req,
-            local_addr,
-            remote_addr,
-            &self.public_hostname,
-            None,
-        );
+                if proxy_to.scheme().unwrap() == "https" {
+                    proxy_to.set_scheme("http");
+                } else if proxy_to.scheme().unwrap() == "wss" {
+                    proxy_to.set_scheme("ws");
+                } else {
+                    unreachable!("unknown scheme: {}", proxy_to);
+                }
 
-        proxy_req
-            .headers_mut()
-            .append("x-exg", "1".parse().unwrap());
+                let mut proxy_req = Request::<Body>::new(Body::empty());
+                *proxy_req.method_mut() = req.method().clone();
+                *proxy_req.uri_mut() = proxy_to.clone();
 
-        'instances: loop {
-            let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
+                copy_headers_to_proxy_req(req, &mut proxy_req);
 
-            match selected_instance_id {
-                Some(instance_id) => {
-                    let proxy_res = if is_websocket {
-                        info!("proxy websocket");
-                        let mut ws_req = http::Request::new(());
+                add_forwarded_headers(
+                    &mut proxy_req,
+                    local_addr,
+                    remote_addr,
+                    &self.public_hostname,
+                    None,
+                );
 
-                        *ws_req.headers_mut() = proxy_req.headers().clone();
-                        *ws_req.method_mut() = proxy_req.method().clone();
+                proxy_req
+                    .headers_mut()
+                    .append("x-exg", "1".parse().unwrap());
 
-                        let mut rand_key = vec![0u8; 16];
-                        thread_rng().fill_bytes(&mut rand_key[..]);
+                let proxy_res = if is_websocket {
+                    info!("proxy websocket");
+                    let mut ws_req = http::Request::new(());
 
-                        proxy_to.set_scheme("ws");
-                        *ws_req.uri_mut() = proxy_to.clone();
+                    *ws_req.headers_mut() = proxy_req.headers().clone();
+                    *ws_req.method_mut() = proxy_req.method().clone();
 
-                        let maybe_tcp = match self
-                            .client_tunnels
-                            .retrieve_connector::<TcpConnector>(
-                                &self.config_id,
-                                &instance_id,
-                                self.individual_hostname.clone(),
-                            )
-                            .await
-                        {
-                            Some(tcp) => {
-                                tcp.retrieve_connection(connect_target, Compression::Plain)
-                                    .await
-                            }
-                            None => {
-                                self.retrieve_connection_failed(&instance_id);
-                                continue 'instances;
-                            }
-                        };
+                    let mut rand_key = vec![0u8; 16];
+                    thread_rng().fill_bytes(&mut rand_key[..]);
 
-                        let tcp = try_or_exception!(
-                            maybe_tcp,
-                            "proxy-error:upstream-unreachable:connection-rejected"
-                        );
+                    proxy_to.set_scheme("ws");
+                    *ws_req.uri_mut() = proxy_to.clone();
 
-                        let (proxy_ws, mut res) = try_or_exception!(
-                            tokio_tungstenite::client_async(ws_req, tcp).await,
-                            "proxy-error:websocket:connect-error"
-                        );
-
-                        let req_for_upgrade = mem::replace(req, Request::new(Body::empty()));
-                        *req.headers_mut() = req_for_upgrade.headers().clone();
-                        *req.uri_mut() = req_for_upgrade.uri().clone();
-                        *req.method_mut() = req_for_upgrade.method().clone();
-
-                        tokio::spawn(
-                            #[allow(unreachable_code)]
-                            async move {
-                                let forwarder = async move {
-                                    let req_upgraded = hyper::upgrade::on(req_for_upgrade)
-                                        .await
-                                        .with_context(|| "error upgrading connection")?;
-
-                                    let (mut proxy_ws_tx, mut proxy_ws_rx) = proxy_ws.split();
-
-                                    let proxy_ws = WebSocketStream::from_raw_socket(
-                                        req_upgraded,
-                                        tokio_tungstenite::tungstenite::protocol::Role::Server,
-                                        None,
-                                    )
-                                    .await;
-
-                                    let (mut client_ws_tx, mut client_ws_rx) = proxy_ws.split();
-
-                                    loop {
-                                        tokio::select! {
-                                            maybe_msg = proxy_ws_rx.next() => {
-                                                if let Some(Ok(msg)) = maybe_msg  {
-                                                    client_ws_tx.send(msg).await.with_context(|| "could not send WS msg to client")?;
-                                                } else {
-                                                    break;
-                                                }
-                                            },
-
-                                            maybe_msg = client_ws_rx.next() => {
-                                                if let Some(Ok(msg)) = maybe_msg  {
-                                                    proxy_ws_tx.send(msg).await.with_context(|| "could not send WS msg to proxy")?;
-                                                } else {
-                                                    break;
-                                                }
-                                            },
-                                        }
-                                    }
-
-                                    Ok::<_, anyhow::Error>(())
-                                };
-
-                                if let Err(e) = forwarder.await {
-                                    warn!("error in Websocket forwarder: {}", e);
-                                }
-                            },
-                        );
-
-                        // using wrap_stream here prevents hyper to automatically set content-length
-                        let mut hyper_res =
-                            Response::new(Body::wrap_stream(futures::stream::empty::<
-                                Result<Vec<u8>, io::Error>,
-                            >()));
-
-                        *hyper_res.headers_mut() =
-                            mem::replace(res.headers_mut(), HeaderMap::new());
-                        *hyper_res.status_mut() = res.status();
-
-                        hyper_res
-                    } else {
-                        let request_body = mem::replace(req.body_mut(), Body::empty());
-
-                        *proxy_req.body_mut() = request_body;
-
-                        let http_client = match self
-                            .client_tunnels
-                            .retrieve_connector::<HttpConnector>(
-                                &self.config_id,
-                                &instance_id,
-                                self.individual_hostname.clone(),
-                            )
-                            .await
-                        {
-                            Some(http_client) => http_client,
-                            None => {
-                                self.retrieve_connection_failed(&instance_id);
-                                continue 'instances;
-                            }
-                        };
-
-                        try_or_exception!(
-                            http_client.request(proxy_req).await,
-                            "proxy-error:upstream-unreachable"
+                    let maybe_tcp = match self
+                        .client_tunnels
+                        .retrieve_connector::<TcpConnector>(
+                            &self.config_id,
+                            &instance_id,
+                            self.individual_hostname.clone(),
                         )
+                        .await
+                    {
+                        Some(tcp) => {
+                            tcp.retrieve_connection(connect_target, Compression::Plain)
+                                .await
+                        }
+                        None => {
+                            self.retrieve_connection_failed(&instance_id);
+                            return HandlerInvocationResult::Exception {
+                                name: "proxy-error:instance-unreachable".parse().unwrap(),
+                                data: Default::default(),
+                            };
+                        }
                     };
 
-                    copy_headers_from_proxy_res_to_res(proxy_res.headers(), res);
+                    let tcp = try_or_exception!(
+                        maybe_tcp,
+                        "proxy-error:upstream-unreachable:connection-rejected"
+                    );
 
-                    if is_websocket {
-                        res.headers_mut()
-                            .insert(UPGRADE, "websocket".parse().unwrap());
-                        res.headers_mut()
-                            .insert(CONNECTION, "Upgrade".parse().unwrap());
+                    let (proxy_ws, mut res) = try_or_exception!(
+                        tokio_tungstenite::client_async(ws_req, tcp).await,
+                        "proxy-error:websocket:connect-error"
+                    );
 
-                        if let Some(ws_key) = req.headers().get(SEC_WEBSOCKET_KEY) {
-                            let accept = Self::sec_websocket_accept(ws_key.to_str().unwrap());
+                    let req_for_upgrade = mem::replace(req, Request::new(Body::empty()));
+                    *req.headers_mut() = req_for_upgrade.headers().clone();
+                    *req.uri_mut() = req_for_upgrade.uri().clone();
+                    *req.method_mut() = req_for_upgrade.method().clone();
 
-                            res.headers_mut()
-                                .insert(SEC_WEBSOCKET_ACCEPT, accept.parse().unwrap());
+                    tokio::spawn(
+                        #[allow(unreachable_code)]
+                        async move {
+                            let forwarder = async move {
+                                let req_upgraded = hyper::upgrade::on(req_for_upgrade)
+                                    .await
+                                    .with_context(|| "error upgrading connection")?;
+
+                                let (mut proxy_ws_tx, mut proxy_ws_rx) = proxy_ws.split();
+
+                                let proxy_ws = WebSocketStream::from_raw_socket(
+                                    req_upgraded,
+                                    tokio_tungstenite::tungstenite::protocol::Role::Server,
+                                    None,
+                                )
+                                .await;
+
+                                let (mut client_ws_tx, mut client_ws_rx) = proxy_ws.split();
+
+                                loop {
+                                    tokio::select! {
+                                        maybe_msg = proxy_ws_rx.next() => {
+                                            if let Some(Ok(msg)) = maybe_msg  {
+                                                client_ws_tx.send(msg).await.with_context(|| "could not send WS msg to client")?;
+                                            } else {
+                                                break;
+                                            }
+                                        },
+
+                                        maybe_msg = client_ws_rx.next() => {
+                                            if let Some(Ok(msg)) = maybe_msg  {
+                                                proxy_ws_tx.send(msg).await.with_context(|| "could not send WS msg to proxy")?;
+                                            } else {
+                                                break;
+                                            }
+                                        },
+                                    }
+                                }
+
+                                Ok::<_, anyhow::Error>(())
+                            };
+
+                            if let Err(e) = forwarder.await {
+                                warn!("error in Websocket forwarder: {}", e);
+                            }
+                        },
+                    );
+
+                    // using wrap_stream here prevents hyper to automatically set content-length
+                    let mut hyper_res = Response::new(Body::wrap_stream(futures::stream::empty::<
+                        Result<Vec<u8>, io::Error>,
+                    >()));
+
+                    *hyper_res.headers_mut() = mem::replace(res.headers_mut(), HeaderMap::new());
+                    *hyper_res.status_mut() = res.status();
+
+                    hyper_res
+                } else {
+                    if self
+                        .cacheable
+                        .try_serve_from_cache(req, res, log_message)
+                        .await
+                    {
+                        return HandlerInvocationResult::Responded(None);
+                    };
+
+                    let request_body = mem::replace(req.body_mut(), Body::empty());
+
+                    *proxy_req.body_mut() = request_body;
+
+                    let http_client = match self
+                        .client_tunnels
+                        .retrieve_connector::<HttpConnector>(
+                            &self.config_id,
+                            &instance_id,
+                            self.individual_hostname.clone(),
+                        )
+                        .await
+                    {
+                        Some(http_client) => http_client,
+                        None => {
+                            self.retrieve_connection_failed(&instance_id);
+                            return HandlerInvocationResult::Exception {
+                                name: "proxy-error:instance-unreachable".parse().unwrap(),
+                                data: Default::default(),
+                            };
                         }
-                    }
+                    };
 
+                    try_or_exception!(
+                        http_client.request(proxy_req).await,
+                        "proxy-error:upstream-unreachable"
+                    )
+                };
+
+                copy_headers_from_proxy_res_to_res(proxy_res.headers(), res);
+
+                if is_websocket {
                     res.headers_mut()
-                        .append("x-exg-proxied", "1".parse().unwrap());
+                        .insert(UPGRADE, "websocket".parse().unwrap());
+                    res.headers_mut()
+                        .insert(CONNECTION, "Upgrade".parse().unwrap());
 
-                    *res.status_mut() = proxy_res.status();
-                    *res.body_mut() = proxy_res.into_body();
+                    if let Some(ws_key) = req.headers().get(SEC_WEBSOCKET_KEY) {
+                        let accept = Self::sec_websocket_accept(ws_key.to_str().unwrap());
 
-                    log_message
-                        .steps
-                        .push(ProcessingStep::Invoked(HandlerProcessingStep::Proxy(
-                            ProxyHandlerLogMessage {
-                                upstream: self.name.clone(),
-                                instance_id,
-                                config_name: self.config_id.config_name.clone(),
-                                language: language.clone(),
-                            },
-                        )));
-
-                    return HandlerInvocationResult::Responded;
-                }
-                None => {
-                    return HandlerInvocationResult::Exception {
-                        name: "proxy-error:bad-gateway:no-healthy-upstreams"
-                            .parse()
-                            .unwrap(),
-                        data: Default::default(),
+                        res.headers_mut()
+                            .insert(SEC_WEBSOCKET_ACCEPT, accept.parse().unwrap());
                     }
+                }
+
+                res.headers_mut()
+                    .append("x-exg-proxied", "1".parse().unwrap());
+
+                *res.status_mut() = proxy_res.status();
+                *res.body_mut() = proxy_res.into_body();
+
+                log_message
+                    .steps
+                    .push(ProcessingStep::Invoked(HandlerProcessingStep::Proxy(
+                        ProxyHandlerLogMessage {
+                            upstream: self.name.clone(),
+                            instance_id: instance_id.clone(),
+                            config_name: self.config_id.config_name.clone(),
+                            language: language.clone(),
+                        },
+                    )));
+
+                return HandlerInvocationResult::Responded(Some(instance_id));
+            }
+            None => {
+                return HandlerInvocationResult::Exception {
+                    name: "proxy-error:bad-gateway:no-healthy-upstreams"
+                        .parse()
+                        .unwrap(),
+                    data: Default::default(),
                 }
             }
         }

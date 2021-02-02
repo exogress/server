@@ -1,7 +1,11 @@
+pub mod cache_scope;
+
+use crate::http_serve::cache::cache_scope::ResolvedCacheScope;
 use byte_unit::Byte;
 use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashSet;
 use etag::EntityTag;
+use exogress_common::config_core::CacheScope;
 use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
 use futures::{StreamExt, TryStreamExt};
 use hashbrown::HashSet;
@@ -181,6 +185,7 @@ impl Cache {
         mount_point_name: &MountPointName,
         handler_name: &HandlerName,
         handler_checksum: &HandlerChecksum,
+        cache_scope: ResolvedCacheScope,
         method: &http::Method,
         path_and_query: &str,
     ) -> String {
@@ -191,6 +196,19 @@ impl Cache {
         content_sha2.update(&handler_checksum.0.to_be_bytes());
         content_sha2.update(method.as_str());
         content_sha2.update(path_and_query);
+        if let Some(instance_id) = cache_scope.instance_id {
+            content_sha2.update(&[1]);
+            content_sha2.update(instance_id.to_string().as_str());
+        } else {
+            content_sha2.update(&[2]);
+        }
+        if let Some(revision) = cache_scope.config_revision {
+            content_sha2.update(&[1]);
+            content_sha2.update(revision.0.to_be_bytes());
+        } else {
+            content_sha2.update(&[2]);
+        }
+
         bs58::encode(content_sha2.finalize()).into_string()
     }
 
@@ -520,6 +538,7 @@ impl Cache {
         handler_name: &HandlerName,
         handler_checksum: &HandlerChecksum,
         method: &http::Method,
+        cache_scope: ResolvedCacheScope,
         req_headers: &HeaderMap,
         res_headers: &HeaderMap,
         status: StatusCode,
@@ -537,6 +556,7 @@ impl Cache {
             mount_point_name,
             handler_name,
             handler_checksum,
+            cache_scope,
             method,
             path_and_query,
         );
@@ -610,6 +630,7 @@ impl Cache {
         mount_point_name: &MountPointName,
         handler_name: &HandlerName,
         handler_checksum: &HandlerChecksum,
+        cache_scope: ResolvedCacheScope,
         request_headers: &HeaderMap,
         method: &http::Method,
         path_and_query: &str,
@@ -620,6 +641,7 @@ impl Cache {
             mount_point_name,
             handler_name,
             handler_checksum,
+            cache_scope,
             method,
             path_and_query,
         );

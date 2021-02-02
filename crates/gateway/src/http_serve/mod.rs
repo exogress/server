@@ -1,9 +1,8 @@
 pub mod acme;
 pub mod auth;
+pub mod cache;
 mod director;
 pub mod handle;
-// mod proxy;
-// mod request;
 mod requests_processor;
 mod templates;
 

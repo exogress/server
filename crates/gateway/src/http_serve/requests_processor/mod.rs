@@ -1,4 +1,3 @@
-use crate::cache::{Cache, HandlerChecksum};
 use crate::clients::traffic_counter::{RecordedTrafficStatistics, TrafficCounters};
 use crate::clients::ClientTunnels;
 use crate::http_serve::auth::JwtEcdsa;
@@ -10,10 +9,11 @@ use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use core::mem;
 use exogress_common::config_core::{
-    self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
-    MatchPathSegment, MatchPathSingleSegment, MatchingPath, MethodMatcher, ModifyHeaders,
-    OnResponse, RequestModifications, RescueItem, ResponseBody, Rule, StaticResponse,
-    StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegmentOrQueryPart,
+    self, is_profile_active, Action, CacheScope, CatchAction, CatchMatcher, ClientConfigRevision,
+    ClientHandlerVariant, Exception, MatchPathSegment, MatchPathSingleSegment, MatchingPath,
+    MethodMatcher, ModifyHeaders, OnResponse, RequestModifications, RescueItem, ResponseBody, Rule,
+    StaticResponse, StatusCodeRange, TemplateEngine, TrailingSlashFilterRule,
+    UrlPathSegmentOrQueryPart,
 };
 use exogress_common::entities::{
     AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
@@ -50,6 +50,7 @@ mod macros;
 
 mod application_firewall;
 mod auth;
+pub(crate) mod cache;
 mod gcs_bucket;
 mod helpers;
 mod pass_through;
@@ -59,6 +60,8 @@ mod s3_bucket;
 mod static_dir;
 
 use crate::dbip::LocationAndIsp;
+use crate::http_serve::cache::cache_scope::ResolvedCacheScope;
+use crate::http_serve::cache::{Cache, HandlerChecksum};
 use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use exogress_common::common_utils::uri_ext::UriExt;
@@ -134,63 +137,6 @@ impl RequestsProcessor {
             // create new response for each handler, avoid using dirty data from the previous handler
             *res = Response::new(Body::empty());
 
-            if req.method() == &Method::GET || req.method() == &Method::HEAD {
-                // eligible for caching
-                // lookup for cache response and respond if exists
-
-                let cached_response = self
-                    .cache
-                    .serve_from_cache(
-                        &self.account_unique_id,
-                        &self.project_name,
-                        &self.mount_point_name,
-                        &handler.handler_name,
-                        &handler.handler_checksum,
-                        req.headers(),
-                        req.method(),
-                        req.uri().path_and_query().expect("FIXME").as_str(),
-                        &self.xchacha20poly1305_secret_key,
-                    )
-                    .await;
-
-                match cached_response {
-                    Ok(Some(resp)) => {
-                        info!("found data in cache");
-                        if resp.status().is_success() || resp.status() == StatusCode::NOT_MODIFIED {
-                            // respond from the cache only if success response
-
-                            *res = resp;
-
-                            res.headers_mut()
-                                .insert("x-exg-edge-cached", "1".parse().unwrap());
-
-                            if let Ok(Some(len)) =
-                                res.headers().typed_get::<typed_headers::ContentLength>()
-                            {
-                                log_message.content_len = Some(len.0);
-                                let byte = Byte::from(len.0);
-
-                                info!(
-                                    "serve {} bytes from cache!",
-                                    byte.get_appropriate_unit(true)
-                                );
-                            }
-
-                            log_message.steps.push(ProcessingStep::ServedFromCache);
-
-                            return;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        crate::statistics::CACHE_ERRORS
-                            .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
-                            .inc();
-                        warn!("Error reading data from cache: {}", e);
-                    }
-                }
-            }
-
             if let Some(rebased_url) = Rebase::rebase_url(&handler.rebase, &requested_url) {
                 let best_language = if let (Some(languages), Ok(Some(accept_languages))) = (
                     &handler.languages,
@@ -232,9 +178,9 @@ impl RequestsProcessor {
                     .await;
 
                 match result {
-                    ResolvedHandlerProcessingResult::Processed => {
+                    ResolvedHandlerProcessingResult::Processed(instance_id) => {
                         info!("handle successfully finished. exit from handlers loop");
-                        processed_by = Some(handler);
+                        processed_by = Some((handler, instance_id));
                         break;
                     }
                     ResolvedHandlerProcessingResult::FiltersNotMatched => {}
@@ -250,7 +196,7 @@ impl RequestsProcessor {
                 *res = Response::new(Body::from("Not found"));
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
-            Some(handler) => {
+            Some((handler, instance_id)) => {
                 let optimize_result = self.optimize_image(req, res, log_message).await;
                 if let Err(e) = optimize_result {
                     warn!("Skipped image optimization due to the error: {}", e);
@@ -261,7 +207,7 @@ impl RequestsProcessor {
                 res.headers_mut()
                     .insert("server", HeaderValue::from_static("exogress"));
 
-                self.save_to_cache(req, res, handler);
+                self.save_to_cache(req, res, handler, instance_id);
             }
         }
 
@@ -332,6 +278,7 @@ impl RequestsProcessor {
         req: &Request<Body>,
         res: &mut Response<Body>,
         handler: &ResolvedHandler,
+        instance_id: Option<InstanceId>,
     ) {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
             return;
@@ -345,6 +292,12 @@ impl RequestsProcessor {
             info!("Range header presented. Skip caching.");
             return;
         }
+
+        let cache_scope = if let Some(cache_scope) = handler.resolved_cache_scope(instance_id) {
+            cache_scope
+        } else {
+            return;
+        };
 
         let cache_entries: Vec<_> = res
             .headers()
@@ -452,6 +405,7 @@ impl RequestsProcessor {
                     &handler_name,
                     &handler_checksum,
                     &method,
+                    cache_scope,
                     &req_headers,
                     &res_headers,
                     status,
@@ -546,7 +500,7 @@ enum ResolvedHandlerVariant {
 
 #[derive(Debug)]
 pub enum HandlerInvocationResult {
-    Responded,
+    Responded(Option<InstanceId>),
     ToNextHandler,
     Exception {
         name: Exception,
@@ -900,6 +854,7 @@ struct ResolvedHandler {
     handler_checksum: HandlerChecksum,
 
     config_name: Option<ConfigName>,
+    config_revision: Option<ClientConfigRevision>,
 
     resolved_variant: ResolvedHandlerVariant,
 
@@ -918,6 +873,43 @@ struct ResolvedHandler {
     rules_counter: AccountCounters,
 
     languages: Option<Vec<langtag::LanguageTagBuf>>,
+}
+
+impl ResolvedHandler {
+    pub fn resolved_cache_scope(
+        &self,
+        instance_id: Option<InstanceId>,
+    ) -> Option<ResolvedCacheScope> {
+        let cache = match &self.resolved_variant {
+            ResolvedHandlerVariant::Proxy(proxy) => Some(&proxy.cache),
+            ResolvedHandlerVariant::StaticDir(static_dir) => Some(&static_dir.cache),
+            ResolvedHandlerVariant::Auth(_) => None,
+            ResolvedHandlerVariant::S3Bucket(s3) => Some(&s3.cache),
+            ResolvedHandlerVariant::GcsBucket(gcs) => Some(&gcs.cache),
+            ResolvedHandlerVariant::ApplicationFirewall(_) => None,
+            ResolvedHandlerVariant::PassThrough(_) => None,
+        }?;
+        if !cache.enabled {
+            return None;
+        }
+        Some(ResolvedCacheScope {
+            config_revision: cache.cache_scope.and_then(|scope| {
+                if let CacheScope::ConfigRevision = scope {
+                    self.config_revision
+                } else {
+                    None
+                }
+            }),
+            instance_id: None,
+            // instance_id: cache.cache_scope.and_then(|scope| {
+            //     if let CacheScope::InstanceId = scope {
+            //         instance_id
+            //     } else {
+            //         None
+            //     }
+            // }),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -947,7 +939,7 @@ impl<'a> Rescueable<'a> {
 
 #[must_use]
 enum ResolvedHandlerProcessingResult {
-    Processed,
+    Processed(Option<InstanceId>),
     FiltersNotMatched,
     NextHandler,
 }
@@ -1015,6 +1007,7 @@ impl ResolvedHandler {
         rescueable: &Rescueable<'_>,
         is_in_exception: bool,
         maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+        instance_id: Option<InstanceId>,
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
@@ -1044,14 +1037,14 @@ impl ResolvedHandler {
                         data: data.clone(),
                     }
                 }
-                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing,
+                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing(instance_id),
             },
             Some(ResolvedCatchAction::Throw { exception, data }) => match rescueable {
                 &Rescueable::Exception { .. } => RescueableHandleResult::UnhandledException {
                     exception_name: exception.clone(),
                     data: data.clone(),
                 },
-                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing,
+                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing(None),
             },
             Some(ResolvedCatchAction::StaticResponse {
                 static_response_name,
@@ -1093,11 +1086,11 @@ impl ResolvedHandler {
             RescueableHandleResult::UnhandledException { exception_name, .. } => {
                 warn!("unhandled exception: {}", exception_name);
                 self.respond_server_error(res);
-                ResolvedHandlerProcessingResult::Processed
+                ResolvedHandlerProcessingResult::Processed(None)
             }
-            RescueableHandleResult::FinishProcessing => {
+            RescueableHandleResult::FinishProcessing(instance_id) => {
                 info!("processing finished");
-                ResolvedHandlerProcessingResult::Processed
+                ResolvedHandlerProcessingResult::Processed(instance_id)
             }
         }
     }
@@ -1185,7 +1178,7 @@ impl ResolvedHandler {
                     .await;
 
                 match invocation_result {
-                    HandlerInvocationResult::Responded => {
+                    HandlerInvocationResult::Responded(instance_id) => {
                         for modification in response_modification {
                             if modification.when.status_code.is_belongs(&res.status()) {
                                 apply_headers(
@@ -1202,6 +1195,7 @@ impl ResolvedHandler {
                             &rescueable,
                             false,
                             Some(catch),
+                            instance_id,
                             &language,
                             log_message,
                         )
@@ -1220,6 +1214,7 @@ impl ResolvedHandler {
                             &rescueable,
                             false,
                             Some(catch),
+                            None,
                             &language,
                             log_message,
                         )
@@ -1239,6 +1234,7 @@ impl ResolvedHandler {
                     res,
                     &rescueable,
                     false,
+                    None,
                     None,
                     &language,
                     log_message,
@@ -1305,13 +1301,14 @@ impl ResolvedHandler {
                     &rescueable,
                     true,
                     maybe_rule_invoke_catch,
+                    None,
                     &language,
                     log_message,
                 );
             }
             Some(static_response) => {
                 match static_response.invoke(req, res, additional_data, &language, facts) {
-                    Ok(()) => ResolvedHandlerProcessingResult::Processed,
+                    Ok(()) => ResolvedHandlerProcessingResult::Processed(None),
                     Err((exception, data)) => {
                         *res = Response::new(Body::empty());
                         if !is_in_exception {
@@ -1325,6 +1322,7 @@ impl ResolvedHandler {
                                 &rescueable,
                                 false,
                                 maybe_rule_invoke_catch,
+                                None,
                                 &language,
                                 log_message,
                             )
@@ -1336,7 +1334,7 @@ impl ResolvedHandler {
                             *res.body_mut() = Body::from("Internal server error");
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
 
-                            ResolvedHandlerProcessingResult::Processed
+                            ResolvedHandlerProcessingResult::Processed(None)
                         }
                     }
                 }
@@ -1374,7 +1372,7 @@ enum RescueableHandleResult {
         data: HashMap<SmolStr, SmolStr>,
     },
     /// Finish processing normally, respond with prepared response
-    FinishProcessing,
+    FinishProcessing(Option<InstanceId>),
 }
 
 fn resolve_static_response(
@@ -1604,26 +1602,28 @@ impl RequestsProcessor {
         {
             let mp_rescue = mp.rescue.clone();
 
-            shadow_clone!(instance_ids);
-            shadow_clone!(project_rescue);
-            shadow_clone!(jwt_ecdsa);
-            shadow_clone!(mount_point_base_url);
-            shadow_clone!(google_oauth2_client);
-            shadow_clone!(github_oauth2_client);
-            shadow_clone!(assistant_base_url);
-            shadow_clone!(maybe_identity);
-            shadow_clone!(client_tunnels);
-            shadow_clone!(individual_hostname);
-            shadow_clone!(account_name);
-            shadow_clone!(account_unique_id);
-            shadow_clone!(project_name);
-            shadow_clone!(rules_counter);
-            shadow_clone!(resolver);
-            shadow_clone!(traffic_counters);
-            shadow_clone!(presence_client);
-            shadow_clone!(params);
-            shadow_clone!(project_static_responses);
-            shadow_clone!(active_profile);
+            shadow_clone!(
+                instance_ids,
+                project_rescue,
+                jwt_ecdsa,
+                mount_point_base_url,
+                google_oauth2_client,
+                github_oauth2_client,
+                assistant_base_url,
+                maybe_identity,
+                client_tunnels,
+                individual_hostname,
+                account_name,
+                account_unique_id,
+                project_name,
+                rules_counter,
+                resolver,
+                traffic_counters,
+                presence_client,
+                params,
+                project_static_responses,
+                active_profile
+            );
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
                 resolver: resolver.clone(),
@@ -1644,8 +1644,7 @@ impl RequestsProcessor {
                     }
                 })
                 .map({
-                    shadow_clone!(project_static_responses);
-                    shadow_clone!(active_profile);
+                    shadow_clone!(project_static_responses, active_profile);
 
                     move |(handler_name, handler)| {
                         let replace_base_path = handler
@@ -1712,6 +1711,7 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::StaticDir(static_dir) => {
                                     ResolvedHandlerVariant::StaticDir(static_dir::ResolvedStaticDir {
+                                        cache: static_dir.cache.clone(),
                                         config: static_dir,
                                         handler_name: handler_name.clone(),
                                         instance_ids: {
@@ -1771,6 +1771,7 @@ impl RequestsProcessor {
                                         individual_hostname: individual_hostname.clone(),
                                         public_hostname: mount_point_base_url.host().into(),
                                         presence_client: presence_client.clone(),
+                                        cache: proxy.cache.clone(),
                                     })
                                 }
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {
@@ -1795,6 +1796,7 @@ impl RequestsProcessor {
                                                     s3_bucket_cfg.region.to_string(),
                                                 ).expect("FIXME")
                                             }),
+                                        cache: s3_bucket.cache.clone(),
                                     })
                                 }
                                 ClientHandlerVariant::GcsBucket(gcs_bucket) => {
@@ -1809,6 +1811,7 @@ impl RequestsProcessor {
                                             ).expect("FIXME")
                                         }),
                                         token: Default::default(),
+                                        cache: gcs_bucket.cache.clone(),
                                     })
                                 }
                                 ClientHandlerVariant::ApplicationFirewall(app_firewall) => {
@@ -1908,6 +1911,7 @@ impl RequestsProcessor {
                             account_unique_id,
                             rules_counter: rules_counter.clone(),
                             languages: handler.languages,
+                            config_revision: None
                         })
                     }
                 })

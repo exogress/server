@@ -36,11 +36,11 @@ use url::Url;
 
 use crate::clients::{tunnels_acceptor, ClientTunnels};
 
-use crate::cache::Cache;
 use crate::clients::traffic_counter::OneOfTrafficStatistics;
 use crate::http_serve::acme::acme_server;
 use crate::http_serve::auth::github::GithubOauth2Client;
 use crate::http_serve::auth::google::GoogleOauth2Client;
+use crate::http_serve::cache::Cache;
 use crate::notification_listener::AssistantClient;
 use crate::stop_reasons::StopReason;
 use crate::webapp::Client;
@@ -56,7 +56,6 @@ use tokio::runtime::Builder;
 use tokio::time::sleep;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
-mod cache;
 pub(crate) mod clients;
 mod dbip;
 mod http_serve;

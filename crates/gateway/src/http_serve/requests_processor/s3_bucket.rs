@@ -1,3 +1,4 @@
+use crate::http_serve::requests_processor::cache::Cacheable;
 use crate::http_serve::requests_processor::helpers::copy_headers_from_proxy_res_to_res;
 use crate::http_serve::requests_processor::HandlerInvocationResult;
 use crate::public_hyper_client::MeteredHttpsConnector;
@@ -17,6 +18,7 @@ pub struct ResolvedS3Bucket {
     pub client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
     pub credentials: Option<Result<rusty_s3::Credentials, parametrized::Error>>,
     pub bucket: Result<rusty_s3::Bucket, parametrized::Error>,
+    pub cacheable: Cacheable,
 }
 
 impl ResolvedS3Bucket {
@@ -65,6 +67,6 @@ impl ResolvedS3Bucket {
 
         *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
 
-        HandlerInvocationResult::Responded
+        HandlerInvocationResult::Responded(None)
     }
 }

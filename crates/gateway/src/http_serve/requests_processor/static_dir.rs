@@ -1,4 +1,5 @@
 use crate::clients::{ClientTunnels, HttpConnector};
+use crate::http_serve::requests_processor::cache::Cacheable;
 use crate::http_serve::requests_processor::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
@@ -27,6 +28,7 @@ pub struct ResolvedStaticDir {
     pub config_id: ConfigId,
     pub individual_hostname: SmolStr,
     pub public_hostname: SmolStr,
+    pub cacheable: Cacheable,
 }
 
 impl fmt::Debug for ResolvedStaticDir {
@@ -123,6 +125,6 @@ impl ResolvedStaticDir {
         *res.status_mut() = proxy_res.status();
         *res.body_mut() = proxy_res.into_body();
 
-        HandlerInvocationResult::Responded
+        HandlerInvocationResult::Responded(Some(instance_id))
     }
 }

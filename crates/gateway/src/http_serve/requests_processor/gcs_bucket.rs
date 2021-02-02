@@ -1,3 +1,4 @@
+use crate::http_serve::requests_processor::cache::Cacheable;
 use crate::http_serve::requests_processor::helpers::copy_headers_from_proxy_res_to_res;
 use crate::http_serve::requests_processor::HandlerInvocationResult;
 use crate::public_hyper_client::MeteredHttpsConnector;
@@ -22,6 +23,7 @@ pub struct ResolvedGcsBucket {
     pub bucket_name: Result<GcsBucket, parametrized::Error>,
     pub auth: Result<tame_oauth::gcp::ServiceAccountAccess, parametrized::Error>,
     pub token: Mutex<Option<tame_oauth::Token>>,
+    pub cacheable: Cacheable,
 }
 
 impl fmt::Debug for ResolvedGcsBucket {
@@ -143,6 +145,6 @@ impl ResolvedGcsBucket {
 
         *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
 
-        HandlerInvocationResult::Responded
+        HandlerInvocationResult::Responded(None)
     }
 }

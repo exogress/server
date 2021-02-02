@@ -1,6 +1,6 @@
-use crate::cache::Cache;
 use crate::clients::traffic_counter::RecordedTrafficStatistics;
 use crate::clients::ClientTunnels;
+use crate::http_serve::cache::Cache;
 use crate::http_serve::{auth, RequestsProcessor};
 use crate::registry::RequestsProcessorsRegistry;
 use crate::rules_counter::AccountCounters;
