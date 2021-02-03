@@ -477,8 +477,10 @@ pub async fn server(
                                 }
                             }
 
-                            url.set_scheme("https").unwrap();
-                            url.set_port(Some(external_https_port)).unwrap();
+                            url.set_scheme("https")
+                                .map_err(|_| anyhow!("failed to set https scheme"))?;
+                            url.set_port(Some(external_https_port))
+                                .map_err(|_| anyhow!("failed to set port"))?;
 
                             res.headers_mut()
                                 .insert(LOCATION, url.to_string().parse().unwrap());
