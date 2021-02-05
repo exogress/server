@@ -2,6 +2,7 @@ use crate::clients::{ClientTunnels, HttpConnector};
 use crate::http_serve::requests_processor::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
+use crate::http_serve::requests_processor::post_processing::ResolvedPostProcessing;
 use crate::http_serve::requests_processor::HandlerInvocationResult;
 use core::fmt;
 use exogress_common::config_core::StaticDir;
@@ -27,6 +28,8 @@ pub struct ResolvedStaticDir {
     pub config_id: ConfigId,
     pub individual_hostname: SmolStr,
     pub public_hostname: SmolStr,
+    pub is_cache_enabled: bool,
+    pub post_processing: ResolvedPostProcessing,
 }
 
 impl fmt::Debug for ResolvedStaticDir {
@@ -35,6 +38,7 @@ impl fmt::Debug for ResolvedStaticDir {
             .field("config", &self.config)
             .field("handler_name", &self.handler_name)
             .field("config_id", &self.config_id)
+            .field("is_cache_enabled", &self.is_cache_enabled)
             .finish()
     }
 }

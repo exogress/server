@@ -1,3 +1,4 @@
+use crate::http_serve::{RequestsProcessor, ResolvedHandler};
 use byte_unit::Byte;
 use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashSet;
@@ -6,7 +7,8 @@ use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, Pr
 use futures::{StreamExt, TryStreamExt};
 use hashbrown::HashSet;
 use http::header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY};
-use http::{HeaderMap, Response, StatusCode};
+use http::{HeaderMap, Method, Request, Response, StatusCode};
+use hyper::Body;
 use sha2::Digest;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
 use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
@@ -605,21 +607,31 @@ impl Cache {
 
     pub async fn serve_from_cache(
         &self,
-        account_unique_id: &AccountUniqueId,
-        project_name: &ProjectName,
-        mount_point_name: &MountPointName,
-        handler_name: &HandlerName,
-        handler_checksum: &HandlerChecksum,
-        request_headers: &HeaderMap,
-        method: &http::Method,
-        path_and_query: &str,
-        xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
+        requests_processor: &RequestsProcessor,
+        handler: &ResolvedHandler,
+        req: &Request<Body>,
     ) -> anyhow::Result<Option<Response<hyper::Body>>> {
+        if handler.resolved_variant.is_cache_enabled() != Some(true) {
+            return Ok(None);
+        }
+
+        if req.method() != &Method::GET && req.method() != &Method::HEAD {
+            return Ok(None);
+        }
+
+        let account_unique_id = &requests_processor.account_unique_id;
+        let project_name = &requests_processor.project_name;
+        let mount_point_name = &requests_processor.mount_point_name;
+        let xchacha20poly1305_secret_key = &requests_processor.xchacha20poly1305_secret_key;
+        let request_headers = req.headers();
+        let method = req.method();
+        let path_and_query = req.uri().path_and_query().expect("FIXME").as_str();
+
         let file_name = self.sha_request_hash(
             project_name,
             mount_point_name,
-            handler_name,
-            handler_checksum,
+            &handler.handler_name,
+            &handler.handler_checksum,
             method,
             path_and_query,
         );

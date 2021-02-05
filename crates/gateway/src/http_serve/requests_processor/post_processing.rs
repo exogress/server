@@ -1,4 +1,5 @@
 use crate::http_serve::RequestsProcessor;
+use exogress_common::config_core::parametrized;
 use exogress_server_common::logging::{
     CompressProcessingStep, LogMessage, OptimizeProcessingStep, ProcessingStep,
 };
@@ -9,6 +10,7 @@ use http::{HeaderValue, Request, Response};
 use hyper::Body;
 use itertools::Itertools;
 use magick_rust::{magick_wand_genesis, MagickWand};
+use smol_str::SmolStr;
 use std::convert::TryFrom;
 use std::str::FromStr;
 use std::sync::{Arc, Once};
@@ -19,47 +21,61 @@ use typed_headers::{ContentCoding, ContentType, HeaderMapExt};
 
 static IMAGE_MAGIC: Once = Once::new();
 
-lazy_static! {
-    pub static ref COMPRESSABLE_MIME_TYPES: HashSet<&'static str> = vec![
-        mime::TEXT_CSS.essence_str(),
-        mime::TEXT_CSV.essence_str(),
-        mime::TEXT_HTML.essence_str(),
-        mime::TEXT_JAVASCRIPT.essence_str(),
-        mime::TEXT_PLAIN.essence_str(),
-        mime::TEXT_STAR.essence_str(),
-        mime::TEXT_TAB_SEPARATED_VALUES.essence_str(),
-        mime::TEXT_VCARD.essence_str(),
-        mime::TEXT_XML.essence_str(),
-        mime::IMAGE_BMP.essence_str(),
-        mime::IMAGE_SVG.essence_str(),
-        mime::APPLICATION_JAVASCRIPT.essence_str(),
-        mime::APPLICATION_JSON.essence_str(),
-        "application/atom+xml",
-        "application/geo+json",
-        "application/x-javascript",
-        "application/ld+json",
-        "application/manifest+json",
-        "application/rdf+xml",
-        "application/rss+xml",
-        "application/vnd.ms-fontobject",
-        "application/wasm",
-        "application/x-web-app-manifest+json",
-        "application/xhtml+xml",
-        "application/xml",
-        "font/eot",
-        "font/otf",
-        "font/ttf",
-        "text/cache-manifest",
-        "text/calendar",
-        "text/markdown",
-        "text/vnd.rim.location.xloc",
-        "text/vtt",
-        "text/x-component",
-        "text/x-cross-domain-policy",
-    ]
-    .into_iter()
-    .collect();
+#[derive(Clone, Debug)]
+pub struct ResolvedPostProcessing {
+    pub encoding: ResolvedEncoding,
 }
+
+#[derive(Clone, Debug)]
+pub struct ResolvedEncoding {
+    pub mime_types: Result<HashSet<SmolStr>, parametrized::Error>,
+    pub brotli: bool,
+    pub gzip: bool,
+    pub deflate: bool,
+    pub min_size: u32,
+}
+
+// lazy_static! {
+//     pub static ref COMPRESSABLE_MIME_TYPES: HashSet<&'static str> = vec![
+//         mime::TEXT_CSS.essence_str(),
+//         mime::TEXT_CSV.essence_str(),
+//         mime::TEXT_HTML.essence_str(),
+//         mime::TEXT_JAVASCRIPT.essence_str(),
+//         mime::TEXT_PLAIN.essence_str(),
+//         mime::TEXT_STAR.essence_str(),
+//         mime::TEXT_TAB_SEPARATED_VALUES.essence_str(),
+//         mime::TEXT_VCARD.essence_str(),
+//         mime::TEXT_XML.essence_str(),
+//         mime::IMAGE_BMP.essence_str(),
+//         mime::IMAGE_SVG.essence_str(),
+//         mime::APPLICATION_JAVASCRIPT.essence_str(),
+//         mime::APPLICATION_JSON.essence_str(),
+//         "application/atom+xml",
+//         "application/geo+json",
+//         "application/x-javascript",
+//         "application/ld+json",
+//         "application/manifest+json",
+//         "application/rdf+xml",
+//         "application/rss+xml",
+//         "application/vnd.ms-fontobject",
+//         "application/wasm",
+//         "application/x-web-app-manifest+json",
+//         "application/xhtml+xml",
+//         "application/xml",
+//         "font/eot",
+//         "font/otf",
+//         "font/ttf",
+//         "text/cache-manifest",
+//         "text/calendar",
+//         "text/markdown",
+//         "text/vnd.rim.location.xloc",
+//         "text/vtt",
+//         "text/x-component",
+//         "text/x-cross-domain-policy",
+//     ]
+//     .into_iter()
+//     .collect();
+// }
 
 #[derive(Debug, Clone, Copy)]
 pub enum SupportedContentEncoding {
@@ -182,8 +198,19 @@ impl RequestsProcessor {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        encoding: Option<&ResolvedEncoding>,
         log_message: &mut LogMessage,
-    ) {
+    ) -> Result<(), anyhow::Error> {
+        let encoding = match encoding {
+            None => return Ok(()),
+            Some(encoding) => encoding,
+        };
+
+        match res.headers().typed_get::<typed_headers::ContentLength>() {
+            Ok(Some(content_length)) if content_length.0 >= encoding.min_size as u64 => {}
+            _ => return Ok(()),
+        };
+
         let maybe_accept_encoding = req
             .headers()
             .typed_get::<typed_headers::AcceptEncoding>()
@@ -195,15 +222,26 @@ impl RequestsProcessor {
             .ok()
             .flatten();
 
+        // FIXME: remove clone
+        let mime_types = encoding.mime_types.clone()?;
+
         let maybe_compression = if maybe_content_type.is_none() {
             None
-        } else if !COMPRESSABLE_MIME_TYPES.contains(maybe_content_type.unwrap().essence_str()) {
+        } else if !mime_types.contains(maybe_content_type.unwrap().essence_str()) {
             None
         } else if let Some(accept_encoding) = maybe_accept_encoding {
             accept_encoding
                 .iter()
                 .map(|qi| &qi.item)
                 .filter_map(|a| SupportedContentEncoding::try_from(a).ok())
+                .filter(|supported| {
+                    info!("supported encoding: {:?}", supported);
+                    match supported {
+                        SupportedContentEncoding::Brotli => encoding.brotli,
+                        SupportedContentEncoding::Deflate => encoding.deflate,
+                        SupportedContentEncoding::Gzip => encoding.gzip,
+                    }
+                })
                 .sorted_by(|&a, &b| a.weight().cmp(&b.weight()).reverse())
                 .next()
         } else {
@@ -211,7 +249,7 @@ impl RequestsProcessor {
         };
 
         let compression = match maybe_compression {
-            None => return,
+            None => return Ok(()),
             Some(compression) => compression,
         };
 
@@ -281,5 +319,7 @@ impl RequestsProcessor {
         };
 
         *res.body_mut() = Body::wrap_stream(processed_stream);
+
+        Ok(())
     }
 }

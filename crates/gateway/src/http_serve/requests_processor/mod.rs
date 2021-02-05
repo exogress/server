@@ -60,6 +60,9 @@ mod static_dir;
 
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
+use crate::http_serve::requests_processor::post_processing::{
+    ResolvedEncoding, ResolvedPostProcessing,
+};
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
@@ -81,10 +84,10 @@ pub struct RequestsProcessor {
     pub account_unique_id: AccountUniqueId,
     _stop_public_counter_tx: oneshot::Sender<()>,
     cache: Cache,
-    project_name: ProjectName,
+    pub project_name: ProjectName,
     url_prefix: MountPointBaseUrl,
-    mount_point_name: MountPointName,
-    xchacha20poly1305_secret_key: xchacha20poly1305::Key,
+    pub mount_point_name: MountPointName,
+    pub xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     max_pop_cache_size_bytes: Byte,
     gw_location: SmolStr,
     log_messages_tx: mpsc::Sender<LogMessage>,
@@ -134,60 +137,43 @@ impl RequestsProcessor {
             // create new response for each handler, avoid using dirty data from the previous handler
             *res = Response::new(Body::empty());
 
-            if req.method() == &Method::GET || req.method() == &Method::HEAD {
-                // eligible for caching
-                // lookup for cache response and respond if exists
+            let cached_response = self.cache.serve_from_cache(&self, &handler, &req).await;
 
-                let cached_response = self
-                    .cache
-                    .serve_from_cache(
-                        &self.account_unique_id,
-                        &self.project_name,
-                        &self.mount_point_name,
-                        &handler.handler_name,
-                        &handler.handler_checksum,
-                        req.headers(),
-                        req.method(),
-                        req.uri().path_and_query().expect("FIXME").as_str(),
-                        &self.xchacha20poly1305_secret_key,
-                    )
-                    .await;
+            match cached_response {
+                Ok(Some(resp_from_cache)) => {
+                    info!("found data in cache");
+                    if resp_from_cache.status().is_success()
+                        || resp_from_cache.status() == StatusCode::NOT_MODIFIED
+                    {
+                        // respond from the cache only if success response
+                        *res = resp_from_cache;
 
-                match cached_response {
-                    Ok(Some(resp)) => {
-                        info!("found data in cache");
-                        if resp.status().is_success() || resp.status() == StatusCode::NOT_MODIFIED {
-                            // respond from the cache only if success response
+                        res.headers_mut()
+                            .insert("x-exg-edge-cached", "1".parse().unwrap());
 
-                            *res = resp;
+                        if let Ok(Some(len)) =
+                            res.headers().typed_get::<typed_headers::ContentLength>()
+                        {
+                            log_message.content_len = Some(len.0);
+                            let byte = Byte::from(len.0);
 
-                            res.headers_mut()
-                                .insert("x-exg-edge-cached", "1".parse().unwrap());
-
-                            if let Ok(Some(len)) =
-                                res.headers().typed_get::<typed_headers::ContentLength>()
-                            {
-                                log_message.content_len = Some(len.0);
-                                let byte = Byte::from(len.0);
-
-                                info!(
-                                    "serve {} bytes from cache!",
-                                    byte.get_appropriate_unit(true)
-                                );
-                            }
-
-                            log_message.steps.push(ProcessingStep::ServedFromCache);
-
-                            return;
+                            info!(
+                                "serve {} bytes from cache!",
+                                byte.get_appropriate_unit(true)
+                            );
                         }
+
+                        log_message.steps.push(ProcessingStep::ServedFromCache);
+
+                        return;
                     }
-                    Ok(None) => {}
-                    Err(e) => {
-                        crate::statistics::CACHE_ERRORS
-                            .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
-                            .inc();
-                        warn!("Error reading data from cache: {}", e);
-                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    crate::statistics::CACHE_ERRORS
+                        .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
+                        .inc();
+                    warn!("Error reading data from cache: {}", e);
                 }
             }
 
@@ -256,7 +242,17 @@ impl RequestsProcessor {
                     warn!("Skipped image optimization due to the error: {}", e);
                 }
 
-                self.compress(req, res, log_message);
+                if let Err(e) = self.compress(
+                    req,
+                    res,
+                    handler
+                        .resolved_variant
+                        .post_processing()
+                        .map(|pp| &pp.encoding),
+                    log_message,
+                ) {
+                    warn!("Error compressing: {}", e);
+                }
 
                 res.headers_mut()
                     .insert("server", HeaderValue::from_static("exogress"));
@@ -333,6 +329,10 @@ impl RequestsProcessor {
         res: &mut Response<Body>,
         handler: &ResolvedHandler,
     ) {
+        if handler.resolved_variant.is_cache_enabled() != Some(true) {
+            return;
+        }
+
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
             return;
         };
@@ -534,7 +534,7 @@ impl From<config_core::Rebase> for Rebase {
 }
 
 #[derive(Debug)]
-enum ResolvedHandlerVariant {
+pub enum ResolvedHandlerVariant {
     Proxy(proxy::ResolvedProxy),
     StaticDir(static_dir::ResolvedStaticDir),
     Auth(auth::ResolvedAuth),
@@ -542,6 +542,32 @@ enum ResolvedHandlerVariant {
     GcsBucket(gcs_bucket::ResolvedGcsBucket),
     ApplicationFirewall(application_firewall::ResolvedApplicationFirewall),
     PassThrough(pass_through::ResolvedPassThrough),
+}
+
+impl ResolvedHandlerVariant {
+    pub fn is_cache_enabled(&self) -> Option<bool> {
+        match self {
+            ResolvedHandlerVariant::Proxy(proxy) => Some(proxy.is_cache_enabled),
+            ResolvedHandlerVariant::StaticDir(static_dir) => Some(static_dir.is_cache_enabled),
+            ResolvedHandlerVariant::Auth(_) => None,
+            ResolvedHandlerVariant::S3Bucket(s3) => Some(s3.is_cache_enabled),
+            ResolvedHandlerVariant::GcsBucket(gcs) => Some(gcs.is_cache_enabled),
+            ResolvedHandlerVariant::ApplicationFirewall(_) => None,
+            ResolvedHandlerVariant::PassThrough(_) => None,
+        }
+    }
+
+    pub fn post_processing(&self) -> Option<&ResolvedPostProcessing> {
+        match self {
+            ResolvedHandlerVariant::Proxy(proxy) => Some(&proxy.post_processing),
+            ResolvedHandlerVariant::StaticDir(static_dir) => Some(&static_dir.post_processing),
+            ResolvedHandlerVariant::Auth(_) => None,
+            ResolvedHandlerVariant::S3Bucket(s3) => Some(&s3.post_processing),
+            ResolvedHandlerVariant::GcsBucket(gcs) => Some(&gcs.post_processing),
+            ResolvedHandlerVariant::ApplicationFirewall(_) => None,
+            ResolvedHandlerVariant::PassThrough(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -895,13 +921,13 @@ impl ResolvedRule {
     }
 }
 
-struct ResolvedHandler {
-    handler_name: HandlerName,
-    handler_checksum: HandlerChecksum,
+pub struct ResolvedHandler {
+    pub(crate) handler_name: HandlerName,
+    pub(crate) handler_checksum: HandlerChecksum,
 
     config_name: Option<ConfigName>,
 
-    resolved_variant: ResolvedHandlerVariant,
+    pub(crate) resolved_variant: ResolvedHandlerVariant,
 
     rebase: Option<Rebase>,
 
@@ -1712,6 +1738,22 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::StaticDir(static_dir) => {
                                     ResolvedHandlerVariant::StaticDir(static_dir::ResolvedStaticDir {
+                                        is_cache_enabled: static_dir.cache.enabled,
+                                        post_processing: ResolvedPostProcessing {
+                                            encoding: ResolvedEncoding {
+                                                mime_types: static_dir
+                                                    .post_processing
+                                                    .encoding
+                                                    .mime_types
+                                                    .clone()
+                                                    .resolve(&params)
+                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),
+                                                brotli: static_dir.post_processing.encoding.brotli,
+                                                gzip: static_dir.post_processing.encoding.gzip,
+                                                deflate: static_dir.post_processing.encoding.deflate,
+                                                min_size: static_dir.post_processing.encoding.min_size,
+                                            },
+                                        },
                                         config: static_dir,
                                         handler_name: handler_name.clone(),
                                         instance_ids: {
@@ -1739,6 +1781,20 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::Proxy(proxy) => {
                                     ResolvedHandlerVariant::Proxy(proxy::ResolvedProxy {
+                                        post_processing: ResolvedPostProcessing {
+                                            encoding: ResolvedEncoding {
+                                                mime_types: proxy
+                                                    .post_processing
+                                                    .encoding
+                                                    .mime_types
+                                                    .clone()
+                                                    .resolve(&params)
+                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: proxy.post_processing.encoding.brotli,
+                                                gzip: proxy.post_processing.encoding.gzip,
+                                                deflate: proxy.post_processing.encoding.deflate,
+                                                min_size: proxy.post_processing.encoding.min_size,
+                                            },
+                                        },
                                         name: proxy.upstream.clone(),
                                         upstream: upstreams
                                             .as_ref()
@@ -1771,10 +1827,25 @@ impl RequestsProcessor {
                                         individual_hostname: individual_hostname.clone(),
                                         public_hostname: mount_point_base_url.host().into(),
                                         presence_client: presence_client.clone(),
+                                        is_cache_enabled: proxy.cache.enabled,
                                     })
                                 }
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {
                                     ResolvedHandlerVariant::S3Bucket(s3_bucket::ResolvedS3Bucket {
+                                        post_processing: ResolvedPostProcessing {
+                                            encoding: ResolvedEncoding {
+                                                mime_types: s3_bucket
+                                                    .post_processing
+                                                    .encoding
+                                                    .mime_types
+                                                    .clone()
+                                                    .resolve(&params)
+                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: s3_bucket.post_processing.encoding.brotli,
+                                                gzip: s3_bucket.post_processing.encoding.gzip,
+                                                deflate: s3_bucket.post_processing.encoding.deflate,
+                                                min_size: s3_bucket.post_processing.encoding.min_size,
+                                            },
+                                        },
                                         client: public_client.clone(),
                                         credentials:  s3_bucket
                                             .credentials
@@ -1795,10 +1866,25 @@ impl RequestsProcessor {
                                                     s3_bucket_cfg.region.to_string(),
                                                 ).expect("FIXME")
                                             }),
+                                        is_cache_enabled: s3_bucket.cache.enabled,
                                     })
                                 }
                                 ClientHandlerVariant::GcsBucket(gcs_bucket) => {
                                     ResolvedHandlerVariant::GcsBucket(gcs_bucket::ResolvedGcsBucket {
+                                        post_processing: ResolvedPostProcessing {
+                                            encoding: ResolvedEncoding {
+                                                mime_types: gcs_bucket
+                                                    .post_processing
+                                                    .encoding
+                                                    .mime_types
+                                                    .clone()
+                                                    .resolve(&params)
+                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: gcs_bucket.post_processing.encoding.brotli,
+                                                gzip: gcs_bucket.post_processing.encoding.gzip,
+                                                deflate: gcs_bucket.post_processing.encoding.deflate,
+                                                min_size: gcs_bucket.post_processing.encoding.min_size,
+                                            },
+                                        },
                                         client: public_client.clone(),
                                         bucket_name: gcs_bucket.bucket.resolve(&params),
                                         auth: gcs_bucket.credentials.resolve(&params).map(|creds| {
@@ -1809,6 +1895,7 @@ impl RequestsProcessor {
                                             ).expect("FIXME")
                                         }),
                                         token: Default::default(),
+                                        is_cache_enabled: gcs_bucket.cache.enabled,
                                     })
                                 }
                                 ClientHandlerVariant::ApplicationFirewall(app_firewall) => {
@@ -1985,7 +2072,7 @@ impl ResolvedStaticResponse {
         req: &Request<Body>,
         res: &mut Response<Body>,
         additional_data: HashMap<SmolStr, SmolStr>,
-        handler_best_language: &Option<LanguageTagBuf>,
+        _handler_best_language: &Option<LanguageTagBuf>,
         facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
         *res = Response::new(Body::empty());

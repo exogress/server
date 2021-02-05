@@ -21,6 +21,7 @@ use weighted_rs::{SmoothWeight, Weight};
 use super::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
+use crate::http_serve::requests_processor::post_processing::ResolvedPostProcessing;
 use exogress_common::common_utils::uri_ext::UriExt;
 use exogress_common::config_core::UpstreamDefinition;
 use futures::StreamExt;
@@ -38,6 +39,8 @@ pub struct ResolvedProxy {
     pub individual_hostname: SmolStr,
     pub public_hostname: SmolStr,
     pub presence_client: presence::Client,
+    pub is_cache_enabled: bool,
+    pub post_processing: ResolvedPostProcessing,
 }
 
 impl fmt::Debug for ResolvedProxy {

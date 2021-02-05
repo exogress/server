@@ -11,8 +11,6 @@ extern crate lazy_static;
 #[macro_use]
 extern crate prometheus;
 #[macro_use]
-extern crate maplit;
-#[macro_use]
 extern crate anyhow;
 
 use async_compression::futures::write::GzipDecoder;
