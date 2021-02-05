@@ -1828,6 +1828,7 @@ impl RequestsProcessor {
                                         public_hostname: mount_point_base_url.host().into(),
                                         presence_client: presence_client.clone(),
                                         is_cache_enabled: proxy.cache.enabled,
+                                        is_websockets_enabled: proxy.websockets,
                                     })
                                 }
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {

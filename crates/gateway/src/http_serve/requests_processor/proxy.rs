@@ -40,6 +40,7 @@ pub struct ResolvedProxy {
     pub public_hostname: SmolStr,
     pub presence_client: presence::Client,
     pub is_cache_enabled: bool,
+    pub is_websockets_enabled: bool,
     pub post_processing: ResolvedPostProcessing,
 }
 
@@ -108,7 +109,14 @@ impl ResolvedProxy {
                 .to_lowercase()
                 .contains("websocket")
             {
-                is_websocket = true;
+                if self.is_websockets_enabled {
+                    is_websocket = true;
+                } else {
+                    return HandlerInvocationResult::Exception {
+                        name: "proxy-error:websockets:disabled".parse().unwrap(),
+                        data: Default::default(),
+                    };
+                }
             }
         }
 
@@ -149,7 +157,6 @@ impl ResolvedProxy {
             match selected_instance_id {
                 Some(instance_id) => {
                     let proxy_res = if is_websocket {
-                        info!("proxy websocket");
                         let mut ws_req = http::Request::new(());
 
                         *ws_req.headers_mut() = proxy_req.headers().clone();
@@ -187,7 +194,7 @@ impl ResolvedProxy {
 
                         let (proxy_ws, mut res) = try_or_exception!(
                             tokio_tungstenite::client_async(ws_req, tcp).await,
-                            "proxy-error:websocket:connect-error"
+                            "proxy-error:websockets:connect-error"
                         );
 
                         let req_for_upgrade = mem::replace(req, Request::new(Body::empty()));
