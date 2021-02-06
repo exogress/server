@@ -61,7 +61,7 @@ mod static_dir;
 use crate::dbip::LocationAndIsp;
 use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
 use crate::http_serve::requests_processor::post_processing::{
-    ResolvedEncoding, ResolvedPostProcessing,
+    ResolvedEncoding, ResolvedImage, ResolvedPostProcessing,
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use exogress_common::common_utils::uri_ext::UriExt;
@@ -237,7 +237,17 @@ impl RequestsProcessor {
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
             Some(handler) => {
-                let optimize_result = self.optimize_image(req, res, log_message).await;
+                let optimize_result = self
+                    .optimize_image(
+                        req,
+                        res,
+                        handler
+                            .resolved_variant
+                            .post_processing()
+                            .map(|pp| &pp.image),
+                        log_message,
+                    )
+                    .await;
                 if let Err(e) = optimize_result {
                     warn!("Skipped image optimization due to the error: {}", e);
                 }
@@ -1753,6 +1763,10 @@ impl RequestsProcessor {
                                                 deflate: static_dir.post_processing.encoding.deflate,
                                                 min_size: static_dir.post_processing.encoding.min_size,
                                             },
+                                            image: ResolvedImage {
+                                                is_png: static_dir.post_processing.image.webp.enabled && static_dir.post_processing.image.webp.png,
+                                                is_jpeg: static_dir.post_processing.image.webp.enabled && static_dir.post_processing.image.webp.jpeg,
+                                            }
                                         },
                                         config: static_dir,
                                         handler_name: handler_name.clone(),
@@ -1794,6 +1808,10 @@ impl RequestsProcessor {
                                                 deflate: proxy.post_processing.encoding.deflate,
                                                 min_size: proxy.post_processing.encoding.min_size,
                                             },
+                                            image: ResolvedImage {
+                                                is_png: proxy.post_processing.image.webp.enabled && proxy.post_processing.image.webp.png,
+                                                is_jpeg: proxy.post_processing.image.webp.enabled && proxy.post_processing.image.webp.jpeg,
+                                            }
                                         },
                                         name: proxy.upstream.clone(),
                                         upstream: upstreams
@@ -1846,6 +1864,10 @@ impl RequestsProcessor {
                                                 deflate: s3_bucket.post_processing.encoding.deflate,
                                                 min_size: s3_bucket.post_processing.encoding.min_size,
                                             },
+                                            image: ResolvedImage {
+                                                is_png: s3_bucket.post_processing.image.webp.enabled && s3_bucket.post_processing.image.webp.png,
+                                                is_jpeg: s3_bucket.post_processing.image.webp.enabled && s3_bucket.post_processing.image.webp.jpeg,
+                                            }
                                         },
                                         client: public_client.clone(),
                                         credentials:  s3_bucket
@@ -1885,6 +1907,10 @@ impl RequestsProcessor {
                                                 deflate: gcs_bucket.post_processing.encoding.deflate,
                                                 min_size: gcs_bucket.post_processing.encoding.min_size,
                                             },
+                                            image: ResolvedImage {
+                                                is_png: gcs_bucket.post_processing.image.webp.enabled && gcs_bucket.post_processing.image.webp.png,
+                                                is_jpeg: gcs_bucket.post_processing.image.webp.enabled && gcs_bucket.post_processing.image.webp.jpeg,
+                                            }
                                         },
                                         client: public_client.clone(),
                                         bucket_name: gcs_bucket.bucket.resolve(&params),

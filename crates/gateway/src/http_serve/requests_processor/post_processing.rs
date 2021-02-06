@@ -24,6 +24,7 @@ static IMAGE_MAGIC: Once = Once::new();
 #[derive(Clone, Debug)]
 pub struct ResolvedPostProcessing {
     pub encoding: ResolvedEncoding,
+    pub image: ResolvedImage,
 }
 
 #[derive(Clone, Debug)]
@@ -32,8 +33,13 @@ pub struct ResolvedEncoding {
     pub brotli: bool,
     pub gzip: bool,
     pub deflate: bool,
-    #[serde(rename = "min-size")]
     pub min_size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedImage {
+    pub is_png: bool,
+    pub is_jpeg: bool,
 }
 
 // lazy_static! {
@@ -113,8 +119,13 @@ impl RequestsProcessor {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        image_post_processing_config: Option<&ResolvedImage>,
         log_message: &mut LogMessage,
     ) -> Result<(), anyhow::Error> {
+        let image_post_processing_config = match image_post_processing_config {
+            None => return Ok(()),
+            Some(image_post_processing_config) => image_post_processing_config,
+        };
         let is_webp_supported = req
             .headers()
             .typed_get::<typed_headers::Accept>()?
@@ -131,7 +142,9 @@ impl RequestsProcessor {
             .ok_or_else(|| anyhow!("no content-type"))?
             .to_str()?
             .parse()?;
-        if content_type == mime::IMAGE_JPEG || content_type == mime::IMAGE_PNG {
+        if (content_type == mime::IMAGE_JPEG && image_post_processing_config.is_jpeg)
+            || (content_type == mime::IMAGE_PNG && image_post_processing_config.is_png)
+        {
             IMAGE_MAGIC.call_once(|| {
                 magick_wand_genesis();
             });
