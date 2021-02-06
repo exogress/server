@@ -32,6 +32,7 @@ pub struct ResolvedEncoding {
     pub brotli: bool,
     pub gzip: bool,
     pub deflate: bool,
+    #[serde(rename = "min-size")]
     pub min_size: u32,
 }
 
