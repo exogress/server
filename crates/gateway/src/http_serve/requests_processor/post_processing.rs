@@ -1,20 +1,24 @@
 use crate::http_serve::RequestsProcessor;
-use exogress_common::config_core::parametrized;
+use exogress_common::config_core::referenced;
 use exogress_server_common::logging::{
     CompressProcessingStep, LogMessage, OptimizeProcessingStep, ProcessingStep,
 };
 use futures::TryStreamExt;
 use hashbrown::HashSet;
-use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use http::{HeaderValue, Request, Response};
+use http::{
+    header::{CONTENT_LENGTH, CONTENT_TYPE},
+    HeaderValue, Request, Response,
+};
 use hyper::Body;
 use itertools::Itertools;
 use magick_rust::{magick_wand_genesis, MagickWand};
 use smol_str::SmolStr;
-use std::convert::TryFrom;
-use std::str::FromStr;
-use std::sync::{Arc, Once};
-use std::{io, mem};
+use std::{
+    convert::TryFrom,
+    io, mem,
+    str::FromStr,
+    sync::{Arc, Once},
+};
 use tokio::task;
 use tokio_util::either::Either;
 use typed_headers::{ContentCoding, ContentType, HeaderMapExt};
@@ -29,7 +33,7 @@ pub struct ResolvedPostProcessing {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedEncoding {
-    pub mime_types: Result<HashSet<SmolStr>, parametrized::Error>,
+    pub mime_types: Result<HashSet<SmolStr>, referenced::Error>,
     pub brotli: bool,
     pub gzip: bool,
     pub deflate: bool,

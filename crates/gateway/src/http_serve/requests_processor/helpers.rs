@@ -1,8 +1,10 @@
-use http::header::{
-    HeaderName, ACCEPT_ENCODING, CONNECTION, FORWARDED, HOST, PROXY_AUTHENTICATE,
-    PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
+use http::{
+    header::{
+        HeaderName, ACCEPT_ENCODING, CONNECTION, FORWARDED, HOST, PROXY_AUTHENTICATE,
+        PROXY_AUTHORIZATION, TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
+    },
+    HeaderMap, Request, Response,
 };
-use http::{HeaderMap, Request, Response};
 use hyper::Body;
 use std::net::SocketAddr;
 

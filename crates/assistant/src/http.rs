@@ -1,23 +1,22 @@
-use crate::elasticsearch::ElasticsearchClient;
-use crate::reporting::MongoDbClient;
-use crate::termination::StopReason;
-use exogress_common::common_utils::backoff::Backoff;
-use exogress_server_common::assistant::{
-    GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
+use crate::{
+    elasticsearch::ElasticsearchClient, reporting::MongoDbClient, termination::StopReason,
 };
-use exogress_server_common::logging::LogMessage;
-use futures::channel::mpsc;
-use futures::pin_mut;
-use futures::{FutureExt, SinkExt, StreamExt};
+use exogress_common::common_utils::backoff::Backoff;
+use exogress_server_common::{
+    assistant::{
+        GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
+    },
+    logging::LogMessage,
+};
+use futures::{channel::mpsc, pin_mut, FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
 use redis::AsyncCommands;
-use std::convert::TryInto;
-use std::io;
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::{convert::TryInto, io, net::SocketAddr, path::PathBuf};
 use stop_handle::{StopHandle, StopWait};
-use tokio::io::AsyncReadExt;
-use tokio::time::{sleep, Duration};
+use tokio::{
+    io::AsyncReadExt,
+    time::{sleep, Duration},
+};
 use tracing_futures::Instrument;
 use warp::Filter;
 

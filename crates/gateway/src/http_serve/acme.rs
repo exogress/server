@@ -1,10 +1,6 @@
-use http::header::CONTENT_TYPE;
-use http::Response;
-use std::io;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use http::{header::CONTENT_TYPE, Response};
+use std::{io, net::SocketAddr, path::PathBuf};
+use tokio::{fs::File, io::AsyncReadExt};
 use warp::Filter;
 
 pub async fn acme_server(

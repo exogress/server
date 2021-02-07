@@ -1,29 +1,33 @@
-use crate::clients::{ClientTunnels, HttpConnector, TcpConnector};
-use crate::http_serve::requests_processor::HandlerInvocationResult;
+use crate::{
+    clients::{ClientTunnels, HttpConnector, TcpConnector},
+    http_serve::requests_processor::HandlerInvocationResult,
+};
 use anyhow::Context;
 use core::{fmt, mem};
-use exogress_common::entities::{ConfigId, InstanceId, Upstream};
-use exogress_common::tunnel::{Compression, ConnectTarget};
-use exogress_server_common::logging::{
-    HandlerProcessingStep, LogMessage, ProcessingStep, ProxyHandlerLogMessage,
+use exogress_common::{
+    entities::{ConfigId, InstanceId, Upstream},
+    tunnel::{Compression, ConnectTarget},
 };
-use exogress_server_common::presence;
+use exogress_server_common::{
+    logging::{HandlerProcessingStep, LogMessage, ProcessingStep, ProxyHandlerLogMessage},
+    presence,
+};
 use futures::SinkExt;
-use http::header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
-use http::{HeaderMap, Request, Response};
+use http::{
+    header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE},
+    HeaderMap, Request, Response,
+};
 use hyper::Body;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
-use std::convert::TryInto;
-use std::net::SocketAddr;
+use std::{convert::TryInto, net::SocketAddr};
 use weighted_rs::{SmoothWeight, Weight};
 
 use super::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
 use crate::http_serve::requests_processor::post_processing::ResolvedPostProcessing;
-use exogress_common::common_utils::uri_ext::UriExt;
-use exogress_common::config_core::UpstreamDefinition;
+use exogress_common::{common_utils::uri_ext::UriExt, config_core::UpstreamDefinition};
 use futures::StreamExt;
 use langtag::LanguageTagBuf;
 use rand::{thread_rng, RngCore};

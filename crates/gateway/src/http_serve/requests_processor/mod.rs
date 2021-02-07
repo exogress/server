@@ -1,31 +1,42 @@
-use crate::cache::{Cache, HandlerChecksum};
-use crate::clients::traffic_counter::{RecordedTrafficStatistics, TrafficCounters};
-use crate::clients::ClientTunnels;
-use crate::http_serve::auth::JwtEcdsa;
-use crate::http_serve::requests_processor::modifications::{Replaced, ResolvedPathSegmentsModify};
-use crate::mime_helpers::{is_mime_match, ordered_by_quality};
-use crate::public_hyper_client::MeteredHttpsConnector;
-use crate::rules_counter::AccountCounters;
-use crate::webapp::{ConfigData, ConfigsResponse};
+use crate::{
+    cache::{Cache, HandlerChecksum},
+    clients::{
+        traffic_counter::{RecordedTrafficStatistics, TrafficCounters},
+        ClientTunnels,
+    },
+    http_serve::{
+        auth::JwtEcdsa,
+        requests_processor::modifications::{Replaced, ResolvedPathSegmentsModify},
+    },
+    mime_helpers::{is_mime_match, ordered_by_quality},
+    public_hyper_client::MeteredHttpsConnector,
+    rules_counter::AccountCounters,
+    webapp::{ConfigData, ConfigsResponse},
+};
 use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use core::mem;
-use exogress_common::config_core::{
-    self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
-    MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue, MatchingPath,
-    MethodMatcher, ModifyHeaders, OnResponse, RescueItem, ResponseBody, Rule, StaticResponse,
-    StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
+use exogress_common::{
+    config_core::{
+        self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant,
+        Exception, MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue,
+        MatchQueryValue, MatchingPath, MethodMatcher, ModifyHeaders, OnResponse, RescueItem,
+        ResponseBody, Rule, StaticResponse, StatusCodeRange, TemplateEngine,
+        TrailingSlashFilterRule, UrlPathSegment,
+    },
+    entities::{
+        AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName,
+        ProjectName, StaticResponseName,
+    },
 };
-use exogress_common::entities::{
-    AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
-    StaticResponseName,
+use exogress_server_common::{
+    logging::{ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep},
+    presence,
 };
-use exogress_server_common::logging::{
-    ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep,
+use futures::{
+    channel::{mpsc, oneshot},
+    SinkExt, StreamExt,
 };
-use exogress_server_common::presence;
-use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, StreamExt};
 use handlebars::Handlebars;
 use hashbrown::HashMap;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
@@ -35,11 +46,13 @@ use parking_lot::Mutex;
 use serde_json::json;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
-use std::collections::BTreeMap;
-use std::convert::{TryFrom, TryInto};
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::time::Instant;
+use std::{
+    collections::BTreeMap,
+    convert::{TryFrom, TryInto},
+    net::SocketAddr,
+    str::FromStr,
+    time::Instant,
+};
 use tokio::io::AsyncWriteExt;
 use trust_dns_resolver::TokioAsyncResolver;
 use typed_headers::{Accept, ContentType, HeaderMapExt};
@@ -57,13 +70,17 @@ mod modifications;
 mod pass_through;
 mod post_processing;
 mod proxy;
+pub mod refinable;
 mod s3_bucket;
 mod static_dir;
 
-use crate::dbip::LocationAndIsp;
-use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
-use crate::http_serve::requests_processor::post_processing::{
-    ResolvedEncoding, ResolvedImage, ResolvedPostProcessing,
+use crate::{
+    dbip::LocationAndIsp,
+    http_serve::requests_processor::{
+        pass_through::ResolvedPassThrough,
+        post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
+        refinable::{RefinableSet, Scope},
+    },
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use exogress_common::common_utils::uri_ext::UriExt;
@@ -1869,9 +1886,11 @@ impl RequestsProcessor {
             stop_public_counter_rx,
         ));
 
+        let refinable = resp.refinable();
+
         let grouped = resp.configs.iter().group_by(|item| &item.config_name);
 
-        let project_rescue = resp.project_config.rescue;
+        let project_rescue = resp.project_config.refinable.rescue;
         let jwt_ecdsa = JwtEcdsa {
             private_key: resp.jwt_ecdsa.private_key.into(),
             public_key: resp.jwt_ecdsa.public_key.into(),
@@ -1907,8 +1926,8 @@ impl RequestsProcessor {
 
                 let upstreams = &config.upstreams;
 
-                let client_rescue = config.rescue.clone();
-                let client_config_static_responses = config.static_responses.clone();
+                let client_rescue = config.refinable.rescue.clone();
+                let client_config_static_responses = config.refinable.static_responses.clone();
 
                 config
                     .mount_points
@@ -1942,14 +1961,15 @@ impl RequestsProcessor {
             .flatten()
             .collect::<Vec<_>>();
 
-        if grouped_mount_points.is_empty() {
-            return Err(anyhow!("no mount points returned"));
-        }
+        let mount_point_name = grouped_mount_points
+            .iter()
+            .next()
+            .ok_or_else(|| anyhow!("no mount points returned"))?
+            .0
+            .clone();
 
-        let mount_point_name = grouped_mount_points.iter().next().expect("FIXME").0.clone();
-
-        let project_static_responses = resp.project_config.static_responses.clone();
-
+        // let project_static_responses = resp.project_config.refinable.static_responses.clone();
+        //
         let mut merged_resolved_handlers = vec![];
 
         for (
@@ -1965,7 +1985,7 @@ impl RequestsProcessor {
             ),
         ) in grouped_mount_points.into_iter()
         {
-            let mp_rescue = mp.rescue.clone();
+            let mp_rescue = mp.refinable.rescue.clone();
 
             shadow_clone!(instance_ids);
             shadow_clone!(project_rescue);
@@ -1985,7 +2005,7 @@ impl RequestsProcessor {
             shadow_clone!(traffic_counters);
             shadow_clone!(presence_client);
             shadow_clone!(params);
-            shadow_clone!(project_static_responses);
+            // shadow_clone!(project_static_responses);
             shadow_clone!(active_profile);
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
@@ -1995,8 +2015,8 @@ impl RequestsProcessor {
                 recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
             });
 
-            let mp_static_responses = mp.static_responses;
-
+            //     let mp_static_responses = mp.refinable.static_responses;
+            //
             let mut r = mp.handlers
                 .into_iter()
                 .filter(|(_, handler)| {
@@ -2007,7 +2027,6 @@ impl RequestsProcessor {
                     }
                 })
                 .map({
-                    shadow_clone!(project_static_responses);
                     shadow_clone!(active_profile);
 
                     move |(handler_name, handler)| {
@@ -2017,25 +2036,25 @@ impl RequestsProcessor {
                             .map(|r| r.replace_base_path.clone())
                             .unwrap_or_default();
 
-                        let mut available_static_responses = HashMap::new();
-
-                        // Add all project level static-response to mount-point accessible
-                        for (k, v) in &project_static_responses {
-                            available_static_responses.insert(k.clone(), v.clone());
-                        }
-
-                        // Add all config level static-response to mount-point accessible
-                        if let Some(resps) = &client_config_static_responses {
-                            for (k, v) in resps {
-                                available_static_responses.insert(k.clone(), v.clone());
-                            }
-                        }
-
-                        // Add all mount-point static-responses
-                        for (k, v) in &mp_static_responses {
-                            available_static_responses.insert(k.clone(), v.clone());
-                        }
-
+        //                 let mut available_static_responses = HashMap::new();
+        //
+        //                 // Add all project level static-response to mount-point accessible
+        //                 for (k, v) in &project_static_responses {
+        //                     available_static_responses.insert(k.clone(), v.clone());
+        //                 }
+        //
+        //                 // Add all config level static-response to mount-point accessible
+        //                 if let Some(resps) = &client_config_static_responses {
+        //                     for (k, v) in resps {
+        //                         available_static_responses.insert(k.clone(), v.clone());
+        //                     }
+        //                 }
+        //
+        //                 // Add all mount-point static-responses
+        //                 for (k, v) in &mp_static_responses {
+        //                     available_static_responses.insert(k.clone(), v.clone());
+        //                 }
+        //
                         Some(ResolvedHandler {
                             handler_name: handler_name.clone(),
                             handler_checksum: {
@@ -2419,7 +2438,7 @@ impl ResolvedStaticResponse {
                     .iter()
                     .filter_map(|resp_candidate| {
                         Some((
-                            resp_candidate.content_type.as_str().parse().ok()?,
+                            resp_candidate.content_type.essence_str().parse().ok()?,
                             resp_candidate,
                         ))
                     })

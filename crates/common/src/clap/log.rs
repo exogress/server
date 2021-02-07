@@ -1,9 +1,11 @@
 use anyhow::anyhow;
 use clap::{Arg, ArgMatches};
-use std::future::Future;
-use std::io::{Cursor, Seek, SeekFrom};
-use std::net::IpAddr;
-use std::sync::Arc;
+use std::{
+    future::Future,
+    io::{Cursor, Seek, SeekFrom},
+    net::IpAddr,
+    sync::Arc,
+};
 use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys};
 use tracing::Level;
 use tracing_gelf::Logger;

@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
@@ -10,13 +9,10 @@ use exogress_common::tunnel::{Compression, ConnectTarget, Connector, TunneledCon
 
 use crate::clients::signaling::request_connection;
 use exogress_common::entities::{ConfigId, InstanceId, TunnelId};
-use futures::channel::oneshot;
-use futures::future::BoxFuture;
-use futures::FutureExt;
+use futures::{channel::oneshot, future::BoxFuture, FutureExt};
 use http::Uri;
 use smol_str::SmolStr;
-use std::task;
-use std::task::Poll;
+use std::{task, task::Poll};
 use url::Url;
 use weighted_rs::{SmoothWeight, Weight};
 

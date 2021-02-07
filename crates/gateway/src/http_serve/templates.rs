@@ -1,13 +1,15 @@
-use crate::http_serve::auth::github::GithubOauth2Client;
-use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::http_serve::auth::JwtEcdsa;
+use crate::http_serve::auth::{github::GithubOauth2Client, google::GoogleOauth2Client, JwtEcdsa};
 use cookie::Cookie;
-use exogress_common::config_core::{parametrized, AuthProvider};
-use exogress_common::entities::HandlerName;
+use exogress_common::{
+    config_core::{referenced, AuthProvider},
+    entities::HandlerName,
+};
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use handlebars::Handlebars;
-use http::header::{LOCATION, SET_COOKIE};
-use http::{Response, StatusCode};
+use http::{
+    header::{LOCATION, SET_COOKIE},
+    Response, StatusCode,
+};
 use hyper::Body;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use serde_json::json;
@@ -29,7 +31,7 @@ fn render(
     handler_name: &HandlerName,
     auth: &[(
         AuthProvider,
-        Result<parametrized::acl::Acl, parametrized::Error>,
+        Result<referenced::acl::Acl, referenced::Error>,
     )],
 ) -> String {
     let handlebars = Handlebars::new();
@@ -81,7 +83,7 @@ pub async fn respond_with_login(
     handler_name: &HandlerName,
     auth: &[(
         AuthProvider,
-        Result<parametrized::acl::Acl, parametrized::Error>,
+        Result<referenced::acl::Acl, referenced::Error>,
     )],
     jwt_ecdsa: &JwtEcdsa,
     google_oauth2_client: &GoogleOauth2Client,

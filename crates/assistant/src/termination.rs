@@ -1,6 +1,5 @@
 use exogress_common::common_utils::termination::StopSignal;
-use std::fmt;
-use std::panic::UnwindSafe;
+use std::{fmt, panic::UnwindSafe};
 
 #[derive(Debug, Clone)]
 pub enum StopReason {

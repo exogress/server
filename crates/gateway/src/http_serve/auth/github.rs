@@ -7,11 +7,9 @@ use crate::http_serve::auth::{
 use exogress_common::entities::HandlerName;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use hashbrown::HashMap;
-use oauth2::basic::BasicClient;
-use oauth2::reqwest::async_http_client;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope,
-    TokenResponse, TokenUrl,
+    basic::BasicClient, reqwest::async_http_client, AuthUrl, AuthorizationCode, ClientId,
+    ClientSecret, CsrfToken, RedirectUrl, Scope, TokenResponse, TokenUrl,
 };
 use url::Url;
 

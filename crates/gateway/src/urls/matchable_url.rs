@@ -1,6 +1,5 @@
 use exogress_server_common::url_prefix::MountPointBaseUrl;
-use std::fmt;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 use url::Url;
 
 #[derive(Debug, Clone, Eq, PartialEq)]

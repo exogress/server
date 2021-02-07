@@ -1,38 +1,55 @@
-use std::fs::File;
-use std::io::{self, BufReader};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    fs::File,
+    io::{self, BufReader},
+    net::SocketAddr,
+    sync::Arc,
+    time::Duration,
+};
 
-use hashbrown::hash_map::Entry;
-use hashbrown::HashMap;
-use hyper::header::{HeaderValue, UPGRADE};
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server, StatusCode, Version};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{sleep, timeout};
-use tokio_rustls::rustls::internal::pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
-use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig, Session};
-use tokio_rustls::{server::TlsStream, TlsAcceptor};
+use hashbrown::{hash_map::Entry, HashMap};
+use hyper::{
+    header::{HeaderValue, UPGRADE},
+    service::{make_service_fn, service_fn},
+    Body, Request, Response, Server, StatusCode, Version,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    time::{sleep, timeout},
+};
+use tokio_rustls::{
+    rustls::{
+        internal::pemfile::{certs, pkcs8_private_keys, rsa_private_keys},
+        Certificate, NoClientAuth, PrivateKey, ServerConfig, Session,
+    },
+    server::TlsStream,
+    TlsAcceptor,
+};
 
 use exogress_common::tunnel::{
     server_connection, server_framed, TunnelHello, TunnelHelloResponse, ALPN_PROTOCOL,
 };
 
-use crate::clients::registry::{
-    ClientTunnels, ConnectedTunnel, InstanceConnections, InstanceConnector, TunnelConnectionState,
+use crate::{
+    clients::{
+        registry::{
+            ClientTunnels, ConnectedTunnel, InstanceConnections, InstanceConnector,
+            TunnelConnectionState,
+        },
+        traffic_counter::{RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters},
+    },
+    webapp,
 };
-use crate::clients::traffic_counter::{
-    RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
-};
-use crate::webapp;
 use exogress_common::entities::{ConfigId, TunnelId};
-use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, Stream};
-use std::convert::TryInto;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use futures::{
+    channel::{mpsc, oneshot},
+    SinkExt, Stream,
+};
+use std::{
+    convert::TryInto,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 fn load_certs(path: &str) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))

@@ -21,15 +21,16 @@ mod statistics;
 mod termination;
 mod tls;
 
-use crate::balancer::ShardedGateways;
-use crate::termination::StopReason;
+use crate::{balancer::ShardedGateways, termination::StopReason};
 use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use forwarder::ForwarderBuilder;
 use mimalloc::MiMalloc;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};

@@ -1,5 +1,4 @@
-use crate::logging::LogMessage;
-use crate::url_prefix::MountPointBaseUrl;
+use crate::{logging::LogMessage, url_prefix::MountPointBaseUrl};
 use chrono::serde::ts_milliseconds;
 use exogress_common::entities::{AccountUniqueId, ConfigId};
 use sentry::types::{DateTime, Utc};

@@ -1,19 +1,23 @@
 use crate::clients::traffic_counter::{TrafficCountedStream, TrafficCounters};
-use futures::future::BoxFuture;
-use futures::task::{Context, Poll};
+use futures::{
+    future::BoxFuture,
+    task::{Context, Poll},
+};
 use http::Uri;
 use prometheus::IntCounter;
-use rand::seq::IteratorRandom;
-use rand::thread_rng;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task;
-use tokio::io;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpStream;
-use tokio_rustls::rustls::{ClientConfig, Session};
-use tokio_rustls::webpki::{DNSNameRef, InvalidDNSNameError};
-use tokio_rustls::{client::TlsStream, TlsConnector};
+use rand::{seq::IteratorRandom, thread_rng};
+use std::{pin::Pin, sync::Arc, task};
+use tokio::{
+    io,
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpStream,
+};
+use tokio_rustls::{
+    client::TlsStream,
+    rustls::{ClientConfig, Session},
+    webpki::{DNSNameRef, InvalidDNSNameError},
+    TlsConnector,
+};
 use trust_dns_resolver::TokioAsyncResolver;
 
 pub struct HyperUsableConnection {

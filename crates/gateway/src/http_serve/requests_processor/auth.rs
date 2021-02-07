@@ -1,21 +1,33 @@
-use crate::http_serve::auth::github::GithubOauth2Client;
-use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::http_serve::auth::{retrieve_assistant_key, AuthFinalizer, JwtEcdsa, Oauth2Provider};
-use crate::http_serve::requests_processor::HandlerInvocationResult;
-use crate::http_serve::templates::respond_with_login;
+use crate::http_serve::{
+    auth::{
+        github::GithubOauth2Client, google::GoogleOauth2Client, retrieve_assistant_key,
+        AuthFinalizer, JwtEcdsa, Oauth2Provider,
+    },
+    requests_processor::HandlerInvocationResult,
+    templates::respond_with_login,
+};
 use chrono::Utc;
 use cookie::Cookie;
-use exogress_common::common_utils::uri_ext::UriExt;
-use exogress_common::config_core::parametrized::acl::{Acl, AclEntry};
-use exogress_common::config_core::{parametrized, AuthProvider};
-use exogress_common::entities::HandlerName;
-use exogress_server_common::logging::{
-    AclAction, AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
+use exogress_common::{
+    common_utils::uri_ext::UriExt,
+    config_core::{
+        referenced,
+        referenced::acl::{Acl, AclEntry},
+        AuthProvider,
+    },
+    entities::HandlerName,
 };
-use exogress_server_common::url_prefix::MountPointBaseUrl;
+use exogress_server_common::{
+    logging::{
+        AclAction, AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
+    },
+    url_prefix::MountPointBaseUrl,
+};
 use globset::Glob;
-use http::header::{CACHE_CONTROL, COOKIE, LOCATION, SET_COOKIE};
-use http::{Request, Response, StatusCode};
+use http::{
+    header::{CACHE_CONTROL, COOKIE, LOCATION, SET_COOKIE},
+    Request, Response, StatusCode,
+};
 use hyper::Body;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use langtag::LanguageTagBuf;
@@ -33,7 +45,7 @@ struct Claims {
 
 #[derive(Debug)]
 pub struct ResolvedAuth {
-    pub providers: Vec<(AuthProvider, Result<Acl, parametrized::Error>)>,
+    pub providers: Vec<(AuthProvider, Result<Acl, referenced::Error>)>,
     pub handler_name: HandlerName,
     pub mount_point_base_url: MountPointBaseUrl,
     pub jwt_ecdsa: JwtEcdsa,
@@ -83,7 +95,7 @@ impl ResolvedAuth {
     fn auth_definition(
         &self,
         used_provider: &Oauth2Provider,
-    ) -> Option<&(AuthProvider, Result<Acl, parametrized::Error>)> {
+    ) -> Option<&(AuthProvider, Result<Acl, referenced::Error>)> {
         self.providers
             .iter()
             .find(|provider| match (&provider.0, used_provider) {

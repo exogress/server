@@ -2,19 +2,27 @@
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
 use exogress_common::entities::AccountUniqueId;
-use futures::channel::{mpsc, oneshot};
-use futures::{ready, SinkExt};
+use futures::{
+    channel::{mpsc, oneshot},
+    ready, SinkExt,
+};
 use parking_lot::Mutex;
 use prometheus::IntCounter;
-use std::convert::TryInto;
-use std::io;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::task::Context;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::macros::support::Poll;
-use tokio::time::{sleep, Duration};
+use std::{
+    convert::TryInto,
+    io,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    task::Context,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    macros::support::Poll,
+    time::{sleep, Duration},
+};
 
 pub struct TrafficCounters {
     account_unique_id: AccountUniqueId,

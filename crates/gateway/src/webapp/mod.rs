@@ -1,24 +1,30 @@
-use crate::cache::Cache;
-use crate::clients::traffic_counter::RecordedTrafficStatistics;
-use crate::clients::ClientTunnels;
-use crate::http_serve::{auth, RequestsProcessor};
-use crate::registry::RequestsProcessorsRegistry;
-use crate::rules_counter::AccountCounters;
-use crate::urls::matchable_url::MatchableUrl;
-use byte_unit::Byte;
-use chrono::serde::ts_milliseconds;
-use chrono::{DateTime, Utc};
-use dashmap::DashMap;
-use exogress_common::common_utils::jwt::{jwt_token, JwtError};
-use exogress_common::config_core::parametrized::Parameter;
-use exogress_common::config_core::{ClientConfig, ClientConfigRevision, ProjectConfig};
-use exogress_common::entities::{
-    AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
-    ParameterName, ProfileName, ProjectName, Upstream,
+use crate::{
+    cache::Cache,
+    clients::{traffic_counter::RecordedTrafficStatistics, ClientTunnels},
+    http_serve::{
+        auth,
+        refinable::{RefinableSet, Scope},
+        RequestsProcessor,
+    },
+    registry::RequestsProcessorsRegistry,
+    rules_counter::AccountCounters,
+    urls::matchable_url::MatchableUrl,
 };
-use exogress_server_common::logging::LogMessage;
-use exogress_server_common::presence;
-use exogress_server_common::url_prefix::MountPointBaseUrl;
+use byte_unit::Byte;
+use chrono::{serde::ts_milliseconds, DateTime, Utc};
+use dashmap::DashMap;
+use exogress_common::{
+    common_utils::jwt::{jwt_token, JwtError},
+    config_core::{
+        referenced::Parameter, refinable::Refinable, ClientConfig, ClientConfigRevision,
+        ProjectConfig,
+    },
+    entities::{
+        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
+        ParameterName, ProfileName, ProjectName, Upstream,
+    },
+};
+use exogress_server_common::{logging::LogMessage, presence, url_prefix::MountPointBaseUrl};
 use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
@@ -30,8 +36,7 @@ use percent_encoding::NON_ALPHANUMERIC;
 use reqwest::Identity;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::time::timeout;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
@@ -205,6 +210,112 @@ pub struct ConfigsResponse {
     pub xchacha20poly1305_secret_key: String,
     pub max_pop_cache_size_bytes: Byte,
     pub params: HashMap<ParameterName, Parameter>,
+}
+
+impl ConfigsResponse {
+    pub(crate) fn refinable(&self) -> RefinableSet {
+        let mut refinable_set = RefinableSet::new();
+
+        refinable_set
+            .add(Scope::ProjectConfig, &self.project_config.refinable)
+            .unwrap();
+        for (mount_point_name, mount) in &self.project_config.mount_points {
+            refinable_set
+                .add(
+                    Scope::ProjectMount {
+                        mount_point: mount_point_name.clone(),
+                    },
+                    &mount.refinable,
+                )
+                .unwrap();
+            for (handler_name, handler) in &mount.handlers {
+                refinable_set
+                    .add(
+                        Scope::ProjectHandler {
+                            mount_point: mount_point_name.clone(),
+                            handler: handler_name.clone(),
+                        },
+                        &handler.refinable,
+                    )
+                    .unwrap();
+                for (rule_num, rule) in handler.rules.iter().enumerate() {
+                    if let Some(rescue) = rule.action.rescue() {
+                        refinable_set
+                            .add(
+                                Scope::ProjectRule {
+                                    mount_point: mount_point_name.clone(),
+                                    handler: handler_name.clone(),
+                                    rule_num,
+                                },
+                                &Refinable {
+                                    static_responses: Default::default(),
+                                    rescue: rescue.clone(),
+                                },
+                            )
+                            .unwrap();
+                    }
+                }
+            }
+        }
+
+        for config_data in &self.configs {
+            refinable_set
+                .add(
+                    Scope::ClientConfig {
+                        config: config_data.config_name.clone(),
+                        revision: config_data.config.revision.clone(),
+                    },
+                    &config_data.config.refinable,
+                )
+                .unwrap();
+            for (mount_point_name, mount) in &config_data.config.mount_points {
+                refinable_set
+                    .add(
+                        Scope::ClientMount {
+                            config: config_data.config_name.clone(),
+                            revision: config_data.config.revision.clone(),
+                            mount_point: mount_point_name.clone(),
+                        },
+                        &mount.refinable,
+                    )
+                    .unwrap();
+                for (handler_name, handler) in &mount.handlers {
+                    refinable_set
+                        .add(
+                            Scope::ClientHandler {
+                                config: config_data.config_name.clone(),
+                                revision: config_data.config.revision.clone(),
+                                mount_point: mount_point_name.clone(),
+                                handler: handler_name.clone(),
+                            },
+                            &handler.refinable,
+                        )
+                        .unwrap();
+                    for (rule_num, rule) in handler.rules.iter().enumerate() {
+                        if let Some(rescue) = rule.action.rescue() {
+                            refinable_set
+                                .add(
+                                    Scope::ClientRule {
+                                        config: config_data.config_name.clone(),
+                                        revision: config_data.config.revision.clone(),
+                                        mount_point: mount_point_name.clone(),
+                                        handler: handler_name.clone(),
+                                        rule_num,
+                                    },
+                                    &Refinable {
+                                        static_responses: Default::default(),
+                                        rescue: rescue.clone(),
+                                    },
+                                )
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
+        refinable_set
+    }
 }
 
 impl Client {

@@ -1,25 +1,26 @@
 use futures::{SinkExt, StreamExt};
 
-use crate::clients::ClientTunnels;
-use crate::registry::RequestsProcessorsRegistry;
-use crate::stop_reasons::{AppStopHandle, StopReason};
-use crate::webapp;
+use crate::{
+    clients::ClientTunnels,
+    registry::RequestsProcessorsRegistry,
+    stop_reasons::{AppStopHandle, StopReason},
+    webapp,
+};
 use exogress_common::ws_client::{connect_ws, Error};
 use exogress_server_common::assistant::{
     Action, GatewayConfigMessage, WsFromGwMessage, WsToGwMessage,
 };
-use futures::channel::mpsc;
-use futures::pin_mut;
+use futures::{channel::mpsc, pin_mut};
 use parking_lot::RwLock;
 use smol_str::SmolStr;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::net::TcpStream;
-use tokio::time::sleep;
+use std::{sync::Arc, time::Duration};
+use tokio::{net::TcpStream, time::sleep};
 use tokio_rustls::client::TlsStream;
-use tokio_tungstenite::tungstenite::handshake::client::Request;
-use tokio_tungstenite::tungstenite::http::Method;
-use tokio_tungstenite::{tungstenite, WebSocketStream};
+use tokio_tungstenite::{
+    tungstenite,
+    tungstenite::{handshake::client::Request, http::Method},
+    WebSocketStream,
+};
 use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;

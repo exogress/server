@@ -6,18 +6,18 @@ use etag::EntityTag;
 use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
 use futures::{StreamExt, TryStreamExt};
 use hashbrown::HashSet;
-use http::header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY};
-use http::{HeaderMap, Method, Request, Response, StatusCode};
+use http::{
+    header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY},
+    HeaderMap, Method, Request, Response, StatusCode,
+};
 use hyper::Body;
 use sha2::Digest;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
-use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
-use sqlx::{Row, SqlitePool};
-use std::io;
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Duration;
+use sqlx::{
+    sqlite::{SqlitePoolOptions, SqliteRow},
+    Row, SqlitePool,
+};
+use std::{io, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tokio_util::codec::LengthDelimitedCodec;
 use typed_headers::HeaderMapExt;

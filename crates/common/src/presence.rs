@@ -1,16 +1,16 @@
 //! Presence API
-use exogress_common::config_core::ClientConfig;
-use exogress_common::entities::{
-    AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProfileName,
-    ProjectName, SmolStr, Upstream,
+use exogress_common::{
+    config_core::ClientConfig,
+    entities::{
+        AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProfileName,
+        ProjectName, SmolStr, Upstream,
+    },
+    signaling::ProbeHealthStatus,
 };
-use exogress_common::signaling::ProbeHealthStatus;
 use hashbrown::HashMap;
 use reqwest::{Identity, Method, StatusCode, Url};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::sync::Arc;
-use std::time::Duration;
+use serde::{de::DeserializeOwned, Serialize};
+use std::{sync::Arc, time::Duration};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Nothing {}

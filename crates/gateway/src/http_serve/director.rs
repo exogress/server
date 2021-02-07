@@ -1,10 +1,9 @@
 use exogress_server_common::director::SourceInfo;
-use std::io;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::task::Context;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::macros::support::Poll;
+use std::{io, net::SocketAddr, pin::Pin, task::Context};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    macros::support::Poll,
+};
 
 /// Director connection
 #[derive(Debug)]

@@ -1,8 +1,7 @@
 use core::fmt;
 use url::Url;
 
-use serde::de::Visitor;
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, de::Visitor, Deserialize, Deserializer};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, PartialOrd, Ord)]

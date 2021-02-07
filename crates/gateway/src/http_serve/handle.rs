@@ -1,46 +1,50 @@
 use exogress_common::common_utils::uri_ext::UriExt;
-use futures::TryFutureExt;
-use futures::{ready, FutureExt};
-use futures_util::sink::SinkExt;
-use futures_util::stream::Stream;
-use http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION};
-use http::status::StatusCode;
-use http::{Request, Response, Version};
+use futures::{ready, FutureExt, TryFutureExt};
+use futures_util::{sink::SinkExt, stream::Stream};
+use http::{
+    header::{CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION},
+    status::StatusCode,
+    Request, Response, Version,
+};
 use hyper::Body;
-use std::convert::TryInto;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{convert::TryInto, net::SocketAddr, sync::Arc, time::Duration};
 use stop_handle::stop_handle;
 use tokio_rustls::{rustls, TlsAcceptor};
 use url::Url;
 
-use crate::clients::traffic_counter::{
-    RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
+use crate::{
+    clients::{
+        traffic_counter::{RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters},
+        ClientTunnels,
+    },
+    http_serve::{
+        auth,
+        auth::{save_assistant_key, AuthFinalizer},
+        director,
+    },
+    stop_reasons::AppStopWait,
+    urls::matchable_url::MatchableUrl,
+    webapp::Client,
 };
-use crate::clients::ClientTunnels;
-use crate::http_serve::auth::{save_assistant_key, AuthFinalizer};
-use crate::http_serve::{auth, director};
-use crate::stop_reasons::AppStopWait;
-use crate::urls::matchable_url::MatchableUrl;
-use crate::webapp::Client;
 use exogress_common::entities::Ulid;
-use exogress_server_common::assistant::GatewayConfigMessage;
-use exogress_server_common::director::SourceInfo;
+use exogress_server_common::{assistant::GatewayConfigMessage, director::SourceInfo};
 use futures::channel::{mpsc, oneshot};
 use hyper::service::{make_service_fn, service_fn};
 use parking_lot::RwLock;
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use smol_str::SmolStr;
-use std::io;
-use std::io::{BufReader, Cursor};
-use std::panic::AssertUnwindSafe;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
-use tokio::net::TcpListener;
-use tokio::time::timeout;
+use std::{
+    io,
+    io::{BufReader, Cursor},
+    panic::AssertUnwindSafe,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
+    net::TcpListener,
+    time::timeout,
+};
 use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
 use tokio_util::either::Either;
 

@@ -1,11 +1,12 @@
 use anyhow::anyhow;
-use elasticsearch::cert::{Certificate, CertificateValidation};
-use elasticsearch::http::transport::{SingleNodeConnectionPool, TransportBuilder};
-use elasticsearch::{BulkOperation, BulkParts, Elasticsearch};
+use elasticsearch::{
+    cert::{Certificate, CertificateValidation},
+    http::transport::{SingleNodeConnectionPool, TransportBuilder},
+    BulkOperation, BulkParts, Elasticsearch,
+};
 use exogress_server_common::logging::LogMessage;
 use serde_json::Value;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use tokio::{fs::File, io::AsyncReadExt};
 
 #[derive(Clone)]
 pub struct ElasticsearchClient {

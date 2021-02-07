@@ -5,4 +5,4 @@ pub mod handle;
 mod requests_processor;
 mod templates;
 
-pub use requests_processor::{RequestsProcessor, ResolvedHandler};
+pub use requests_processor::{refinable, RequestsProcessor, ResolvedHandler};

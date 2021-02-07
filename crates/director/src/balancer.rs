@@ -1,13 +1,9 @@
-use core::cmp;
-use core::fmt;
+use core::{cmp, fmt};
 use itertools::Itertools;
 use lru_time_cache::{LruCache, TimedEntry};
 use rand::RngCore;
-use rand_xoshiro::rand_core::SeedableRng;
-use rand_xoshiro::Xoshiro256PlusPlus;
-use std::collections::BTreeSet;
-use std::net::IpAddr;
-use std::time::Duration;
+use rand_xoshiro::{rand_core::SeedableRng, Xoshiro256PlusPlus};
+use std::{collections::BTreeSet, net::IpAddr, time::Duration};
 
 pub struct GwSelectionPolicy {
     active_idx: usize,

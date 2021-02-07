@@ -1,17 +1,16 @@
 use chrono::serde::ts_milliseconds;
-use exogress_common::config_core::Exception;
-use exogress_common::entities::{
-    AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName, SmolStr,
-    StaticResponseName, Upstream,
+use exogress_common::{
+    config_core::Exception,
+    entities::{
+        AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName, SmolStr,
+        StaticResponseName, Upstream,
+    },
 };
 use hashbrown::HashMap;
 use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
-use serde_with::serde_as;
-use serde_with::DurationSecondsWithFrac;
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use serde_with::{serde_as, DurationSecondsWithFrac};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
