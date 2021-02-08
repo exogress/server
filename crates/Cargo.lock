@@ -345,9 +345,9 @@ dependencies = [
 
 [[package]]
 name = "bstr"
-version = "0.2.14"
+version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "473fc6b38233f9af7baa94fb5852dca389e3d95b8e21c8e3719301462c5d9faf"
+checksum = "a40b47ad93e1a5404e6c18dec46b628214fee441c70f4ab5d6942142cc268a3d"
 dependencies = [
  "memchr",
 ]
@@ -900,7 +900,7 @@ dependencies = [
 [[package]]
 name = "exogress-common"
 version = "0.0.1-beta.1"
-source = "git+https://github.com/exogress/exogress.git?branch=master#a49c470e88500b9bbd59cdc063d4f0df0d5469da"
+source = "git+https://github.com/exogress/exogress.git?branch=master#83c6e4dcfa63cb94d5b8b5bca62d0a938d297080"
 dependencies = [
  "anyhow",
  "bincode",

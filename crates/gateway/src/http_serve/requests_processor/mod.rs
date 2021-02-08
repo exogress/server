@@ -11,9 +11,9 @@ use chrono::{DateTime, Utc};
 use core::mem;
 use exogress_common::config_core::{
     self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
-    MatchPathSegment, MatchPathSingleSegment, MatchingPath, MethodMatcher, ModifyHeaders,
-    OnResponse, RequestModifications, RescueItem, ResponseBody, Rule, StaticResponse,
-    StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegmentOrQueryPart,
+    MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue, MatchingPath,
+    MethodMatcher, ModifyHeaders, OnResponse, RequestModifications, RescueItem, ResponseBody, Rule,
+    StaticResponse, StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
 };
 use exogress_common::entities::{
     AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
@@ -491,8 +491,8 @@ impl RequestsProcessor {
 
 #[derive(Clone, Debug)]
 pub struct Rebase {
-    base_path: Vec<UrlPathSegmentOrQueryPart>,
-    replace_base_path: Vec<UrlPathSegmentOrQueryPart>,
+    base_path: Vec<UrlPathSegment>,
+    replace_base_path: Vec<UrlPathSegment>,
 }
 
 impl Rebase {
@@ -709,9 +709,44 @@ enum ResolvedCatchAction {
 #[derive(Debug)]
 pub struct ResolvedFilter {
     pub path: ResolvedMatchingPath,
+    pub query: HashMap<SmolStr, Option<ResolvedMatchQueryValue>>,
     pub method: MethodMatcher,
     pub trailing_slash: TrailingSlashFilterRule,
-    pub base_path: Vec<UrlPathSegmentOrQueryPart>,
+    pub base_path: Vec<UrlPathSegment>,
+}
+
+#[derive(Debug)]
+pub enum ResolvedMatchQueryValue {
+    AnySingleSegment,
+    MayBeAnyMultipleSegments,
+    Exact(SmolStr),
+    Regex(Regex),
+    Choice(AhoCorasick),
+}
+
+impl From<MatchQueryValue> for ResolvedMatchQueryValue {
+    fn from(segment: MatchQueryValue) -> Self {
+        match segment {
+            MatchQueryValue::Single(MatchQuerySingleValue::AnySingleSegment) => {
+                ResolvedMatchQueryValue::AnySingleSegment
+            }
+            MatchQueryValue::Single(MatchQuerySingleValue::MayBeAnyMultipleSegments) => {
+                ResolvedMatchQueryValue::MayBeAnyMultipleSegments
+            }
+            MatchQueryValue::Single(MatchQuerySingleValue::Exact(e)) => {
+                ResolvedMatchQueryValue::Exact(e)
+            }
+            MatchQueryValue::Single(MatchQuerySingleValue::Regex(r)) => {
+                ResolvedMatchQueryValue::Regex(r)
+            }
+            MatchQueryValue::Choice(variants) => {
+                let aho_corasick = AhoCorasickBuilder::new()
+                    .match_kind(MatchKind::LeftmostLongest)
+                    .build(variants.iter().map(|s| s.as_str()));
+                ResolvedMatchQueryValue::Choice(aho_corasick)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -775,7 +810,7 @@ impl From<MatchPathSegment> for ResolvedMatchPathSegment {
 #[derive(Debug, Clone)]
 pub enum ResolvedMatchPathSegment {
     Any,
-    Exact(UrlPathSegmentOrQueryPart),
+    Exact(UrlPathSegment),
     Regex(Regex),
     Choice(AhoCorasick),
 }
@@ -803,6 +838,59 @@ impl ResolvedFilter {
 
         if !self.method.is_match(method) {
             return false;
+        }
+
+        let uri_query_pairs: HashMap<SmolStr, SmolStr> = url
+            .to_url()
+            .query_pairs()
+            .map(|(k, v)| (SmolStr::from(k), SmolStr::from(v)))
+            .collect();
+
+        for (expected_key, maybe_expected_val) in &self.query {
+            match maybe_expected_val {
+                Some(expected_val) => match uri_query_pairs.get(expected_key) {
+                    Some(found_val) => match expected_val {
+                        ResolvedMatchQueryValue::AnySingleSegment => {
+                            if found_val.is_empty() || found_val.contains('/') {
+                                info!("{} doesn't match ?", found_val);
+                                return false;
+                            }
+                        }
+                        ResolvedMatchQueryValue::MayBeAnyMultipleSegments => {
+                            if found_val.is_empty() {
+                                info!("{} doesn't match *", found_val);
+                                return false;
+                            }
+                        }
+                        ResolvedMatchQueryValue::Exact(exact) => {
+                            if exact != found_val {
+                                info!("{} != {}", found_val, exact);
+                                return false;
+                            }
+                        }
+                        ResolvedMatchQueryValue::Regex(regex) => {
+                            if !regex.is_match(found_val) {
+                                info!("{} not match {:?}", found_val, regex);
+                                return false;
+                            }
+                        }
+                        ResolvedMatchQueryValue::Choice(aho_corasick) => {
+                            if let Some(res) = aho_corasick.find(found_val.as_str()) {
+                                if (res.end() - res.start()) != found_val.len() {
+                                    return false;
+                                }
+                            } else {
+                                info!("{} not match choice {:?}", found_val, aho_corasick);
+                                return false;
+                            }
+                        }
+                    },
+                    None => {
+                        return false;
+                    }
+                },
+                None => {}
+            }
         }
 
         let mut segments = vec![];
@@ -1970,6 +2058,9 @@ impl RequestsProcessor {
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
                                             path: rule.filter.path.into(),
+                                            query: rule.filter.query.inner.into_iter().map(|(k, v)| {
+                                                (k, v.map(From::from))
+                                            }).collect(),
                                             method: rule.filter.methods,
                                             trailing_slash: rule.filter.trailing_slash,
                                             base_path: replace_base_path.clone(),
@@ -2211,6 +2302,7 @@ mod test {
                 MatchPathSingleSegment::Any,
             )])
             .into(),
+            query: Default::default(),
             method: Default::default(),
             trailing_slash: Default::default(),
             base_path: vec![],
