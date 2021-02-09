@@ -2,6 +2,7 @@ use crate::cache::{Cache, HandlerChecksum};
 use crate::clients::traffic_counter::{RecordedTrafficStatistics, TrafficCounters};
 use crate::clients::ClientTunnels;
 use crate::http_serve::auth::JwtEcdsa;
+use crate::http_serve::requests_processor::modifications::{Replaced, ResolvedPathSegmentsModify};
 use crate::mime_helpers::{is_mime_match, ordered_by_quality};
 use crate::public_hyper_client::MeteredHttpsConnector;
 use crate::rules_counter::AccountCounters;
@@ -12,8 +13,8 @@ use core::mem;
 use exogress_common::config_core::{
     self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
     MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue, MatchingPath,
-    MethodMatcher, ModifyHeaders, OnResponse, RequestModifications, RescueItem, ResponseBody, Rule,
-    StaticResponse, StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
+    MethodMatcher, ModifyHeaders, OnResponse, RescueItem, ResponseBody, Rule, StaticResponse,
+    StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
 };
 use exogress_common::entities::{
     AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
@@ -52,6 +53,7 @@ mod application_firewall;
 mod auth;
 mod gcs_bucket;
 mod helpers;
+mod modifications;
 mod pass_through;
 mod post_processing;
 mod proxy;
@@ -596,7 +598,7 @@ impl ResolvedHandlerVariant {
         req: &mut Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
-        rebased_url: &http::uri::Uri,
+        modified_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
@@ -609,7 +611,7 @@ impl ResolvedHandlerVariant {
                         req,
                         res,
                         requested_url,
-                        rebased_url,
+                        modified_url,
                         local_addr,
                         remote_addr,
                         language,
@@ -623,7 +625,7 @@ impl ResolvedHandlerVariant {
                         req,
                         res,
                         requested_url,
-                        rebased_url,
+                        modified_url,
                         local_addr,
                         remote_addr,
                         language,
@@ -637,22 +639,22 @@ impl ResolvedHandlerVariant {
             }
             ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
                 s3_bucket
-                    .invoke(req, res, requested_url, rebased_url, language, log_message)
+                    .invoke(req, res, requested_url, modified_url, language, log_message)
                     .await
             }
             ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
                 gcs_bucket
-                    .invoke(req, res, requested_url, rebased_url, language, log_message)
+                    .invoke(req, res, requested_url, modified_url, language, log_message)
                     .await
             }
             ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
                 application_firewall
-                    .invoke(req, res, requested_url, rebased_url, language, log_message)
+                    .invoke(req, res, requested_url, modified_url, language, log_message)
                     .await
             }
             ResolvedHandlerVariant::PassThrough(pass_through) => {
                 pass_through
-                    .invoke(req, res, requested_url, rebased_url, log_message)
+                    .invoke(req, res, requested_url, modified_url, log_message)
                     .await
             }
         }
@@ -712,7 +714,7 @@ pub struct ResolvedFilter {
     pub query: HashMap<SmolStr, Option<ResolvedMatchQueryValue>>,
     pub method: MethodMatcher,
     pub trailing_slash: TrailingSlashFilterRule,
-    pub base_path: Vec<UrlPathSegment>,
+    pub base_path_replacement: Vec<UrlPathSegment>,
 }
 
 #[derive(Debug)]
@@ -815,178 +817,326 @@ pub enum ResolvedMatchPathSegment {
     Choice(AhoCorasick),
 }
 
-impl ResolvedMatchPathSegment {
-    pub fn is_match(&self, s: &str) -> bool {
+#[derive(Debug, Clone)]
+pub enum Matched {
+    Segments(Vec<SmolStr>),
+    Multiple(BTreeMap<u8, SmolStr>),
+    Single(SmolStr),
+    None,
+}
+
+impl Matched {
+    fn is_empty(&self) -> bool {
         match self {
-            ResolvedMatchPathSegment::Any => true,
-            ResolvedMatchPathSegment::Exact(segment) => s == AsRef::<str>::as_ref(segment),
-            ResolvedMatchPathSegment::Regex(re) => re.is_match(s),
+            Matched::Multiple(m) if m.is_empty() => true,
+            Matched::None => true,
+            Matched::Segments(s) if s.is_empty() => true,
+            _ => false,
+        }
+    }
+}
+
+impl ResolvedMatchPathSegment {
+    pub fn matches(&self, s: &str) -> Option<Matched> {
+        match self {
+            ResolvedMatchPathSegment::Any => Some(Matched::Single(s.into())),
+            ResolvedMatchPathSegment::Exact(segment) if s == AsRef::<str>::as_ref(segment) => {
+                // no need to return exact segment
+                Some(Matched::None)
+            }
+            ResolvedMatchPathSegment::Regex(re) => {
+                let mut h = BTreeMap::new();
+
+                let captures = re.captures(s)?;
+
+                for (idx, maybe_match) in captures.iter().enumerate() {
+                    if let Some(m) = maybe_match {
+                        h.insert(idx.try_into().unwrap(), m.as_str().into());
+                    }
+                }
+
+                Some(Matched::Multiple(h))
+            }
             ResolvedMatchPathSegment::Choice(aho_corasick) => {
-                if let Some(res) = aho_corasick.find(s) {
-                    (res.end() - res.start()) == s.len()
+                if let Some(res) = aho_corasick.find(&s) {
+                    if (res.end() - res.start()) == s.len() {
+                        Some(Matched::Single(s.into()))
+                    } else {
+                        None
+                    }
                 } else {
-                    false
+                    None
                 }
             }
+            _ => None,
         }
     }
 }
 
 impl ResolvedFilter {
-    fn is_matches(&self, url: &http::uri::Uri, method: &http::Method) -> bool {
-        let is_trailing_slash = url.path().ends_with("/");
-
-        if !self.method.is_match(method) {
-            return false;
-        }
-
-        let uri_query_pairs: HashMap<SmolStr, SmolStr> = url
-            .to_url()
-            .query_pairs()
-            .map(|(k, v)| (SmolStr::from(k), SmolStr::from(v)))
-            .collect();
+    fn query_match(
+        &self,
+        query_pairs: HashMap<SmolStr, SmolStr>,
+    ) -> Option<HashMap<SmolStr, Matched>> {
+        let mut h = HashMap::new();
 
         for (expected_key, maybe_expected_val) in &self.query {
             match maybe_expected_val {
-                Some(expected_val) => match uri_query_pairs.get(expected_key) {
-                    Some(found_val) => match expected_val {
+                Some(expected_val) => match query_pairs.get(expected_key) {
+                    Some(provided_val) => match expected_val {
                         ResolvedMatchQueryValue::AnySingleSegment => {
-                            if found_val.is_empty() || found_val.contains('/') {
-                                info!("{} doesn't match ?", found_val);
-                                return false;
+                            if provided_val.is_empty() || provided_val.contains('/') {
+                                return None;
+                            } else {
+                                h.insert(
+                                    expected_key.clone(),
+                                    Matched::Single(provided_val.clone()),
+                                );
                             }
                         }
                         ResolvedMatchQueryValue::MayBeAnyMultipleSegments => {
-                            if found_val.is_empty() {
-                                info!("{} doesn't match *", found_val);
-                                return false;
+                            if provided_val.is_empty() {
+                                return None;
+                            } else {
+                                h.insert(
+                                    expected_key.clone(),
+                                    Matched::Segments(
+                                        provided_val
+                                            .split('/')
+                                            .filter(|s| !s.is_empty())
+                                            .map(|s| s.into())
+                                            .collect(),
+                                    ),
+                                );
                             }
                         }
                         ResolvedMatchQueryValue::Exact(exact) => {
-                            if exact != found_val {
-                                info!("{} != {}", found_val, exact);
-                                return false;
+                            if exact != provided_val {
+                                return None;
                             }
                         }
                         ResolvedMatchQueryValue::Regex(regex) => {
-                            if !regex.is_match(found_val) {
-                                info!("{} not match {:?}", found_val, regex);
-                                return false;
+                            let captures = regex.captures(provided_val)?;
+
+                            let mut inner = BTreeMap::new();
+
+                            for (idx, maybe_match) in captures.iter().enumerate() {
+                                if let Some(m) = maybe_match {
+                                    inner.insert(idx.try_into().unwrap(), m.as_str().into());
+                                }
                             }
+
+                            h.insert(expected_key.clone(), Matched::Multiple(inner));
                         }
                         ResolvedMatchQueryValue::Choice(aho_corasick) => {
-                            if let Some(res) = aho_corasick.find(found_val.as_str()) {
-                                if (res.end() - res.start()) != found_val.len() {
-                                    return false;
+                            if let Some(res) = aho_corasick.find(provided_val.as_str()) {
+                                if (res.end() - res.start()) != provided_val.len() {
+                                    return None;
+                                } else {
+                                    h.insert(
+                                        expected_key.clone(),
+                                        Matched::Single(provided_val.clone()),
+                                    );
                                 }
                             } else {
-                                info!("{} not match choice {:?}", found_val, aho_corasick);
-                                return false;
+                                return None;
                             }
                         }
                     },
                     None => {
-                        return false;
+                        return None;
                     }
                 },
                 None => {}
             }
         }
 
+        Some(h)
+    }
+
+    /// Return match map and number of replaced segments (not suitable for modifications)
+    fn matches(
+        &self,
+        url: &http::Uri,
+        method: &http::Method,
+    ) -> Option<(HashMap<SmolStr, Matched>, usize)> {
+        let is_trailing_slash = url.path().ends_with("/");
+
+        if !self.method.is_match(method) {
+            return None;
+        }
+
+        let query_pairs: HashMap<SmolStr, SmolStr> = url
+            .to_url()
+            .query_pairs()
+            .map(|(k, v)| (SmolStr::from(k), SmolStr::from(v)))
+            .collect();
+
+        let query_matches = self.query_match(query_pairs)?;
+
         let mut segments = vec![];
         {
             let mut path_segments = url.path_segments().into_iter();
-            let mut base_segments = self.base_path.iter();
+            let mut base_segments = self.base_path_replacement.iter();
 
             while let Some(expected_base_segment) = base_segments.next() {
                 if let Some(segment) = path_segments.next() {
                     if segment != expected_base_segment.as_str() {
-                        return false;
+                        return None;
                     }
                 } else {
-                    return false;
+                    return None;
                 }
             }
 
             while let Some(segment) = path_segments.next() {
                 if !segment.is_empty() {
-                    segments.push(segment.to_string());
+                    segments.push(SmolStr::from(segment.to_string()));
                 }
             }
         }
 
-        let matcher = || match &self.path {
-            ResolvedMatchingPath::Root
-                if segments.len() == 0 || (segments.len() == 1 && segments[0].is_empty()) =>
-            {
-                true
-            }
-            ResolvedMatchingPath::Wildcard => true,
-            ResolvedMatchingPath::Strict(match_segments) => {
-                if match_segments.len() != segments.len() {
-                    return false;
+        let matcher = || -> Option<HashMap<SmolStr, Matched>> {
+            let mut matches = HashMap::new();
+
+            match &self.path {
+                ResolvedMatchingPath::Root
+                    if segments.len() == 0 || (segments.len() == 1 && segments[0].is_empty()) => {}
+                ResolvedMatchingPath::Wildcard => {
+                    matches.insert(
+                        "0".to_string().into(),
+                        Matched::Segments(segments.iter().cloned().collect()),
+                    );
                 }
-                for (match_segment, segment) in match_segments.iter().zip(&segments) {
-                    if !match_segment.is_match(segment) {
-                        return false;
+                ResolvedMatchingPath::Strict(match_segments) => {
+                    if match_segments.len() != segments.len() {
+                        return None;
+                    }
+                    for (idx, (match_segment, segment)) in
+                        match_segments.iter().zip(&segments).enumerate()
+                    {
+                        let inner = match_segment.matches(segment)?;
+                        if !inner.is_empty() {
+                            matches.insert(idx.to_string().into(), inner);
+                        }
                     }
                 }
-                true
-            }
-            ResolvedMatchingPath::LeftWildcardRight(left_match_segments, right_match_segments) => {
-                if left_match_segments.len() + right_match_segments.len() > segments.len() {
-                    return false;
-                }
-                for (match_segment, segment) in left_match_segments.iter().zip(&segments) {
-                    if !match_segment.is_match(segment) {
-                        return false;
+                ResolvedMatchingPath::LeftWildcardRight(
+                    left_match_segments,
+                    right_match_segments,
+                ) => {
+                    if left_match_segments.len() + right_match_segments.len() > segments.len() {
+                        return None;
+                    }
+                    let mut num = 0;
+                    for (idx, (match_segment, segment)) in
+                        left_match_segments.iter().zip(&segments).enumerate()
+                    {
+                        let inner = match_segment.matches(segment)?;
+                        if !inner.is_empty() {
+                            matches.insert(idx.to_string().into(), inner);
+                        }
+                        num += 1;
+                    }
+
+                    let left_ends = num;
+
+                    let segments_len = segments.len();
+                    let mut num = segments_len;
+
+                    for (match_segment, segment) in
+                        right_match_segments.iter().rev().zip(segments.iter().rev())
+                    {
+                        num -= 1;
+                        let inner = match_segment.matches(segment)?;
+                        if !inner.is_empty() {
+                            matches.insert(num.to_string().into(), inner);
+                        }
+                    }
+
+                    let wildcard_part = &segments[left_ends..num];
+
+                    if !wildcard_part.is_empty() {
+                        matches.insert(
+                            left_ends.to_string().into(),
+                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                        );
                     }
                 }
-                for (match_segment, segment) in
-                    right_match_segments.iter().rev().zip(segments.iter().rev())
-                {
-                    if !match_segment.is_match(segment) {
-                        return false;
+                ResolvedMatchingPath::LeftWildcard(left_match_segments) => {
+                    if left_match_segments.len() > segments.len() {
+                        return None;
+                    }
+                    let mut num = 0;
+
+                    for (idx, (match_segment, segment)) in
+                        left_match_segments.iter().zip(&segments).enumerate()
+                    {
+                        let inner = match_segment.matches(segment)?;
+                        if !inner.is_empty() {
+                            matches.insert(idx.to_string().into(), inner);
+                        }
+                        num += 1;
+                    }
+
+                    let wildcard_part = &segments[num..];
+
+                    if !wildcard_part.is_empty() {
+                        matches.insert(
+                            num.to_string().into(),
+                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                        );
                     }
                 }
-                true
-            }
-            ResolvedMatchingPath::LeftWildcard(left_match_segments) => {
-                if left_match_segments.len() > segments.len() {
-                    return false;
-                }
-                for (match_segment, segment) in left_match_segments.iter().zip(&segments) {
-                    if !match_segment.is_match(segment) {
-                        return false;
+                ResolvedMatchingPath::WildcardRight(right_match_segments) => {
+                    let segments_len = segments.len();
+                    if right_match_segments.len() > segments_len {
+                        return None;
+                    }
+
+                    let mut num = segments_len;
+                    for (match_segment, segment) in
+                        right_match_segments.iter().rev().zip(segments.iter().rev())
+                    {
+                        num -= 1;
+                        let inner = match_segment.matches(segment)?;
+
+                        if !inner.is_empty() {
+                            matches.insert(num.to_string().into(), inner);
+                        }
+                    }
+
+                    let wildcard_part = &segments[..num];
+
+                    if !wildcard_part.is_empty() {
+                        matches.insert(
+                            0.to_string().into(),
+                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                        );
                     }
                 }
-                true
+                _ => return None,
             }
-            ResolvedMatchingPath::WildcardRight(right_match_segments) => {
-                if right_match_segments.len() > segments.len() {
-                    return false;
-                }
-                for (match_segment, segment) in
-                    right_match_segments.iter().rev().zip(segments.iter().rev())
-                {
-                    if !match_segment.is_match(segment) {
-                        return false;
-                    }
-                }
-                true
-            }
-            _ => false,
+
+            Some(matches)
         };
 
-        let is_path_matched = (matcher)();
+        let path_match = (matcher)()?;
 
-        let trailing_slash_condition_met = match self.trailing_slash {
-            TrailingSlashFilterRule::Require => is_trailing_slash == true,
-            TrailingSlashFilterRule::Allow => true,
-            TrailingSlashFilterRule::Deny => is_trailing_slash == false,
+        match self.trailing_slash {
+            TrailingSlashFilterRule::Require if is_trailing_slash == false => {
+                return None;
+            }
+            TrailingSlashFilterRule::Deny if is_trailing_slash == true => {
+                return None;
+            }
+            _ => {}
         };
 
-        is_path_matched && trailing_slash_condition_met
+        let mut matches = path_match;
+        matches.extend(query_matches.into_iter());
+
+        Some((matches, self.base_path_replacement.len()))
     }
 }
 
@@ -1000,22 +1150,39 @@ struct RuleModifications {
 #[derive(Debug)]
 struct ResolvedRule {
     filter: ResolvedFilter,
-    request_modifications: RequestModifications,
+    request_modifications: ResolvedRequestModifications,
     on_response: Vec<OnResponse>,
     action: ResolvedRuleAction,
+}
+
+#[derive(Debug, Default)]
+pub struct ResolvedRequestModifications {
+    headers: ModifyHeaders,
+    path: Option<Vec<ResolvedPathSegmentsModify>>,
+    remove_query_params: Vec<SmolStr>,
 }
 
 impl ResolvedRule {
     fn get_action(
         &self,
-        url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         method: &http::Method,
-    ) -> Option<(&ResolvedRuleAction, &RequestModifications, &Vec<OnResponse>)> {
-        if !self.filter.is_matches(url, method) {
-            return None;
-        }
+    ) -> Option<(
+        HashMap<SmolStr, Matched>,
+        usize,
+        &ResolvedRuleAction,
+        &ResolvedRequestModifications,
+        &Vec<OnResponse>,
+    )> {
+        let (matches, replaced_base_path_len) = self.filter.matches(rebased_url, method)?;
 
-        Some((&self.action, &self.request_modifications, &self.on_response))
+        Some((
+            matches,
+            replaced_base_path_len,
+            &self.action,
+            &self.request_modifications,
+            &self.on_response,
+        ))
     }
 }
 
@@ -1229,36 +1396,66 @@ impl ResolvedHandler {
     /// Find appropriate final action, which should be executed
     fn find_action(
         &self,
-        url: &http::uri::Uri,
+        rebased_url: &http::uri::Uri,
         method: &http::Method,
     ) -> Option<(
+        HashMap<SmolStr, Matched>,
+        usize,
         &ResolvedRuleAction,
-        Vec<&RequestModifications>,
+        Vec<&ResolvedRequestModifications>,
         &Vec<OnResponse>,
+        &Option<Vec<ResolvedPathSegmentsModify>>,
     )> {
         let mut request_modifications_list = Vec::new();
 
         let rule_action = self
             .resolved_rules
             .iter()
-            .filter_map(|resolved_rule| resolved_rule.get_action(url, method))
+            .filter_map(|resolved_rule| resolved_rule.get_action(rebased_url, method))
             .inspect(|_| {
                 self.rules_counter.register_rule(&self.account_unique_id);
             })
-            .inspect(|(_, request_modifications, _response_modifications)| {
-                request_modifications_list.push(*request_modifications);
-                // info!(
-                //     "request_modifications = {:?}; response_modifications = {:?}",
-                //     request_modifications, response_modifications
-                // );
-            })
-            .filter(|(action, _, _)| action.is_finalizing())
-            .map(|(action, _, response_modifications)| (action, response_modifications))
+            .inspect(
+                |(_, _, _, request_modifications, _response_modifications)| {
+                    request_modifications_list.push(*request_modifications);
+                    // info!(
+                    //     "request_modifications = {:?}; response_modifications = {:?}",
+                    //     request_modifications, response_modifications
+                    // );
+                },
+            )
+            .filter(|(_, _, action, _, _)| action.is_finalizing())
+            .map(
+                |(
+                    matches,
+                    skip_segments,
+                    action,
+                    request_modifications,
+                    response_modifications,
+                )| {
+                    (
+                        matches,
+                        skip_segments,
+                        action,
+                        response_modifications,
+                        &request_modifications.path,
+                    )
+                },
+            )
             .next();
 
-        rule_action.map(move |(action, response_modifications)| {
-            (action, request_modifications_list, response_modifications)
-        })
+        rule_action.map(
+            move |(matches, skip_segments, action, response_modifications, path_modifications)| {
+                (
+                    matches,
+                    skip_segments,
+                    action,
+                    request_modifications_list,
+                    response_modifications,
+                    path_modifications,
+                )
+            },
+        )
     }
 
     fn respond_server_error(&self, res: &mut Response<Body>) {
@@ -1278,15 +1475,57 @@ impl ResolvedHandler {
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
-        let (action, request_modifications, response_modification) =
-            match self.find_action(rebased_url, req.method()) {
-                None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
-                Some(action) => action,
-            };
+        let (
+            matches,
+            skip_segments,
+            action,
+            request_modifications,
+            response_modification,
+            maybe_path_modify,
+        ) = match self.find_action(rebased_url, req.method()) {
+            None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
+            Some(action) => action,
+        };
+
+        let mut modify_query = rebased_url.query_pairs();
+        let mut modified_url = rebased_url.clone();
+
+        modified_url.clear_query();
+        if let Some(path_modify) = maybe_path_modify {
+            modified_url.clear_segments();
+
+            for replaced_segment in rebased_url.path_segments().iter().take(skip_segments) {
+                modified_url.push_segment(replaced_segment);
+            }
+
+            for segment in path_modify.iter() {
+                let replaced = segment.substitute(&matches).expect("FIXME");
+                match replaced {
+                    Replaced::Multiple(multiple) => {
+                        for s in multiple {
+                            modified_url.push_segment(&s);
+                        }
+                    }
+                    Replaced::Single(single) => {
+                        modified_url.push_segment(&single);
+                    }
+                }
+            }
+        }
+
+        info!("modified_url = {:?}", modified_url);
 
         for request_modification in &request_modifications {
             apply_headers(req.headers_mut(), &request_modification.headers);
+            for remove_query_param in request_modification.remove_query_params.iter() {
+                info!("remove query param: {}", remove_query_param);
+                modify_query.remove(&remove_query_param.to_string());
+            }
         }
+
+        info!("set query to {:?}", modify_query);
+
+        modified_url.set_query(modify_query);
 
         info!("Request headers after modification: {:?}", req.headers());
 
@@ -1300,7 +1539,7 @@ impl ResolvedHandler {
                         req,
                         res,
                         requested_url,
-                        rebased_url,
+                        &modified_url,
                         local_addr,
                         remote_addr,
                         language,
@@ -2063,12 +2302,18 @@ impl RequestsProcessor {
                                             }).collect(),
                                             method: rule.filter.methods,
                                             trailing_slash: rule.filter.trailing_slash,
-                                            base_path: replace_base_path.clone(),
+                                            base_path_replacement: replace_base_path.clone(),
                                         },
                                         request_modifications: rule
                                             .action
                                             .modify_request()
-                                            .cloned()
+                                            .map(|r| {
+                                                ResolvedRequestModifications {
+                                                    headers: r.headers.clone(),
+                                                    path: r.path.as_ref().map(|p| p.iter().map(|p| ResolvedPathSegmentsModify(p.0.clone())).collect()),
+                                                    remove_query_params: r.query.remove.clone(),
+                                                }
+                                            })
                                             .unwrap_or_default(),
                                         on_response: rule
                                             .action
@@ -2305,12 +2550,12 @@ mod test {
             query: Default::default(),
             method: Default::default(),
             trailing_slash: Default::default(),
-            base_path: vec![],
+            base_path_replacement: vec![],
         };
 
-        assert!(!matcher.is_matches(&url, &Method::GET));
-        assert!(matcher.is_matches(&url2, &Method::GET));
-        assert!(matcher.is_matches(&url3, &Method::GET));
+        assert!(!matcher.matches(&url, &Method::GET).is_some());
+        assert!(matcher.matches(&url2, &Method::GET).is_some());
+        assert!(matcher.matches(&url3, &Method::GET).is_some());
     }
 
     // #[test]

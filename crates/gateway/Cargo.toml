@@ -87,6 +87,7 @@ url = "2.1.1"
 warp = { version = "0.3", features = ["websocket", "tls", "compression"] }
 weighted-rs = "0.1.2"
 langtag = { git = "https://github.com/glebpom/langtag.git", branch = "master" }
+rreplace = "0.1.0"
 
 exogress-server-common = { path = "../common", version = "0.1" }
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"], default-features = false }

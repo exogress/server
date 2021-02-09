@@ -87,7 +87,7 @@ impl ResolvedProxy {
         req: &mut Request<Body>,
         res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
-        rebased_url: &http::uri::Uri,
+        modified_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
@@ -120,7 +120,7 @@ impl ResolvedProxy {
             }
         }
 
-        let mut proxy_to = rebased_url.clone();
+        let mut proxy_to = modified_url.clone();
 
         let connect_target = ConnectTarget::Upstream(self.name.clone());
         connect_target.update_url(&mut proxy_to);

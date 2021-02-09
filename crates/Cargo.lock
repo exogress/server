@@ -900,7 +900,7 @@ dependencies = [
 [[package]]
 name = "exogress-common"
 version = "0.0.1-beta.1"
-source = "git+https://github.com/exogress/exogress.git?branch=master#83c6e4dcfa63cb94d5b8b5bca62d0a938d297080"
+source = "git+https://github.com/exogress/exogress.git?branch=master#baa019db7a238353ba30f8ee48241f840c44a39e"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1050,6 +1050,7 @@ dependencies = [
  "rand 0.8.3",
  "regex",
  "reqwest",
+ "rreplace",
  "rustls-native-certs",
  "rusty-s3",
  "seahash",
@@ -1174,9 +1175,9 @@ dependencies = [
 
 [[package]]
 name = "float-cmp"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "499a1bfa03d254b047e7e5c1fc8dd23a8cf6b344a8eb7e622ae4bc76bfac8e68"
+checksum = "e1267f4ac4f343772758f7b1bdcbe767c218bbab93bb432acbf5162bbf85a6c4"
 dependencies = [
  "num-traits 0.2.14",
 ]
@@ -1839,9 +1840,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.85"
+version = "0.2.86"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ccac4b00700875e6a07c6cde370d44d32fa01c5a65cdd2fca6858c479d28bb3"
+checksum = "b7282d924be3275cec7f6756ff4121987bc6481325397dde6ba3e7802b1a8b1c"
 
 [[package]]
 name = "libgit2-sys"
@@ -3119,6 +3120,12 @@ dependencies = [
  "web-sys",
  "winapi",
 ]
+
+[[package]]
+name = "rreplace"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afe29d72fda7b5e045e2c58a1cd5e40dcef832df6aa3ec0650b85f3a5c0dfc76"
 
 [[package]]
 name = "rustc-demangle"
@@ -4480,9 +4487,9 @@ dependencies = [
 
 [[package]]
 name = "unicode-normalization"
-version = "0.1.16"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a13e63ab62dbe32aeee58d1c5408d35c36c392bba5d9d3142287219721afe606"
+checksum = "07fbfce1c8a97d547e8b5334978438d9d6ec8c20e38f56d4a4374d181493eaef"
 dependencies = [
  "tinyvec",
 ]
@@ -4560,9 +4567,9 @@ dependencies = [
 
 [[package]]
 name = "value-trait"
-version = "0.1.20"
+version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e431c15afdab296b503945cbde123c828948ad123e1110bc7036303feb910cc9"
+checksum = "3f7ff0bd1a82f266f30d5031c3021c6976450331b6de8db97fc31fd18e929ba6"
 dependencies = [
  "float-cmp",
  "halfbrown",
