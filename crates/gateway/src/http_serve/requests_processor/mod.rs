@@ -81,7 +81,7 @@ use crate::{
     },
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use exogress_common::common_utils::uri_ext::UriExt;
+use exogress_common::{common_utils::uri_ext::UriExt, config_core::TrailingSlashModification};
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use langtag::LanguageTagBuf;
@@ -1174,6 +1174,7 @@ struct ResolvedRule {
 pub struct ResolvedRequestModifications {
     headers: ModifyHeaders,
     path: Option<Vec<ResolvedPathSegmentsModify>>,
+    trailing_slash: TrailingSlashModification,
     remove_query_params: Vec<SmolStr>,
 }
 
@@ -1420,6 +1421,7 @@ impl ResolvedHandler {
         Vec<&ResolvedRequestModifications>,
         &Vec<OnResponse>,
         &Option<Vec<ResolvedPathSegmentsModify>>,
+        &TrailingSlashModification,
     )> {
         let mut request_modifications_list = Vec::new();
 
@@ -1453,21 +1455,28 @@ impl ResolvedHandler {
                         skip_segments,
                         action,
                         response_modifications,
-                        &request_modifications.path,
+                        request_modifications,
                     )
                 },
             )
             .next();
 
         rule_action.map(
-            move |(matches, skip_segments, action, response_modifications, path_modifications)| {
+            move |(
+                matches,
+                skip_segments,
+                action,
+                response_modifications,
+                request_modifications,
+            )| {
                 (
                     matches,
                     skip_segments,
                     action,
                     request_modifications_list,
                     response_modifications,
-                    path_modifications,
+                    &request_modifications.path,
+                    &request_modifications.trailing_slash,
                 )
             },
         )
@@ -1497,6 +1506,7 @@ impl ResolvedHandler {
             request_modifications,
             response_modification,
             maybe_path_modify,
+            trailing_slash_modifications,
         ) = match self.find_action(rebased_url, req.method()) {
             None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
             Some(action) => action,
@@ -1526,6 +1536,14 @@ impl ResolvedHandler {
                     }
                 }
             }
+        }
+
+        match trailing_slash_modifications {
+            TrailingSlashModification::Keep => {
+                modified_url.ensure_trailing_slash(requested_url.path().ends_with("/"));
+            }
+            TrailingSlashModification::Set => modified_url.ensure_trailing_slash(true),
+            TrailingSlashModification::Unset => modified_url.ensure_trailing_slash(false),
         }
 
         info!("modified_url = {:?}", modified_url);
@@ -2326,6 +2344,7 @@ impl RequestsProcessor {
                                                 ResolvedRequestModifications {
                                                     headers: r.headers.clone(),
                                                     path: r.path.as_ref().map(|p| p.iter().map(|p| ResolvedPathSegmentsModify(p.0.clone())).collect()),
+                                                    trailing_slash: r.trailing_slash.clone(),
                                                     remove_query_params: r.query.remove.clone(),
                                                 }
                                             })
