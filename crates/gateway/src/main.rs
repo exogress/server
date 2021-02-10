@@ -19,11 +19,7 @@ use futures::io::BufWriter;
 use futures_util::io::AsyncWriteExt;
 use mimalloc::MiMalloc;
 use rules_counter::AccountCounters;
-use std::fs;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use progress_bar::progress_bar::ProgressBar;
 use reqwest::header;
@@ -34,24 +30,25 @@ use url::Url;
 
 use crate::clients::{tunnels_acceptor, ClientTunnels};
 
-use crate::cache::Cache;
-use crate::clients::traffic_counter::OneOfTrafficStatistics;
-use crate::http_serve::acme::acme_server;
-use crate::http_serve::auth::github::GithubOauth2Client;
-use crate::http_serve::auth::google::GoogleOauth2Client;
-use crate::notification_listener::AssistantClient;
-use crate::stop_reasons::StopReason;
-use crate::webapp::Client;
-use exogress_common::common_utils::termination::stop_signal_listener;
-use exogress_server_common::assistant::{
-    RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage,
+use crate::{
+    cache::Cache,
+    clients::traffic_counter::OneOfTrafficStatistics,
+    http_serve::{
+        acme::acme_server,
+        auth::{github::GithubOauth2Client, google::GoogleOauth2Client},
+    },
+    notification_listener::AssistantClient,
+    stop_reasons::StopReason,
+    webapp::Client,
 };
-use exogress_server_common::clap::int_api::IntApiBaseUrls;
-use futures::channel::mpsc;
-use futures::{SinkExt, StreamExt};
+use exogress_common::common_utils::termination::stop_signal_listener;
+use exogress_server_common::{
+    assistant::{RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage},
+    clap::int_api::IntApiBaseUrls,
+};
+use futures::{channel::mpsc, SinkExt, StreamExt};
 use parking_lot::RwLock;
-use tokio::runtime::Builder;
-use tokio::time::sleep;
+use tokio::{runtime::Builder, time::sleep};
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 mod cache;

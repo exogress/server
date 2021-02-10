@@ -1,6 +1,5 @@
 use clap::{Arg, ArgMatches};
-use sentry::integrations::panic::PanicIntegration;
-use sentry::{ClientInitGuard, ScopeGuard};
+use sentry::{integrations::panic::PanicIntegration, ClientInitGuard, ScopeGuard};
 
 pub fn add_args<'a>(app: clap::App<'a, 'a>) -> clap::App<'a, 'a> {
     app.arg(

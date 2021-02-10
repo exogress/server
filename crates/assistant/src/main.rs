@@ -7,20 +7,17 @@ extern crate tracing;
 #[macro_use]
 extern crate serde;
 
-use crate::elasticsearch::ElasticsearchClient;
-use crate::http::GatewayCommonTlsConfig;
-use crate::reporting::MongoDbClient;
-use crate::termination::StopReason;
+use crate::{
+    elasticsearch::ElasticsearchClient, http::GatewayCommonTlsConfig, reporting::MongoDbClient,
+    termination::StopReason,
+};
 use clap::{crate_version, App, Arg};
-use exogress_common::common_utils::termination::stop_signal_listener;
-use exogress_common::entities::Ulid;
+use exogress_common::{common_utils::termination::stop_signal_listener, entities::Ulid};
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use mimalloc::MiMalloc;
 use redis::Client;
-use std::net::SocketAddr;
-use std::panic::AssertUnwindSafe;
-use std::time::Duration;
+use std::{net::SocketAddr, panic::AssertUnwindSafe, time::Duration};
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};

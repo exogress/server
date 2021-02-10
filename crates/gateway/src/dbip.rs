@@ -19,8 +19,7 @@ pub struct LocationAndIsp {
 }
 
 pub mod model {
-    use serde::de;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
     use smol_str::SmolStr;
 
     #[derive(Deserialize, Serialize, Clone, Debug)]

@@ -1,15 +1,13 @@
-use exogress_common::config_core::AuthProvider;
-use exogress_common::entities::HandlerName;
-use exogress_server_common::assistant::{GetValue, SetValue};
-use exogress_server_common::url_prefix::MountPointBaseUrl;
+use exogress_common::{config_core::AuthProvider, entities::HandlerName};
+use exogress_server_common::{
+    assistant::{GetValue, SetValue},
+    url_prefix::MountPointBaseUrl,
+};
 use http::StatusCode;
-use oauth2::basic::BasicTokenResponse;
-use oauth2::reqwest::Error;
+use oauth2::{basic::BasicTokenResponse, reqwest::Error};
 use reqwest::Identity;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use std::str::FromStr;
-use std::time::Duration;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{str::FromStr, time::Duration};
 use url::Url;
 
 pub mod github;

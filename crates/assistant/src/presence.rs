@@ -1,6 +1,5 @@
 use reqwest::{Identity, Method, StatusCode, Url};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

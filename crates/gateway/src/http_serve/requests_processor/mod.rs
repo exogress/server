@@ -1,31 +1,42 @@
-use crate::cache::{Cache, HandlerChecksum};
-use crate::clients::traffic_counter::{RecordedTrafficStatistics, TrafficCounters};
-use crate::clients::ClientTunnels;
-use crate::http_serve::auth::JwtEcdsa;
-use crate::http_serve::requests_processor::modifications::{Replaced, ResolvedPathSegmentsModify};
-use crate::mime_helpers::{is_mime_match, ordered_by_quality};
-use crate::public_hyper_client::MeteredHttpsConnector;
-use crate::rules_counter::AccountCounters;
-use crate::webapp::{ConfigData, ConfigsResponse};
+use crate::{
+    cache::{Cache, HandlerChecksum},
+    clients::{
+        traffic_counter::{RecordedTrafficStatistics, TrafficCounters},
+        ClientTunnels,
+    },
+    http_serve::{
+        auth::JwtEcdsa,
+        requests_processor::modifications::{Replaced, ResolvedPathSegmentsModify},
+    },
+    mime_helpers::{is_mime_match, ordered_by_quality},
+    public_hyper_client::MeteredHttpsConnector,
+    rules_counter::AccountCounters,
+    webapp::{ConfigData, ConfigsResponse},
+};
 use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use core::mem;
-use exogress_common::config_core::{
-    self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant, Exception,
-    MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue, MatchingPath,
-    MethodMatcher, ModifyHeaders, OnResponse, RescueItem, ResponseBody, Rule, StaticResponse,
-    StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
+use exogress_common::{
+    config_core::{
+        self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant,
+        Exception, MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue,
+        MatchQueryValue, MatchingPath, MethodMatcher, ModifyHeaders, OnResponse, RescueItem,
+        ResponseBody, Rule, StaticResponse, StatusCodeRange, TemplateEngine,
+        TrailingSlashFilterRule, UrlPathSegment,
+    },
+    entities::{
+        AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName,
+        ProjectName, StaticResponseName,
+    },
 };
-use exogress_common::entities::{
-    AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName, ProjectName,
-    StaticResponseName,
+use exogress_server_common::{
+    logging::{ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep},
+    presence,
 };
-use exogress_server_common::logging::{
-    ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep,
+use futures::{
+    channel::{mpsc, oneshot},
+    SinkExt, StreamExt,
 };
-use exogress_server_common::presence;
-use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, StreamExt};
 use handlebars::Handlebars;
 use hashbrown::HashMap;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
@@ -35,11 +46,13 @@ use parking_lot::Mutex;
 use serde_json::json;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
-use std::collections::BTreeMap;
-use std::convert::{TryFrom, TryInto};
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::time::Instant;
+use std::{
+    collections::BTreeMap,
+    convert::{TryFrom, TryInto},
+    net::SocketAddr,
+    str::FromStr,
+    time::Instant,
+};
 use tokio::io::AsyncWriteExt;
 use trust_dns_resolver::TokioAsyncResolver;
 use typed_headers::{Accept, ContentType, HeaderMapExt};
@@ -60,10 +73,12 @@ mod proxy;
 mod s3_bucket;
 mod static_dir;
 
-use crate::dbip::LocationAndIsp;
-use crate::http_serve::requests_processor::pass_through::ResolvedPassThrough;
-use crate::http_serve::requests_processor::post_processing::{
-    ResolvedEncoding, ResolvedImage, ResolvedPostProcessing,
+use crate::{
+    dbip::LocationAndIsp,
+    http_serve::requests_processor::{
+        pass_through::ResolvedPassThrough,
+        post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
+    },
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use exogress_common::common_utils::uri_ext::UriExt;

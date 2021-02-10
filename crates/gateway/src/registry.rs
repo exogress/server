@@ -1,5 +1,7 @@
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use crate::http_serve::RequestsProcessor;
 use chrono::{DateTime, Utc};

@@ -5,16 +5,20 @@ use exogress_server_common::logging::{
 };
 use futures::TryStreamExt;
 use hashbrown::HashSet;
-use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use http::{HeaderValue, Request, Response};
+use http::{
+    header::{CONTENT_LENGTH, CONTENT_TYPE},
+    HeaderValue, Request, Response,
+};
 use hyper::Body;
 use itertools::Itertools;
 use magick_rust::{magick_wand_genesis, MagickWand};
 use smol_str::SmolStr;
-use std::convert::TryFrom;
-use std::str::FromStr;
-use std::sync::{Arc, Once};
-use std::{io, mem};
+use std::{
+    convert::TryFrom,
+    io, mem,
+    str::FromStr,
+    sync::{Arc, Once},
+};
 use tokio::task;
 use tokio_util::either::Either;
 use typed_headers::{ContentCoding, ContentType, HeaderMapExt};

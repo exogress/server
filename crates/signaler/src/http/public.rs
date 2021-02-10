@@ -1,19 +1,20 @@
 use std::net::SocketAddr;
 
-use futures::channel::mpsc;
-use futures::{pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
+use futures::{channel::mpsc, pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
 use tokio::time::Duration;
 
-use exogress_common::entities::{AccountName, ProfileName, ProjectName};
-use exogress_common::signaling::{
-    InstanceConfigMessage, SignalerHandshakeResponse, WsInstanceToCloudMessage,
+use exogress_common::{
+    entities::{AccountName, ProfileName, ProjectName},
+    signaling::{InstanceConfigMessage, SignalerHandshakeResponse, WsInstanceToCloudMessage},
 };
 use warp::Filter;
 
 use crate::termination::StopReason;
 use exogress_common::common_utils::backoff::Backoff;
-use exogress_server_common::presence;
-use exogress_server_common::presence::{Error, InstanceRegistered, UpstreamHealthReport};
+use exogress_server_common::{
+    presence,
+    presence::{Error, InstanceRegistered, UpstreamHealthReport},
+};
 use shadow_clone::shadow_clone;
 use stop_handle::{StopHandle, StopWait};
 

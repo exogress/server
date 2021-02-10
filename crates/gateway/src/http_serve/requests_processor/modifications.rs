@@ -3,8 +3,7 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use regex::{Captures, RegexBuilder};
 use smol_str::SmolStr;
-use std::borrow::Cow;
-use std::num::ParseIntError;
+use std::{borrow::Cow, num::ParseIntError};
 
 #[derive(Debug)]
 pub struct ResolvedPathSegmentsModify(pub SmolStr);

@@ -1,13 +1,19 @@
-use crate::clients::{ClientTunnels, HttpConnector};
-use crate::http_serve::requests_processor::helpers::{
-    add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
+use crate::{
+    clients::{ClientTunnels, HttpConnector},
+    http_serve::requests_processor::{
+        helpers::{
+            add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
+        },
+        post_processing::ResolvedPostProcessing,
+        HandlerInvocationResult,
+    },
 };
-use crate::http_serve::requests_processor::post_processing::ResolvedPostProcessing;
-use crate::http_serve::requests_processor::HandlerInvocationResult;
 use core::fmt;
-use exogress_common::config_core::StaticDir;
-use exogress_common::entities::{ConfigId, HandlerName, InstanceId};
-use exogress_common::tunnel::ConnectTarget;
+use exogress_common::{
+    config_core::StaticDir,
+    entities::{ConfigId, HandlerName, InstanceId},
+    tunnel::ConnectTarget,
+};
 use exogress_server_common::logging::{
     HandlerProcessingStep, LogMessage, ProcessingStep, StaticDirHandlerLogMessage,
 };
@@ -16,8 +22,7 @@ use hyper::Body;
 use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
-use std::convert::TryInto;
-use std::net::SocketAddr;
+use std::{convert::TryInto, net::SocketAddr};
 use weighted_rs::{SmoothWeight, Weight};
 
 pub struct ResolvedStaticDir {

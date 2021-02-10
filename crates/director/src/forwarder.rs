@@ -1,16 +1,14 @@
-use crate::balancer::ShardedGateways;
-use crate::tls::extract_sni_hostname;
+use crate::{balancer::ShardedGateways, tls::extract_sni_hostname};
 use anyhow::Context;
 use exogress_server_common::director::SourceInfo;
 use object_pool::Pool;
-use std::convert::TryInto;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{convert::TryInto, net::SocketAddr, sync::Arc, time::Duration};
 use sys_info::mem_info;
-use tokio::io;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    io,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
 
 #[derive(Builder)]
 pub struct Forwarder {
