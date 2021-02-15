@@ -1,5 +1,5 @@
 use crate::http_serve::RequestsProcessor;
-use exogress_common::config_core::parametrized;
+use exogress_common::config_core::referenced;
 use exogress_server_common::logging::{
     CompressProcessingStep, LogMessage, OptimizeProcessingStep, ProcessingStep,
 };
@@ -33,7 +33,7 @@ pub struct ResolvedPostProcessing {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedEncoding {
-    pub mime_types: Result<HashSet<SmolStr>, parametrized::Error>,
+    pub mime_types: Result<HashSet<SmolStr>, referenced::Error>,
     pub brotli: bool,
     pub gzip: bool,
     pub deflate: bool,

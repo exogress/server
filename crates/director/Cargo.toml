@@ -29,7 +29,7 @@ rand_xoshiro = "0.6.0"
 rand = "0.8"
 itertools = "0.10.0"
 tls-parser = "0.10"
-nom = "^6.0"
+nom = { version = "^6.1", features = ["funty"] }
 seahash = "4.1"
 prometheus = "0.11.0"
 lazy_static = "1.4.0"

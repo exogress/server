@@ -11,8 +11,8 @@ use cookie::Cookie;
 use exogress_common::{
     common_utils::uri_ext::UriExt,
     config_core::{
-        parametrized,
-        parametrized::acl::{Acl, AclEntry},
+        referenced,
+        referenced::acl::{Acl, AclEntry},
         AuthProvider,
     },
     entities::HandlerName,
@@ -45,7 +45,7 @@ struct Claims {
 
 #[derive(Debug)]
 pub struct ResolvedAuth {
-    pub providers: Vec<(AuthProvider, Result<Acl, parametrized::Error>)>,
+    pub providers: Vec<(AuthProvider, Result<Acl, referenced::Error>)>,
     pub handler_name: HandlerName,
     pub mount_point_base_url: MountPointBaseUrl,
     pub jwt_ecdsa: JwtEcdsa,
@@ -95,7 +95,7 @@ impl ResolvedAuth {
     fn auth_definition(
         &self,
         used_provider: &Oauth2Provider,
-    ) -> Option<&(AuthProvider, Result<Acl, parametrized::Error>)> {
+    ) -> Option<&(AuthProvider, Result<Acl, referenced::Error>)> {
         self.providers
             .iter()
             .find(|provider| match (&provider.0, used_provider) {

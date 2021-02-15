@@ -2,8 +2,7 @@ use chrono::serde::ts_milliseconds;
 use exogress_common::{
     config_core::Exception,
     entities::{
-        AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName, SmolStr,
-        StaticResponseName, Upstream,
+        AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName, SmolStr, Upstream,
     },
 };
 use hashbrown::HashMap;
@@ -74,7 +73,7 @@ pub struct CompressProcessingStep {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StaticResponseProcessingStep {
-    pub static_response: StaticResponseName,
+    // pub static_response: StaticResponseName,
     pub data: HashMap<SmolStr, SmolStr>,
     pub config_name: Option<ConfigName>,
     pub language: Option<LanguageTagBuf>,

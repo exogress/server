@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::Context;
 use core::{fmt, mem};
-use exogress_common::config_core::{parametrized, parametrized::google::bucket::GcsBucket};
+use exogress_common::config_core::{referenced, referenced::google::bucket::GcsBucket};
 use exogress_server_common::logging::{
     GcsBucketHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
 };
@@ -20,8 +20,8 @@ use std::convert::{TryFrom, TryInto};
 
 pub struct ResolvedGcsBucket {
     pub client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
-    pub bucket_name: Result<GcsBucket, parametrized::Error>,
-    pub auth: Result<tame_oauth::gcp::ServiceAccountAccess, parametrized::Error>,
+    pub bucket_name: Result<GcsBucket, referenced::Error>,
+    pub auth: Result<tame_oauth::gcp::ServiceAccountAccess, referenced::Error>,
     pub token: Mutex<Option<tame_oauth::Token>>,
     pub is_cache_enabled: bool,
     pub post_processing: ResolvedPostProcessing,

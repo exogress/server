@@ -6,7 +6,7 @@ use crate::{
     public_hyper_client::MeteredHttpsConnector,
 };
 use core::mem;
-use exogress_common::config_core::parametrized;
+use exogress_common::config_core::referenced;
 use exogress_server_common::logging::{
     HandlerProcessingStep, LogMessage, ProcessingStep, S3BucketHandlerLogMessage,
 };
@@ -19,8 +19,8 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct ResolvedS3Bucket {
     pub client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
-    pub credentials: Option<Result<rusty_s3::Credentials, parametrized::Error>>,
-    pub bucket: Result<rusty_s3::Bucket, parametrized::Error>,
+    pub credentials: Option<Result<rusty_s3::Credentials, referenced::Error>>,
+    pub bucket: Result<rusty_s3::Bucket, referenced::Error>,
     pub is_cache_enabled: bool,
     pub post_processing: ResolvedPostProcessing,
 }

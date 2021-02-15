@@ -20,9 +20,8 @@ use exogress_common::{
     config_core::{
         self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant,
         Exception, MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue,
-        MatchQueryValue, MatchingPath, MethodMatcher, ModifyHeaders, OnResponse, RescueItem,
-        ResponseBody, Rule, StaticResponse, StatusCodeRange, TemplateEngine,
-        TrailingSlashFilterRule, UrlPathSegment,
+        MatchQueryValue, MatchingPath, MethodMatcher, ModifyHeaders, OnResponse, ResponseBody,
+        StaticResponse, StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
     },
     entities::{
         AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName,
@@ -30,7 +29,7 @@ use exogress_common::{
     },
 };
 use exogress_server_common::{
-    logging::{ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep},
+    logging::{LogMessage, ProcessingStep, StaticResponseProcessingStep},
     presence,
 };
 use futures::{
@@ -70,6 +69,7 @@ mod modifications;
 mod pass_through;
 mod post_processing;
 mod proxy;
+pub mod refinable;
 mod s3_bucket;
 mod static_dir;
 
@@ -81,8 +81,17 @@ use crate::{
     },
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use exogress_common::{common_utils::uri_ext::UriExt, config_core::TrailingSlashModification};
-use exogress_server_common::url_prefix::MountPointBaseUrl;
+use exogress_common::{
+    common_utils::uri_ext::UriExt,
+    config_core::{
+        referenced,
+        referenced::{Container, Parameter},
+        refinable::RefinableSet,
+        ClientConfigRevision, Scope, TrailingSlashModification,
+    },
+    entities::ParameterName,
+};
+use exogress_server_common::{logging::ExceptionProcessingStep, url_prefix::MountPointBaseUrl};
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use langtag::LanguageTagBuf;
 use memmap::Mmap;
@@ -686,12 +695,7 @@ enum ResolvedFinalizingRuleAction {
         exception: Exception,
         data: HashMap<SmolStr, SmolStr>,
     },
-    Respond {
-        static_response_name: StaticResponseName,
-        static_response: Option<ResolvedStaticResponse>,
-        data: HashMap<SmolStr, SmolStr>,
-        rescue: Vec<ResolvedRescueItem>,
-    },
+    Respond(ResolvedStaticResponseAction),
 }
 
 #[derive(Debug)]
@@ -710,15 +714,105 @@ impl ResolvedRuleAction {
 }
 
 #[derive(Debug, Clone)]
+struct ResolvedStaticResponseAction {
+    // static_response_name: StaticResponseName,
+    pub static_response: Result<ResolvedStaticResponse, referenced::Error>,
+    pub rescue: Vec<ResolvedRescueItem>,
+}
+
+impl ResolvedStaticResponseAction {
+    fn handle_static_response(
+        &self,
+        handler: &ResolvedHandler,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        additional_data: Option<&HashMap<SmolStr, SmolStr>>,
+        is_in_exception: bool,
+        language: &Option<LanguageTagBuf>,
+        log_message: &mut LogMessage,
+    ) -> ResolvedHandlerProcessingResult {
+        let facts = log_message.facts.clone();
+
+        *res = Response::new(Body::empty());
+
+        match &self.static_response {
+            Err(e) => {
+                let mut data = additional_data.cloned().unwrap_or_default();
+
+                data.insert(SmolStr::from("error"), SmolStr::from(e.to_string()));
+
+                let rescueable = Rescueable::Exception {
+                    exception: &"static-response-error:not-defined".parse().unwrap(),
+                    data: &data,
+                };
+
+                return handler.handle_rescueable(
+                    req,
+                    res,
+                    &rescueable,
+                    true,
+                    &self.rescue,
+                    &language,
+                    log_message,
+                );
+            }
+            Ok(static_response) => {
+                let mut data = if let Some(d) = additional_data {
+                    d.clone()
+                } else {
+                    Default::default()
+                };
+                for (k, v) in &static_response.data {
+                    data.insert(k.clone(), v.clone());
+                }
+
+                log_message.steps.push(ProcessingStep::StaticResponse(
+                    StaticResponseProcessingStep {
+                        data: static_response.data.clone(),
+                        config_name: handler.config_name.clone(),
+                        language: language.clone(),
+                    },
+                ));
+
+                match static_response.invoke(req, res, data, &language, facts) {
+                    Ok(()) => ResolvedHandlerProcessingResult::Processed,
+                    Err((exception, data)) => {
+                        *res = Response::new(Body::empty());
+                        if !is_in_exception {
+                            let rescueable = Rescueable::Exception {
+                                exception: &exception,
+                                data: &data,
+                            };
+                            error!("could not invoke static resp; call handle_rescueable. rescue handlers: {:?}", self.rescue);
+                            handler.handle_rescueable(
+                                req,
+                                res,
+                                &rescueable,
+                                false,
+                                &self.rescue,
+                                &language,
+                                log_message,
+                            )
+                        } else {
+                            *res.body_mut() = Body::from("Internal server error");
+                            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+
+                            ResolvedHandlerProcessingResult::Processed
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 enum ResolvedCatchAction {
-    StaticResponse {
-        static_response_name: StaticResponseName,
-        static_response: Option<ResolvedStaticResponse>,
-        data: HashMap<SmolStr, SmolStr>,
-    },
+    StaticResponse(ResolvedStaticResponseAction),
     Throw {
         exception: Exception,
         data: HashMap<SmolStr, SmolStr>,
+        rescues: Vec<ResolvedRescueItem>,
     },
     NextHandler,
 }
@@ -1213,11 +1307,8 @@ pub struct ResolvedHandler {
     rebase: Option<Rebase>,
 
     priority: u16,
-    handler_rescue: Vec<ResolvedRescueItem>,
 
-    mount_point_rescue: Vec<ResolvedRescueItem>,
-    config_rescue: Vec<ResolvedRescueItem>,
-    project_rescue: Vec<ResolvedRescueItem>,
+    catches: Vec<ResolvedRescueItem>,
 
     resolved_rules: Vec<ResolvedRule>,
 
@@ -1237,13 +1328,6 @@ enum Rescueable<'a> {
 }
 
 impl<'a> Rescueable<'a> {
-    fn is_exception(&'a self) -> bool {
-        match self {
-            Rescueable::Exception { .. } => true,
-            Rescueable::StatusCode(_) => false,
-        }
-    }
-
     fn data(&'a self) -> Option<&'a HashMap<SmolStr, SmolStr>> {
         match self {
             Rescueable::Exception { data, .. } => Some(data),
@@ -1253,6 +1337,7 @@ impl<'a> Rescueable<'a> {
 }
 
 #[must_use]
+#[derive(Debug)]
 enum ResolvedHandlerProcessingResult {
     Processed,
     FiltersNotMatched,
@@ -1290,10 +1375,10 @@ impl ResolvedHandler {
     }
 
     fn find_exception_handler(
-        rescue: &Vec<ResolvedRescueItem>,
+        rescues: &Vec<ResolvedRescueItem>,
         rescueable: &Rescueable<'_>,
     ) -> Option<ResolvedCatchAction> {
-        for rescue_item in rescue.iter() {
+        for rescue_item in rescues.iter() {
             match (rescueable, &rescue_item.catch) {
                 (
                     Rescueable::Exception { exception, .. },
@@ -1321,7 +1406,7 @@ impl ResolvedHandler {
         res: &mut Response<Body>,
         rescueable: &Rescueable<'_>,
         is_in_exception: bool,
-        maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
+        rescues: &Vec<ResolvedRescueItem>,
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
@@ -1336,59 +1421,96 @@ impl ResolvedHandler {
                 }));
         }
 
-        let maybe_resolved_exception = maybe_rule_invoke_catch
-            .and_then(|r| Self::find_exception_handler(r, &rescueable))
-            .or_else(|| Self::find_exception_handler(&self.handler_rescue, &rescueable))
-            .or_else(|| Self::find_exception_handler(&self.mount_point_rescue, &rescueable))
-            .or_else(|| Self::find_exception_handler(&self.config_rescue, &rescueable))
-            .or_else(|| Self::find_exception_handler(&self.project_rescue, &rescueable));
+        let mut maybe_resolved_exception = Self::find_exception_handler(rescues, &rescueable);
+        let mut collected_data: HashMap<SmolStr, SmolStr> = if let Some(d) = rescueable.data() {
+            d.clone()
+        } else {
+            Default::default()
+        };
 
-        let result = match maybe_resolved_exception {
-            None => match rescueable {
-                &Rescueable::Exception { exception, data } => {
-                    RescueableHandleResult::UnhandledException {
-                        exception_name: exception.clone(),
-                        data: data.clone(),
+        let result = loop {
+            error!(
+                "=> maybe_resolved_exception = {:?} ",
+                maybe_resolved_exception
+            );
+
+            match maybe_resolved_exception {
+                None => match rescueable {
+                    &Rescueable::Exception { exception, data } => {
+                        collected_data.extend(data.iter().map(|(a, b)| (a.clone(), b.clone())));
+                        break RescueableHandleResult::UnhandledException {
+                            exception_name: exception.clone(),
+                            data: collected_data.clone(),
+                        };
+                    }
+                    Rescueable::StatusCode(_) => break RescueableHandleResult::FinishProcessing,
+                },
+                Some(ResolvedCatchAction::Throw {
+                    exception,
+                    data: rethrow_data,
+                    rescues,
+                }) => {
+                    collected_data.extend(rethrow_data.iter().map(|(a, b)| (a.clone(), b.clone())));
+
+                    let rethrow = Rescueable::Exception {
+                        exception: &exception,
+                        data: &collected_data,
+                    };
+                    maybe_resolved_exception = Self::find_exception_handler(&rescues, &rethrow);
+
+                    error!(
+                        "in throw exception handler, the next resolved exception will be: {:?}",
+                        maybe_resolved_exception
+                    );
+
+                    match maybe_resolved_exception {
+                        Some(_) => {
+                            continue;
+                        }
+                        None => match &rescueable {
+                            Rescueable::Exception { .. } => {
+                                break RescueableHandleResult::UnhandledException {
+                                    exception_name: exception.clone(),
+                                    data: collected_data.clone(),
+                                };
+                            }
+                            Rescueable::StatusCode(_) => {
+                                break RescueableHandleResult::FinishProcessing
+                            }
+                        },
                     }
                 }
-                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing,
-            },
-            Some(ResolvedCatchAction::Throw { exception, data }) => match rescueable {
-                &Rescueable::Exception { .. } => RescueableHandleResult::UnhandledException {
-                    exception_name: exception.clone(),
-                    data: data.clone(),
-                },
-                Rescueable::StatusCode(_) => RescueableHandleResult::FinishProcessing,
-            },
-            Some(ResolvedCatchAction::StaticResponse {
-                static_response_name,
-                static_response,
-                data,
-            }) => RescueableHandleResult::StaticResponse {
-                static_response_name: static_response_name.clone(),
-                static_response: static_response.clone(),
-                data: data.clone(),
-            },
-            Some(ResolvedCatchAction::NextHandler) => RescueableHandleResult::NextHandler,
+                Some(ResolvedCatchAction::StaticResponse(ResolvedStaticResponseAction {
+                    static_response,
+                    rescue,
+                })) => {
+                    if let Ok(resp) = &static_response {
+                        collected_data
+                            .extend(resp.data.iter().map(|(a, b)| (a.clone(), b.clone())));
+                    }
+                    error!("=> found that we should response with static response action when handled exception. static_response = {:?}, rescueable = {:?}", static_response, rescueable);
+                    // FIXME: this will probably break data merging if static-resp is innvolvedd
+                    // FIXME: merged data shouldd be store to the cotaiier, so that onn exception nnew exception queue is processed
+                    break RescueableHandleResult::StaticResponse(ResolvedStaticResponseAction {
+                        static_response: static_response.clone(),
+                        rescue,
+                    });
+                }
+                Some(ResolvedCatchAction::NextHandler) => {
+                    break RescueableHandleResult::NextHandler
+                }
+            }
         };
 
         match result {
-            RescueableHandleResult::StaticResponse {
-                static_response_name,
-                static_response,
-                mut data,
-            } => {
-                if let Some(additional_data) = rescueable.data() {
-                    data.extend(additional_data.iter().map(|(k, v)| (k.clone(), v.clone())));
-                }
-                self.handle_static_response(
+            RescueableHandleResult::StaticResponse(action) => {
+                info!("handle exception through {:?}", action);
+                action.handle_static_response(
+                    self,
                     req,
                     res,
-                    &static_response_name,
-                    &static_response,
-                    data,
-                    rescueable.is_exception() || is_in_exception,
-                    maybe_rule_invoke_catch,
+                    Some(&collected_data),
+                    is_in_exception,
                     &language,
                     log_message,
                 )
@@ -1563,9 +1685,7 @@ impl ResolvedHandler {
         info!("Request headers after modification: {:?}", req.headers());
 
         match action {
-            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
-                rescue: catch,
-            }) => {
+            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke { rescue }) => {
                 let invocation_result = self
                     .resolved_variant
                     .invoke(
@@ -1592,12 +1712,15 @@ impl ResolvedHandler {
                         }
 
                         let rescueable = Rescueable::StatusCode(res.status());
+
+                        error!("=> handle rescueable {:?}", rescueable);
+
                         self.handle_rescueable(
                             req,
                             res,
                             &rescueable,
                             false,
-                            Some(catch),
+                            rescue,
                             &language,
                             log_message,
                         )
@@ -1615,7 +1738,7 @@ impl ResolvedHandler {
                             res,
                             &rescueable,
                             false,
-                            Some(catch),
+                            &rescue,
                             &language,
                             log_message,
                         )
@@ -1630,112 +1753,30 @@ impl ResolvedHandler {
                 data,
             }) => {
                 let rescueable = Rescueable::Exception { exception, data };
+                warn!("=> handle rescueable generated by throw: {:?}", rescueable);
                 return self.handle_rescueable(
                     req,
                     res,
                     &rescueable,
                     false,
-                    None,
+                    &self.catches,
                     &language,
                     log_message,
                 );
             }
-            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
-                static_response_name,
-                static_response,
-                data,
-                rescue,
-            }) => {
-                return self.handle_static_response(
+            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond(action)) => {
+                return action.handle_static_response(
+                    self,
                     req,
                     res,
-                    static_response_name,
-                    static_response,
-                    data.clone(),
+                    None,
                     false,
-                    Some(rescue),
                     &language,
                     log_message,
                 );
             }
             ResolvedRuleAction::None => {
                 unreachable!("None action should never be called for execution")
-            }
-        }
-    }
-
-    fn handle_static_response(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        static_response_name: &StaticResponseName,
-        maybe_static_response: &Option<ResolvedStaticResponse>,
-        additional_data: HashMap<SmolStr, SmolStr>,
-        is_in_exception: bool,
-        maybe_rule_invoke_catch: Option<&Vec<ResolvedRescueItem>>,
-        language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
-    ) -> ResolvedHandlerProcessingResult {
-        log_message.steps.push(ProcessingStep::StaticResponse(
-            StaticResponseProcessingStep {
-                static_response: static_response_name.clone(),
-                data: additional_data.clone(),
-                config_name: self.config_name.clone(),
-                language: language.clone(),
-            },
-        ));
-
-        let facts = log_message.facts.clone();
-
-        *res = Response::new(Body::empty());
-
-        match maybe_static_response {
-            None => {
-                let rescueable = Rescueable::Exception {
-                    exception: &"static-response-error:not-defined".parse().unwrap(),
-                    data: &additional_data,
-                };
-                return self.handle_rescueable(
-                    req,
-                    res,
-                    &rescueable,
-                    true,
-                    maybe_rule_invoke_catch,
-                    &language,
-                    log_message,
-                );
-            }
-            Some(static_response) => {
-                match static_response.invoke(req, res, additional_data, &language, facts) {
-                    Ok(()) => ResolvedHandlerProcessingResult::Processed,
-                    Err((exception, data)) => {
-                        *res = Response::new(Body::empty());
-                        if !is_in_exception {
-                            let rescueable = Rescueable::Exception {
-                                exception: &exception,
-                                data: &data,
-                            };
-                            self.handle_rescueable(
-                                req,
-                                res,
-                                &rescueable,
-                                false,
-                                maybe_rule_invoke_catch,
-                                &language,
-                                log_message,
-                            )
-                        } else {
-                            error!(
-                                "error evaluating static response while in exception handling: {:?}. {:?}",
-                                exception, data
-                            );
-                            *res.body_mut() = Body::from("Internal server error");
-                            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-
-                            ResolvedHandlerProcessingResult::Processed
-                        }
-                    }
-                }
             }
         }
     }
@@ -1757,11 +1798,7 @@ fn apply_headers(headers: &mut HeaderMap<HeaderValue>, modification: &ModifyHead
 #[must_use]
 enum RescueableHandleResult {
     /// Respond with static response
-    StaticResponse {
-        static_response_name: StaticResponseName,
-        static_response: Option<ResolvedStaticResponse>,
-        data: HashMap<SmolStr, SmolStr>,
-    },
+    StaticResponse(ResolvedStaticResponseAction),
     /// Move on to next handler
     NextHandler,
     /// Exception hasn't been handled by ant of handlers
@@ -1774,12 +1811,14 @@ enum RescueableHandleResult {
 }
 
 fn resolve_static_response(
-    static_response_name: &StaticResponseName,
+    static_response_container: Container<StaticResponse, StaticResponseName>,
     status_code: &Option<exogress_common::config_core::StatusCode>,
     data: &BTreeMap<SmolStr, SmolStr>,
-    static_responses: &HashMap<StaticResponseName, StaticResponse>,
-) -> Option<ResolvedStaticResponse> {
-    let static_response: StaticResponse = static_responses.get(&static_response_name)?.clone();
+    params: &HashMap<ParameterName, Parameter>,
+    refined: &RefinableSet,
+    scope: &Scope,
+) -> Result<ResolvedStaticResponse, referenced::Error> {
+    let static_response = static_response_container.resolve(params, refined, scope)?;
 
     let static_response_status_code = match &static_response {
         StaticResponse::Redirect(redirect) => redirect.redirect_type.status_code(),
@@ -1788,10 +1827,7 @@ fn resolve_static_response(
 
     let fallback_to_accept = match &static_response {
         StaticResponse::Redirect(_) => None,
-        StaticResponse::Raw(raw) => raw
-            .fallback_accept
-            .as_ref()
-            .and_then(|accept| mime::Mime::from_str(&accept).ok()),
+        StaticResponse::Raw(raw) => raw.fallback_accept.clone(),
     };
 
     let resolved = ResolvedStaticResponse {
@@ -1823,38 +1859,61 @@ fn resolve_static_response(
             .collect(),
     };
 
-    Some(resolved)
+    Ok(resolved)
 }
 
 fn resolve_catch_action(
+    client_config_info: &Option<(ConfigName, ClientConfigRevision)>,
+    params: &HashMap<ParameterName, Parameter>,
     catch_action: &CatchAction,
-    static_responses: &HashMap<StaticResponseName, StaticResponse>,
+    refinable_set: &RefinableSet,
+    scope: &Scope,
 ) -> Option<ResolvedCatchAction> {
     Some(match catch_action {
         CatchAction::StaticResponse {
-            name,
+            static_response,
             status_code,
             data,
-        } => ResolvedCatchAction::StaticResponse {
-            static_response_name: name.clone(),
-            static_response: resolve_static_response(name, status_code, data, static_responses),
-            data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        },
+        } => ResolvedCatchAction::StaticResponse(ResolvedStaticResponseAction {
+            static_response: resolve_static_response(
+                static_response.clone(),
+                status_code,
+                data,
+                params,
+                refinable_set,
+                scope,
+            ),
+            rescue: if let Some(prev_scope) = scope.prev(client_config_info) {
+                resolve_rescue_items(client_config_info, &params, &refinable_set, &prev_scope)?
+            } else {
+                Default::default()
+            },
+        }),
         CatchAction::Throw { exception, data } => ResolvedCatchAction::Throw {
             exception: exception.clone(),
             data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            rescues: if let Some(prev_scope) = scope.prev(client_config_info) {
+                resolve_rescue_items(client_config_info, &params, &refinable_set, &prev_scope)?
+            } else {
+                Default::default()
+            },
         },
         CatchAction::NextHandler => ResolvedCatchAction::NextHandler,
     })
 }
 
 fn resolve_rescue_items(
-    rescue: &[RescueItem],
-    static_responses: &HashMap<StaticResponseName, StaticResponse>,
+    client_config_info: &Option<(ConfigName, ClientConfigRevision)>,
+    params: &HashMap<ParameterName, Parameter>,
+    refinable_set: &RefinableSet,
+    scope: &Scope,
 ) -> Option<Vec<ResolvedRescueItem>> {
-    rescue
+    let available_exception_handlers = refinable_set.joined_for_scope(scope);
+
+    available_exception_handlers
+        .rescue
         .iter()
-        .map(|rescue_item| {
+        .map(|(rescue_item, _)| {
             Some(ResolvedRescueItem {
                 catch: match &rescue_item.catch {
                     CatchMatcher::StatusCode(status_code) => {
@@ -1864,7 +1923,13 @@ fn resolve_rescue_items(
                         ResolvedCatchMatcher::Exception(exception.clone())
                     }
                 },
-                handle: resolve_catch_action(&rescue_item.handle, &static_responses)?,
+                handle: resolve_catch_action(
+                    client_config_info,
+                    params,
+                    &rescue_item.handle,
+                    refinable_set,
+                    scope,
+                )?,
             })
         })
         .collect::<Option<_>>()
@@ -1902,9 +1967,11 @@ impl RequestsProcessor {
             stop_public_counter_rx,
         ));
 
+        let refinable = Arc::new(resp.refinable());
+
         let grouped = resp.configs.iter().group_by(|item| &item.config_name);
 
-        let project_rescue = resp.project_config.rescue;
+        let project_rescue = resp.project_config.refinable.rescue;
         let jwt_ecdsa = JwtEcdsa {
             private_key: resp.jwt_ecdsa.private_key.into(),
             public_key: resp.jwt_ecdsa.public_key.into(),
@@ -1920,7 +1987,7 @@ impl RequestsProcessor {
             .project_config
             .mount_points
             .into_iter()
-            .map(|(k, v)| (k, (None, None, None, None, None, None, v.into())));
+            .map(|(k, v)| (k, (None, None, None, None, None, v.into())));
 
         let grouped_mount_points = grouped
             .into_iter()
@@ -1935,13 +2002,11 @@ impl RequestsProcessor {
                     .1;
 
                 let config = &entry.config;
+                let config_revision = &entry.revision;
                 let instance_ids = entry.instance_ids.clone();
                 let active_profile = entry.active_profile.clone();
 
                 let upstreams = &config.upstreams;
-
-                let client_rescue = config.rescue.clone();
-                let client_config_static_responses = config.static_responses.clone();
 
                 config
                     .mount_points
@@ -1957,10 +2022,9 @@ impl RequestsProcessor {
                             mp_name,
                             (
                                 Some(config_name.clone()),
+                                Some(config_revision.clone()),
                                 Some(upstreams.clone()),
                                 Some(instance_ids.clone()),
-                                Some(client_rescue.clone()),
-                                Some(client_config_static_responses.clone()),
                                 Some(active_profile.clone()),
                                 mp,
                             ),
@@ -1975,31 +2039,22 @@ impl RequestsProcessor {
             .flatten()
             .collect::<Vec<_>>();
 
-        if grouped_mount_points.is_empty() {
-            return Err(anyhow!("no mount points returned"));
-        }
+        let mount_point_name = grouped_mount_points
+            .iter()
+            .next()
+            .ok_or_else(|| anyhow!("no mount points returned"))?
+            .0
+            .clone();
 
-        let mount_point_name = grouped_mount_points.iter().next().expect("FIXME").0.clone();
-
-        let project_static_responses = resp.project_config.static_responses.clone();
-
+        // let project_static_responses = resp.project_config.refinable.static_responses.clone();
+        //
         let mut merged_resolved_handlers = vec![];
 
         for (
             _mp_name,
-            (
-                config_name,
-                upstreams,
-                instance_ids,
-                client_config_rescue,
-                client_config_static_responses,
-                active_profile,
-                mp,
-            ),
+            (config_name, config_revision, upstreams, instance_ids, active_profile, mp),
         ) in grouped_mount_points.into_iter()
         {
-            let mp_rescue = mp.rescue.clone();
-
             shadow_clone!(instance_ids);
             shadow_clone!(project_rescue);
             shadow_clone!(jwt_ecdsa);
@@ -2018,7 +2073,6 @@ impl RequestsProcessor {
             shadow_clone!(traffic_counters);
             shadow_clone!(presence_client);
             shadow_clone!(params);
-            shadow_clone!(project_static_responses);
             shadow_clone!(active_profile);
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
@@ -2028,7 +2082,7 @@ impl RequestsProcessor {
                 recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
             });
 
-            let mp_static_responses = mp.static_responses;
+            let client_config_info = config_name.clone().zip(config_revision.clone());
 
             let mut r = mp.handlers
                 .into_iter()
@@ -2040,8 +2094,9 @@ impl RequestsProcessor {
                     }
                 })
                 .map({
-                    shadow_clone!(project_static_responses);
                     shadow_clone!(active_profile);
+                    shadow_clone!(mount_point_name);
+                    shadow_clone!(refinable);
 
                     move |(handler_name, handler)| {
                         let replace_base_path = handler
@@ -2050,24 +2105,11 @@ impl RequestsProcessor {
                             .map(|r| r.replace_base_path.clone())
                             .unwrap_or_default();
 
-                        let mut available_static_responses = HashMap::new();
-
-                        // Add all project level static-response to mount-point accessible
-                        for (k, v) in &project_static_responses {
-                            available_static_responses.insert(k.clone(), v.clone());
-                        }
-
-                        // Add all config level static-response to mount-point accessible
-                        if let Some(resps) = &client_config_static_responses {
-                            for (k, v) in resps {
-                                available_static_responses.insert(k.clone(), v.clone());
-                            }
-                        }
-
-                        // Add all mount-point static-responses
-                        for (k, v) in &mp_static_responses {
-                            available_static_responses.insert(k.clone(), v.clone());
-                        }
+                        let handler_scope = Scope::handler(
+                            config_name.clone().zip(config_revision.clone()),
+                            &mount_point_name,
+                            &handler_name,
+                        );
 
                         Some(ResolvedHandler {
                             handler_name: handler_name.clone(),
@@ -2093,7 +2135,9 @@ impl RequestsProcessor {
                                             .map(|auth_def| {
                                                 (
                                                     auth_def.name,
-                                                    auth_def.acl.resolve(&params)
+                                                    auth_def.acl.resolve_non_referenced(
+                                                        &params,
+                                                    )
                                                 )
                                             })
                                             .collect(),
@@ -2116,7 +2160,9 @@ impl RequestsProcessor {
                                                     .encoding
                                                     .mime_types
                                                     .clone()
-                                                    .resolve(&params)
+                                                    .resolve_non_referenced(
+                                                        &params,
+                                                    )
                                                     .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),
                                                 brotli: static_dir.post_processing.encoding.brotli,
                                                 gzip: static_dir.post_processing.encoding.gzip,
@@ -2162,7 +2208,9 @@ impl RequestsProcessor {
                                                     .encoding
                                                     .mime_types
                                                     .clone()
-                                                    .resolve(&params)
+                                                    .resolve_non_referenced(
+                                                        &params,
+                                                    )
                                                     .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: proxy.post_processing.encoding.brotli,
                                                 gzip: proxy.post_processing.encoding.gzip,
                                                 deflate: proxy.post_processing.encoding.deflate,
@@ -2218,7 +2266,9 @@ impl RequestsProcessor {
                                                     .encoding
                                                     .mime_types
                                                     .clone()
-                                                    .resolve(&params)
+                                                    .resolve_non_referenced(
+                                                        &params,
+                                                    )
                                                     .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: s3_bucket.post_processing.encoding.brotli,
                                                 gzip: s3_bucket.post_processing.encoding.gzip,
                                                 deflate: s3_bucket.post_processing.encoding.deflate,
@@ -2234,13 +2284,18 @@ impl RequestsProcessor {
                                             .credentials
                                             .map(|container|
                                                 container
-                                                    .resolve(&params)
+                                                    .resolve_non_referenced(
+                                                        &params,
+                                                    )
                                                     .map(|creds| {
                                                         rusty_s3::Credentials::new(creds.access_key_id.into(), creds.secret_access_key.into())
                                                     })
                                             ),
                                         bucket:
-                                        s3_bucket.bucket.resolve(&params)
+                                        s3_bucket.bucket
+                                            .resolve_non_referenced(
+                                                &params,
+                                            )
                                             .map(|s3_bucket_cfg| {
                                                 rusty_s3::Bucket::new(
                                                     s3_bucket_cfg.region.endpoint(),
@@ -2261,7 +2316,9 @@ impl RequestsProcessor {
                                                     .encoding
                                                     .mime_types
                                                     .clone()
-                                                    .resolve(&params)
+                                                    .resolve_non_referenced(
+                                                        &params,
+                                                    )
                                                     .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: gcs_bucket.post_processing.encoding.brotli,
                                                 gzip: gcs_bucket.post_processing.encoding.gzip,
                                                 deflate: gcs_bucket.post_processing.encoding.deflate,
@@ -2273,8 +2330,14 @@ impl RequestsProcessor {
                                             }
                                         },
                                         client: public_client.clone(),
-                                        bucket_name: gcs_bucket.bucket.resolve(&params),
-                                        auth: gcs_bucket.credentials.resolve(&params).map(|creds| {
+                                        bucket_name: gcs_bucket.bucket
+                                            .resolve_non_referenced(
+                                                &params,
+                                            )
+                                        ,
+                                        auth: gcs_bucket.credentials.resolve_non_referenced(
+                                            &params,
+                                        ).map(|creds| {
                                             tame_oauth::gcp::ServiceAccountAccess::new(
                                                 tame_oauth::gcp::ServiceAccountInfo::deserialize(
                                                     creds.json.as_str()
@@ -2296,37 +2359,32 @@ impl RequestsProcessor {
                                 }
                             },
                             priority: handler.priority,
-                            handler_rescue: resolve_rescue_items(
-                                &handler.rescue,
-                                &available_static_responses,
-                            )?,
-                            mount_point_rescue: resolve_rescue_items(
-                                &mp_rescue,
-                                &available_static_responses,
-                            )?,
-                            config_rescue: if let Some(client_rescue) = &client_config_rescue {
-                                resolve_rescue_items(
-                                    client_rescue,
-                                    &available_static_responses,
-                                )?
-                            } else {
-                                Default::default()
-                            },
-                            project_rescue: resolve_rescue_items(
-                                &project_rescue,
-                                &available_static_responses,
+                            catches: resolve_rescue_items(
+                                &client_config_info,
+                                &params,
+                                &refinable,
+                                &handler_scope,
                             )?,
                             resolved_rules: handler
                                 .rules
                                 .into_iter()
-                                .filter(|rule| {
+                                .enumerate()
+                                .filter(|(_, rule)| {
                                     if let Some(active_profile) = &active_profile {
                                         is_profile_active(&rule.profiles, active_profile)
                                     } else {
                                         true
                                     }
                                 })
-                                .map(|rule: Rule| {
+                                .map(|(rule_num, rule)| {
+                                    let rule_scope = Scope::rule(
+                                        config_name.clone().zip(config_revision.clone()),
+                                        &mount_point_name,
+                                        &handler_name,
+                                        rule_num,
+                                    );
+                                    let r1 = rule.clone();
+
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
                                             path: rule.filter.path.into(),
@@ -2356,11 +2414,19 @@ impl RequestsProcessor {
                                             .cloned()
                                             .collect(),
                                         action: match rule.action {
-                                            Action::Invoke { rescue, .. } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
-                                                rescue: resolve_rescue_items(
-                                                    &rescue,
-                                                    &available_static_responses,
-                                                )?,
+                                            Action::Invoke {  .. } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
+                                                rescue: {
+                                                    let rescue = resolve_rescue_items(
+                                                        &client_config_info,
+                                                        &params,
+                                                        &refinable,
+                                                        &rule_scope,
+                                                    )?;
+
+                                                    info!("rescue in rule {:?}/{} = {:?}", r1, rule_num, rescue);
+
+                                                    rescue
+                                                },
                                             }),
                                             Action::NextHandler => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::NextHandler),
                                             Action::None{ .. } => ResolvedRuleAction::None,
@@ -2369,22 +2435,23 @@ impl RequestsProcessor {
                                                 data: data.iter().map(|(k,v)| (k.as_str().into(), v.as_str().into())).collect(),
                                             }),
                                             Action::Respond {
-                                                name: static_response_name, status_code, data, rescue
-                                            } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond {
-                                                static_response_name: static_response_name.clone(),
+                                                static_response, status_code, data, ..
+                                            } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond(ResolvedStaticResponseAction {
                                                 static_response: resolve_static_response(
-                                                    &static_response_name,
+                                                    static_response,
                                                     &status_code,
                                                     &data,
-                                                    &available_static_responses,
-
+                                                    &params,
+                                                    &refinable,
+                                                    &handler_scope
                                                 ),
-                                                data: Default::default(), // TODO: what data should be here? argh, need integrateion test suite
                                                 rescue: resolve_rescue_items(
-                                                    &rescue,
-                                                    &available_static_responses,
+                                                    &client_config_info,
+                                                    &params,
+                                                    &refinable,
+                                                    &rule_scope,
                                                 )?,
-                                            }),
+                                            })),
                                         },
                                     })
                                 })
@@ -2453,7 +2520,7 @@ impl ResolvedStaticResponse {
                     .iter()
                     .filter_map(|resp_candidate| {
                         Some((
-                            resp_candidate.content_type.as_str().parse().ok()?,
+                            resp_candidate.content_type.essence_str().parse().ok()?,
                             resp_candidate,
                         ))
                     })
@@ -2548,13 +2615,13 @@ impl ResolvedStaticResponse {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResolvedCatchMatcher {
     StatusCode(StatusCodeRange),
     Exception(Exception),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResolvedRescueItem {
     catch: ResolvedCatchMatcher,
     handle: ResolvedCatchAction,
