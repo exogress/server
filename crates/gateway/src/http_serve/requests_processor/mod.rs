@@ -1789,7 +1789,7 @@ fn apply_headers(headers: &mut HeaderMap<HeaderValue>, modification: &ModifyHead
     for (header_name, header_value) in &modification.insert.0 {
         headers.insert(header_name.clone(), header_value.clone());
     }
-    for header_name in &modification.remove {
+    for header_name in &modification.remove.0 {
         headers.remove(header_name);
     }
 }
@@ -1827,14 +1827,14 @@ fn resolve_static_response(
 
     let fallback_to_accept = match &static_response {
         StaticResponse::Redirect(_) => None,
-        StaticResponse::Raw(raw) => raw.fallback_accept.clone(),
+        StaticResponse::Raw(raw) => raw.fallback_accept.clone().map(|r| r.0),
     };
 
     let resolved = ResolvedStaticResponse {
         status_code: status_code
             .as_ref()
             .map(|s| s.0)
-            .unwrap_or(static_response_status_code),
+            .unwrap_or(static_response_status_code.0),
         fallback_to_accept,
         body: match &static_response {
             StaticResponse::Raw(raw) => (&raw.body).clone(),
@@ -1843,9 +1843,9 @@ fn resolve_static_response(
             }
         },
         headers: match &static_response {
-            StaticResponse::Raw(raw) => raw.common.headers.clone(),
+            StaticResponse::Raw(raw) => raw.headers.0.clone(),
             StaticResponse::Redirect(redirect) => {
-                let mut headers = redirect.common.headers.clone();
+                let mut headers = redirect.headers.0.clone();
                 headers.insert(
                     LOCATION,
                     redirect.destination.to_destiation_string().parse().unwrap(),
@@ -2163,7 +2163,7 @@ impl RequestsProcessor {
                                                     .resolve_non_referenced(
                                                         &params,
                                                     )
-                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),
+                                                    .map(|m| m.0.iter().map(|mt| mt.0.essence_str().into()).collect()),
                                                 brotli: static_dir.post_processing.encoding.brotli,
                                                 gzip: static_dir.post_processing.encoding.gzip,
                                                 deflate: static_dir.post_processing.encoding.deflate,
@@ -2211,7 +2211,7 @@ impl RequestsProcessor {
                                                     .resolve_non_referenced(
                                                         &params,
                                                     )
-                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: proxy.post_processing.encoding.brotli,
+                                                    .map(|m| m.0.iter().map(|mt| mt.0.essence_str().into()).collect()),                                                brotli: proxy.post_processing.encoding.brotli,
                                                 gzip: proxy.post_processing.encoding.gzip,
                                                 deflate: proxy.post_processing.encoding.deflate,
                                                 min_size: proxy.post_processing.encoding.min_size,
@@ -2269,7 +2269,7 @@ impl RequestsProcessor {
                                                     .resolve_non_referenced(
                                                         &params,
                                                     )
-                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: s3_bucket.post_processing.encoding.brotli,
+                                                    .map(|m| m.0.iter().map(|mt| mt.0.essence_str().into()).collect()),                                                brotli: s3_bucket.post_processing.encoding.brotli,
                                                 gzip: s3_bucket.post_processing.encoding.gzip,
                                                 deflate: s3_bucket.post_processing.encoding.deflate,
                                                 min_size: s3_bucket.post_processing.encoding.min_size,
@@ -2319,7 +2319,7 @@ impl RequestsProcessor {
                                                     .resolve_non_referenced(
                                                         &params,
                                                     )
-                                                    .map(|m| m.0.iter().map(|mt| mt.essence_str().into()).collect()),                                                brotli: gcs_bucket.post_processing.encoding.brotli,
+                                                    .map(|m| m.0.iter().map(|mt| mt.0.essence_str().into()).collect()),                                                brotli: gcs_bucket.post_processing.encoding.brotli,
                                                 gzip: gcs_bucket.post_processing.encoding.gzip,
                                                 deflate: gcs_bucket.post_processing.encoding.deflate,
                                                 min_size: gcs_bucket.post_processing.encoding.min_size,
@@ -2520,7 +2520,7 @@ impl ResolvedStaticResponse {
                     .iter()
                     .filter_map(|resp_candidate| {
                         Some((
-                            resp_candidate.content_type.essence_str().parse().ok()?,
+                            resp_candidate.content_type.0.essence_str().parse().ok()?,
                             resp_candidate,
                         ))
                     })
