@@ -685,7 +685,8 @@ impl ResolvedHandlerVariant {
 }
 
 #[derive(Debug)]
-enum ResolvedFinalizingRuleAction {
+enum ResolvedRuleAction {
+enum ResolvedRuleAction {
     Invoke {
         rescue: Vec<ResolvedRescueItem>,
     },
@@ -695,21 +696,6 @@ enum ResolvedFinalizingRuleAction {
         data: HashMap<SmolStr, SmolStr>,
     },
     Respond(ResolvedStaticResponseAction),
-}
-
-#[derive(Debug)]
-enum ResolvedRuleAction {
-    Finalizing(ResolvedFinalizingRuleAction),
-    None,
-}
-
-impl ResolvedRuleAction {
-    fn is_finalizing(&self) -> bool {
-        match self {
-            ResolvedRuleAction::None => false,
-            ResolvedRuleAction::Finalizing(_) => true,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1539,68 +1525,16 @@ impl ResolvedHandler {
         HashMap<SmolStr, Matched>,
         usize,
         &ResolvedRuleAction,
-        Vec<&ResolvedRequestModifications>,
+        &ResolvedRequestModifications,
         &Vec<OnResponse>,
-        &Option<Vec<ResolvedPathSegmentsModify>>,
-        &TrailingSlashModification,
     )> {
-        let mut request_modifications_list = Vec::new();
-
-        let rule_action = self
-            .resolved_rules
+        self.resolved_rules
             .iter()
             .filter_map(|resolved_rule| resolved_rule.get_action(rebased_url, method))
             .inspect(|_| {
                 self.rules_counter.register_rule(&self.account_unique_id);
             })
-            .inspect(
-                |(_, _, _, request_modifications, _response_modifications)| {
-                    request_modifications_list.push(*request_modifications);
-                    // info!(
-                    //     "request_modifications = {:?}; response_modifications = {:?}",
-                    //     request_modifications, response_modifications
-                    // );
-                },
-            )
-            .filter(|(_, _, action, _, _)| action.is_finalizing())
-            .map(
-                |(
-                    matches,
-                    skip_segments,
-                    action,
-                    request_modifications,
-                    response_modifications,
-                )| {
-                    (
-                        matches,
-                        skip_segments,
-                        action,
-                        response_modifications,
-                        request_modifications,
-                    )
-                },
-            )
-            .next();
-
-        rule_action.map(
-            move |(
-                matches,
-                skip_segments,
-                action,
-                response_modifications,
-                request_modifications,
-            )| {
-                (
-                    matches,
-                    skip_segments,
-                    action,
-                    request_modifications_list,
-                    response_modifications,
-                    &request_modifications.path,
-                    &request_modifications.trailing_slash,
-                )
-            },
-        )
+            .next()
     }
 
     fn respond_server_error(&self, res: &mut Response<Body>) {
@@ -1620,24 +1554,17 @@ impl ResolvedHandler {
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
-        let (
-            matches,
-            skip_segments,
-            action,
-            request_modifications,
-            response_modification,
-            maybe_path_modify,
-            trailing_slash_modifications,
-        ) = match self.find_action(rebased_url, req.method()) {
-            None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
-            Some(action) => action,
-        };
+        let (matches, skip_segments, action, request_modification, response_modification) =
+            match self.find_action(rebased_url, req.method()) {
+                None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
+                Some(action) => action,
+            };
 
         let mut modify_query = rebased_url.query_pairs();
         let mut modified_url = rebased_url.clone();
 
         modified_url.clear_query();
-        if let Some(path_modify) = maybe_path_modify {
+        if let Some(path_modify) = &request_modification.path {
             modified_url.clear_segments();
 
             for replaced_segment in rebased_url.path_segments().iter().take(skip_segments) {
@@ -1659,7 +1586,7 @@ impl ResolvedHandler {
             }
         }
 
-        match trailing_slash_modifications {
+        match request_modification.trailing_slash {
             TrailingSlashModification::Keep => {
                 modified_url.ensure_trailing_slash(requested_url.path().ends_with("/"));
             }
@@ -1669,12 +1596,10 @@ impl ResolvedHandler {
 
         info!("modified_url = {:?}", modified_url);
 
-        for request_modification in &request_modifications {
-            apply_headers(req.headers_mut(), &request_modification.headers);
-            for remove_query_param in request_modification.remove_query_params.iter() {
-                info!("remove query param: {}", remove_query_param);
-                modify_query.remove(&remove_query_param.to_string());
-            }
+        apply_headers(req.headers_mut(), &request_modification.headers);
+        for remove_query_param in request_modification.remove_query_params.iter() {
+            info!("remove query param: {}", remove_query_param);
+            modify_query.remove(&remove_query_param.to_string());
         }
 
         info!("set query to {:?}", modify_query);
@@ -1684,7 +1609,7 @@ impl ResolvedHandler {
         info!("Request headers after modification: {:?}", req.headers());
 
         match action {
-            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke { rescue }) => {
+            ResolvedRuleAction::Invoke { rescue } => {
                 let invocation_result = self
                     .resolved_variant
                     .invoke(
@@ -1744,13 +1669,10 @@ impl ResolvedHandler {
                     }
                 }
             }
-            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::NextHandler) => {
+            ResolvedRuleAction::NextHandler => {
                 return ResolvedHandlerProcessingResult::NextHandler;
             }
-            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Throw {
-                exception,
-                data,
-            }) => {
+            ResolvedRuleAction::Throw { exception, data } => {
                 let rescueable = Rescueable::Exception { exception, data };
                 warn!("=> handle rescueable generated by throw: {:?}", rescueable);
                 return self.handle_rescueable(
@@ -1763,7 +1685,7 @@ impl ResolvedHandler {
                     log_message,
                 );
             }
-            ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond(action)) => {
+            ResolvedRuleAction::Respond(action) => {
                 return action.handle_static_response(
                     self,
                     req,
@@ -1773,9 +1695,6 @@ impl ResolvedHandler {
                     &language,
                     log_message,
                 );
-            }
-            ResolvedRuleAction::None => {
-                unreachable!("None action should never be called for execution")
             }
         }
     }
@@ -2413,7 +2332,7 @@ impl RequestsProcessor {
                                             .cloned()
                                             .collect(),
                                         action: match rule.action {
-                                            Action::Invoke {  .. } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Invoke {
+                                            Action::Invoke {  .. } => ResolvedRuleAction::Invoke {
                                                 rescue: {
                                                     let rescue = resolve_rescue_items(
                                                         &client_config_info,
@@ -2426,16 +2345,15 @@ impl RequestsProcessor {
 
                                                     rescue
                                                 },
-                                            }),
-                                            Action::NextHandler => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::NextHandler),
-                                            Action::None{ .. } => ResolvedRuleAction::None,
-                                            Action::Throw { exception, data } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Throw {
+                                            },
+                                            Action::NextHandler => ResolvedRuleAction::NextHandler,
+                                            Action::Throw { exception, data } => ResolvedRuleAction::Throw {
                                                 exception,
                                                 data: data.iter().map(|(k,v)| (k.as_str().into(), v.as_str().into())).collect(),
-                                            }),
+                                            },
                                             Action::Respond {
                                                 static_response, status_code, data, ..
-                                            } => ResolvedRuleAction::Finalizing(ResolvedFinalizingRuleAction::Respond(ResolvedStaticResponseAction {
+                                            } => ResolvedRuleAction::Respond(ResolvedStaticResponseAction {
                                                 static_response: resolve_static_response(
                                                     static_response,
                                                     &status_code,
@@ -2450,7 +2368,7 @@ impl RequestsProcessor {
                                                     &refinable,
                                                     &rule_scope,
                                                 )?,
-                                            })),
+                                            }),
                                         },
                                     })
                                 })
