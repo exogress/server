@@ -1,4 +1,5 @@
 use crate::http_serve::requests_processor::HandlerInvocationResult;
+use exogress_common::entities::exceptions;
 use exogress_server_common::logging::{
     ApplicationFirewallAction, ApplicationFirewallLogMessage, HandlerProcessingStep, LogMessage,
     ProcessingStep,
@@ -68,9 +69,7 @@ impl ResolvedApplicationFirewall {
             let mut data = HashMap::new();
             data.insert("detected".into(), detected.join(", ").into());
             HandlerInvocationResult::Exception {
-                name: "application-firewall-error:injection-detected"
-                    .parse()
-                    .unwrap(),
+                name: exceptions::APPLICATION_FIREWALL_INJECTION_DETECTED.clone(),
                 data,
             }
         } else {

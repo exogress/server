@@ -11,7 +11,7 @@ use crate::{
 use core::fmt;
 use exogress_common::{
     config_core::StaticDir,
-    entities::{ConfigId, HandlerName, InstanceId},
+    entities::{exceptions, ConfigId, HandlerName, InstanceId},
     tunnel::ConnectTarget,
 };
 use exogress_server_common::logging::{
@@ -22,7 +22,7 @@ use hyper::Body;
 use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
-use std::{convert::TryInto, net::SocketAddr};
+use std::net::SocketAddr;
 use weighted_rs::{SmoothWeight, Weight};
 
 pub struct ResolvedStaticDir {
@@ -62,7 +62,7 @@ impl ResolvedStaticDir {
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
-                name: "proxy-error:loop-detected".parse().unwrap(),
+                name: exceptions::PROXY_LOOP_DETECTED.clone(),
                 data: Default::default(),
             };
         }
@@ -73,7 +73,7 @@ impl ResolvedStaticDir {
 
         let instance_id = try_option_or_exception!(
             Weight::next(&mut *self.instance_ids.lock()),
-            "proxy-error:no-instances"
+            exceptions::PROXY_NO_INSTANCES
         );
 
         log_message
@@ -117,12 +117,12 @@ impl ResolvedStaticDir {
                     self.individual_hostname.clone(),
                 )
                 .await,
-            "proxy-error:instance-unreachable"
+            exceptions::PROXY_INSTANCE_UNREACHABLE.clone()
         );
 
         let proxy_res = try_or_exception!(
             http_client.request(proxy_req).await,
-            "proxy-error:upstream-unreachable"
+            exceptions::PROXY_UPSTREAM_UNREACHABLE.clone()
         );
 
         copy_headers_from_proxy_res_to_res(proxy_res.headers(), res);

@@ -30,7 +30,7 @@ macro_rules! try_or_exception {
                 let mut data: hashbrown::HashMap<SmolStr, SmolStr> = hashbrown::HashMap::new();
                 data.insert("error".into(), err.to_string().into());
                 return HandlerInvocationResult::Exception {
-                    name: $exception.try_into().expect("Bad exception format"),
+                    name: $exception.clone(),
                     data,
                 };
             }
@@ -44,7 +44,7 @@ macro_rules! try_option_or_exception {
             core::option::Option::Some(val) => val,
             core::option::Option::None => {
                 return HandlerInvocationResult::Exception {
-                    name: $exception.try_into().expect("Bad exception format"),
+                    name: $exception.clone(),
                     data: Default::default(),
                 };
             }

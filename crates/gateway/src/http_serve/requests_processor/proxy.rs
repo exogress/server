@@ -5,9 +5,10 @@ use crate::{
 use anyhow::Context;
 use core::{fmt, mem};
 use exogress_common::{
-    entities::{ConfigId, InstanceId, Upstream},
+    entities::{exceptions, ConfigId, InstanceId, Upstream},
     tunnel::{Compression, ConnectTarget},
 };
+
 use exogress_server_common::{
     logging::{HandlerProcessingStep, LogMessage, ProcessingStep, ProxyHandlerLogMessage},
     presence,
@@ -20,7 +21,7 @@ use http::{
 use hyper::Body;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
-use std::{convert::TryInto, net::SocketAddr};
+use std::net::SocketAddr;
 use weighted_rs::{SmoothWeight, Weight};
 
 use super::helpers::{
@@ -99,7 +100,7 @@ impl ResolvedProxy {
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
-                name: "proxy-error:loop-detected".parse().unwrap(),
+                name: exceptions::PROXY_LOOP_DETECTED.clone(),
                 data: Default::default(),
             };
         }
@@ -117,7 +118,7 @@ impl ResolvedProxy {
                     is_websocket = true;
                 } else {
                     return HandlerInvocationResult::Exception {
-                        name: "proxy-error:websockets:disabled".parse().unwrap(),
+                        name: exceptions::PROXY_WEBSOCKETS_DISABLED.clone(),
                         data: Default::default(),
                     };
                 }
@@ -193,12 +194,12 @@ impl ResolvedProxy {
 
                         let tcp = try_or_exception!(
                             maybe_tcp,
-                            "proxy-error:upstream-unreachable:connection-rejected"
+                            exceptions::PROXY_UPSTREAM_UNREACHABLE_CONNECTION_REJECTED.clone()
                         );
 
                         let (proxy_ws, mut res) = try_or_exception!(
                             tokio_tungstenite::client_async(ws_req, tcp).await,
-                            "proxy-error:websockets:connect-error"
+                            exceptions::PROXY_WEBSOCKETS_CONNECTION_ERROR
                         );
 
                         let req_for_upgrade = mem::replace(req, Request::new(Body::empty()));
@@ -288,7 +289,7 @@ impl ResolvedProxy {
 
                         try_or_exception!(
                             http_client.request(proxy_req).await,
-                            "proxy-error:upstream-unreachable"
+                            exceptions::PROXY_UPSTREAM_UNREACHABLE.clone()
                         )
                     };
 
@@ -329,9 +330,7 @@ impl ResolvedProxy {
                 }
                 None => {
                     return HandlerInvocationResult::Exception {
-                        name: "proxy-error:bad-gateway:no-healthy-upstreams"
-                            .parse()
-                            .unwrap(),
+                        name: exceptions::PROXY_BAD_GATEWAY.clone(),
                         data: Default::default(),
                     }
                 }

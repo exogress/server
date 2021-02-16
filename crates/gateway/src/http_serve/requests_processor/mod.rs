@@ -19,12 +19,12 @@ use core::mem;
 use exogress_common::{
     config_core::{
         self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant,
-        Exception, MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue,
-        MatchQueryValue, MatchingPath, MethodMatcher, ModifyHeaders, OnResponse, ResponseBody,
-        StaticResponse, StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
+        MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue,
+        MatchingPath, MethodMatcher, ModifyHeaders, OnResponse, ResponseBody, StaticResponse,
+        StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
     },
     entities::{
-        AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName,
+        exceptions, AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName,
         ProjectName, StaticResponseName,
     },
 };
@@ -49,7 +49,6 @@ use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
     net::SocketAddr,
-    str::FromStr,
     time::Instant,
 };
 use tokio::io::AsyncWriteExt;
@@ -89,7 +88,7 @@ use exogress_common::{
         refinable::RefinableSet,
         ClientConfigRevision, Scope, TrailingSlashModification,
     },
-    entities::ParameterName,
+    entities::{Exception, ParameterName},
 };
 use exogress_server_common::{logging::ExceptionProcessingStep, url_prefix::MountPointBaseUrl};
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
@@ -742,7 +741,7 @@ impl ResolvedStaticResponseAction {
                 data.insert(SmolStr::from("error"), SmolStr::from(e.to_string()));
 
                 let rescueable = Rescueable::Exception {
-                    exception: &"static-response-error:not-defined".parse().unwrap(),
+                    exception: &*exceptions::STATIC_RESPONSE_NOT_DEFINED,
                     data: &data,
                 };
 
@@ -2564,13 +2563,13 @@ impl ResolvedStaticResponse {
             (_, Some(fallback)) => self.select_best_response(std::iter::once(fallback)),
             (Err(_), _) => {
                 return Err((
-                    Exception::from_str("static-response-error:bad-accept-header").unwrap(),
+                    exceptions::STATIC_RESPONSE_BAD_ACCEPT_HEADER.clone(),
                     merged_data.clone(),
                 ));
             }
             (Ok(None), _) => {
                 return Err((
-                    Exception::from_str("static-response-error:no-accept-header").unwrap(),
+                    exceptions::STATIC_RESPONSE_NO_ACCEPT_HEADER.clone(),
                     merged_data.clone(),
                 ));
             }
@@ -2596,8 +2595,7 @@ impl ResolvedStaticResponse {
                             .map_err(|e| {
                                 merged_data.insert("error".into(), e.to_string().into());
                                 (
-                                    Exception::from_str("static-response-error:render-error")
-                                        .unwrap(),
+                                    exceptions::STATIC_RESPONSE_RENDER_ERROR.clone(),
                                     merged_data.into_iter().collect(),
                                 )
                             })?

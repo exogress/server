@@ -1,9 +1,7 @@
 use chrono::serde::ts_milliseconds;
-use exogress_common::{
-    config_core::Exception,
-    entities::{
-        AccountUniqueId, ConfigName, InstanceId, MountPointName, ProjectName, SmolStr, Upstream,
-    },
+use exogress_common::entities::{
+    AccountUniqueId, ConfigName, Exception, InstanceId, MountPointName, ProjectName, SmolStr,
+    Upstream,
 };
 use hashbrown::HashMap;
 use langtag::LanguageTagBuf;
