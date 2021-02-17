@@ -686,7 +686,6 @@ impl ResolvedHandlerVariant {
 
 #[derive(Debug)]
 enum ResolvedRuleAction {
-enum ResolvedRuleAction {
     Invoke {
         rescue: Vec<ResolvedRescueItem>,
     },
