@@ -25,8 +25,8 @@ use exogress_common::{
         StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
     },
     entities::{
-        exceptions, AccountUniqueId, ConfigId, ConfigName, HandlerName, InstanceId, MountPointName,
-        ProjectName, StaticResponseName,
+        exceptions, exceptions::MODIFICATION_ERROR, AccountUniqueId, ConfigId, ConfigName,
+        HandlerName, InstanceId, MountPointName, ProjectName, StaticResponseName,
     },
 };
 use exogress_server_common::{
@@ -698,6 +698,19 @@ enum ResolvedRuleAction {
         data: HashMap<SmolStr, SmolStr>,
     },
     Respond(ResolvedStaticResponseAction),
+}
+
+impl ResolvedRuleAction {
+    pub fn rescues(&self) -> Vec<ResolvedRescueItem> {
+        match self {
+            ResolvedRuleAction::Invoke { rescue } => rescue.clone(),
+            ResolvedRuleAction::NextHandler => Default::default(),
+            ResolvedRuleAction::Throw { .. } => Default::default(),
+            ResolvedRuleAction::Respond(ResolvedStaticResponseAction { rescue, .. }) => {
+                rescue.clone()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1637,7 +1650,25 @@ impl ResolvedHandler {
             TrailingSlashModification::Unset => modified_url.ensure_trailing_slash(false),
         }
 
-        apply_headers(req.headers_mut(), &request_modification.headers);
+        match apply_headers(req.headers_mut(), &request_modification.headers) {
+            Ok(()) => {}
+            Err(ex) => {
+                let rescueable = Rescueable::Exception {
+                    exception: &ex,
+                    data: &Default::default(),
+                };
+                return self.handle_rescueable(
+                    req,
+                    res,
+                    requested_url,
+                    &rescueable,
+                    false,
+                    &action.rescues(),
+                    &language,
+                    log_message,
+                );
+            }
+        }
 
         request_modification
             .modify_query
@@ -1663,10 +1694,29 @@ impl ResolvedHandler {
                     HandlerInvocationResult::Responded => {
                         for modification in response_modification {
                             if modification.when.status_code.is_belongs(&res.status()) {
-                                apply_headers(
+                                match apply_headers(
                                     res.headers_mut(),
                                     &modification.modifications.headers,
-                                );
+                                ) {
+                                    Ok(_) => {}
+                                    Err(ex) => {
+                                        let rescueable = Rescueable::Exception {
+                                            exception: &ex,
+                                            data: &Default::default(),
+                                        };
+
+                                        return self.handle_rescueable(
+                                            req,
+                                            res,
+                                            requested_url,
+                                            &rescueable,
+                                            false,
+                                            rescue,
+                                            &language,
+                                            log_message,
+                                        );
+                                    }
+                                }
                             }
                         }
 
@@ -1737,16 +1787,33 @@ impl ResolvedHandler {
     }
 }
 
-fn apply_headers(headers: &mut HeaderMap<HeaderValue>, modification: &ModifyHeaders) {
+fn is_header_value_valid(header_value: &HeaderValue) -> Result<(), Exception> {
+    if header_value.to_str().unwrap().contains("{{")
+        || header_value.to_str().unwrap().contains("}}")
+    {
+        return Err(MODIFICATION_ERROR.clone());
+    }
+
+    Ok(())
+}
+
+fn apply_headers(
+    headers: &mut HeaderMap<HeaderValue>,
+    modification: &ModifyHeaders,
+) -> Result<(), Exception> {
     for (header_name, header_value) in &modification.append.0 {
+        is_header_value_valid(header_value)?;
         headers.append(header_name.clone(), header_value.clone());
     }
     for (header_name, header_value) in &modification.insert.0 {
+        is_header_value_valid(header_value)?;
         headers.insert(header_name.clone(), header_value.clone());
     }
     for header_name in &modification.remove.0 {
         headers.remove(header_name);
     }
+
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2499,7 +2566,10 @@ impl ResolvedModifieableRedirectTo {
         matches: Option<&HashMap<SmolStr, Matched>>,
     ) -> anyhow::Result<String> {
         let (mut url_with_modified_path, should_strip) = match self {
-            ResolvedModifieableRedirectTo::AbsoluteUrl(url) => (url.clone(), false),
+            ResolvedModifieableRedirectTo::AbsoluteUrl(url) => {
+                // just `return url.to_string();`?
+                (url.clone(), false)
+            }
             ResolvedModifieableRedirectTo::Root => (http::Uri::from_static("http://base/"), true),
             ResolvedModifieableRedirectTo::WithBaseUrl(base_url, segments) => {
                 let mut url = base_url.clone();
