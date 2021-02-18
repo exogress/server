@@ -59,7 +59,7 @@ impl Replaced {
 
 fn replace_single_substitution(
     s: &str,
-    groups: &HashMap<SmolStr, Matched>,
+    filter_matches: &HashMap<SmolStr, Matched>,
 ) -> Result<Replaced, MatchPathModificationError> {
     let s = s.trim();
 
@@ -90,12 +90,12 @@ fn replace_single_substitution(
     let first_string = first.replace("\\.", ".");
     let first = first_string.as_str();
 
-    let m = groups
-        .get(first)
-        .ok_or_else(|| MatchPathModificationError::NotExistingReference {
+    let m = filter_matches.get(first).ok_or_else(|| {
+        MatchPathModificationError::NotExistingReference {
             main: first.into(),
             second: None,
-        })?;
+        }
+    })?;
 
     match second {
         None => match m {
@@ -140,7 +140,7 @@ fn replace_single_substitution(
 
 pub fn substitute_str_with_group(
     s: &str,
-    groups: &HashMap<SmolStr, Matched>,
+    filter_matchers: &HashMap<SmolStr, Matched>,
 ) -> Result<Replaced, MatchPathModificationError> {
     if let Some(right) = s.strip_prefix("{{") {
         if let Some(middle) = right.strip_suffix("}}") {
@@ -148,7 +148,7 @@ pub fn substitute_str_with_group(
                 return Err(MatchPathModificationError::MultipleSegments);
             }
 
-            return replace_single_substitution(middle, groups);
+            return replace_single_substitution(middle, filter_matchers);
         }
     }
 
@@ -158,7 +158,7 @@ pub fn substitute_str_with_group(
     let replaced = re.replace_all(s, |captures: &Captures<'_>| {
         let substitution = captures.get(1).unwrap().as_str();
 
-        match replace_single_substitution(substitution, groups) {
+        match replace_single_substitution(substitution, filter_matchers) {
             Ok(replace) => match replace {
                 Replaced::Multiple(_) => {
                     if error.is_none() {

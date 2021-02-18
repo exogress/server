@@ -76,6 +76,7 @@ mod static_dir;
 use crate::{
     dbip::LocationAndIsp,
     http_serve::requests_processor::{
+        modifications::substitute_str_with_group,
         pass_through::ResolvedPassThrough,
         post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
     },
@@ -1283,7 +1284,8 @@ impl ResolvedModifyQuery {
         &self,
         uri: &mut http::Uri,
         initial_query_params: &LinkedHashMap<String, String>,
-    ) {
+        filter_matchers: &HashMap<SmolStr, Matched>,
+    ) -> anyhow::Result<()> {
         let mut params = match &self.0.strategy {
             ModifyQueryStrategy::Keep { remove } => {
                 let mut query_params = initial_query_params.clone();
@@ -1296,7 +1298,13 @@ impl ResolvedModifyQuery {
                 let mut query_params: LinkedHashMap<String, String> = Default::default();
                 for to_keep in keep {
                     if let Some(value) = initial_query_params.get(to_keep.as_str()) {
-                        query_params.insert(to_keep.to_string(), value.clone());
+                        query_params.insert(
+                            to_keep.to_string(),
+                            match substitute_str_with_group(value, filter_matchers)? {
+                                Replaced::Multiple(multiple) => multiple.join("/").into(),
+                                Replaced::Single(single) => single.into(),
+                            },
+                        );
                     }
                 }
                 query_params
@@ -1304,10 +1312,18 @@ impl ResolvedModifyQuery {
         };
 
         for (param, value) in self.0.set.iter() {
-            params.insert(param.to_string(), value.to_string());
+            params.insert(
+                param.to_string(),
+                match substitute_str_with_group(value, filter_matchers)? {
+                    Replaced::Multiple(multiple) => multiple.join("/").into(),
+                    Replaced::Single(single) => single.into(),
+                },
+            );
         }
 
         uri.set_query(params);
+
+        Ok(())
     }
 }
 
@@ -1610,7 +1626,7 @@ impl ResolvedHandler {
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
-        let (matches, skip_segments, action, request_modification, response_modification) =
+        let (filter_matches, skip_segments, action, request_modification, response_modification) =
             match self.find_action(rebased_url, req.method()) {
                 None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
                 Some(action) => action,
@@ -1628,7 +1644,7 @@ impl ResolvedHandler {
             }
 
             for segment in path_modify.iter() {
-                let replaced = segment.substitute(&matches).expect("FIXME");
+                let replaced = segment.substitute(&filter_matches).expect("FIXME");
                 match replaced {
                     Replaced::Multiple(multiple) => {
                         for s in multiple {
@@ -1670,9 +1686,32 @@ impl ResolvedHandler {
             }
         }
 
-        request_modification
-            .modify_query
-            .add_query(&mut modified_url, &query_modifications);
+        match request_modification.modify_query.add_query(
+            &mut modified_url,
+            &query_modifications,
+            &filter_matches,
+        ) {
+            Ok(()) => {}
+            Err(ex) => {
+                let mut data: HashMap<SmolStr, SmolStr> = Default::default();
+                data.insert("error".into(), ex.to_string().into());
+
+                let rescueable = Rescueable::Exception {
+                    exception: &*MODIFICATION_ERROR,
+                    data: &data,
+                };
+                return self.handle_rescueable(
+                    req,
+                    res,
+                    requested_url,
+                    &rescueable,
+                    false,
+                    &action.rescues(),
+                    &language,
+                    log_message,
+                );
+            }
+        }
 
         match action {
             ResolvedRuleAction::Invoke { rescue } => {
@@ -1777,7 +1816,7 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     None,
-                    Some(&matches),
+                    Some(&filter_matches),
                     false,
                     &language,
                     log_message,
@@ -2563,7 +2602,7 @@ impl ResolvedModifieableRedirectTo {
         &self,
         query_pairs: &LinkedHashMap<String, String>,
         query_modify: &ResolvedModifyQuery,
-        matches: Option<&HashMap<SmolStr, Matched>>,
+        filter_matches: Option<&HashMap<SmolStr, Matched>>,
     ) -> anyhow::Result<String> {
         let (mut url_with_modified_path, should_strip) = match self {
             ResolvedModifieableRedirectTo::AbsoluteUrl(url) => {
@@ -2574,7 +2613,7 @@ impl ResolvedModifieableRedirectTo {
             ResolvedModifieableRedirectTo::WithBaseUrl(base_url, segments) => {
                 let mut url = base_url.clone();
                 for segment in segments {
-                    let replaced = Self::replace_segment(segment, matches)?;
+                    let replaced = Self::replace_segment(segment, filter_matches)?;
                     replaced.push_to_url(&mut url);
                 }
                 (url, false)
@@ -2582,7 +2621,7 @@ impl ResolvedModifieableRedirectTo {
             ResolvedModifieableRedirectTo::Segments(segments) => {
                 let mut url = http::Uri::from_static("http://base");
                 for segment in segments {
-                    let replaced = Self::replace_segment(segment, matches)?;
+                    let replaced = Self::replace_segment(segment, filter_matches)?;
                     replaced.push_to_url(&mut url);
                 }
                 (url, true)
@@ -2592,7 +2631,11 @@ impl ResolvedModifieableRedirectTo {
         match self {
             ResolvedModifieableRedirectTo::AbsoluteUrl(_) => {}
             _ => {
-                query_modify.add_query(&mut url_with_modified_path, query_pairs);
+                query_modify.add_query(
+                    &mut url_with_modified_path,
+                    query_pairs,
+                    &filter_matches.cloned().unwrap_or_default(),
+                )?;
             }
         }
 
