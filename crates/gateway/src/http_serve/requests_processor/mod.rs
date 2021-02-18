@@ -2519,7 +2519,12 @@ impl ResolvedModifieableRedirectTo {
             }
         };
 
-        query_modify.add_query(&mut url_with_modified_path, query_pairs);
+        match self {
+            ResolvedModifieableRedirectTo::AbsoluteUrl(_) => {}
+            _ => {
+                query_modify.add_query(&mut url_with_modified_path, query_pairs);
+            }
+        }
 
         if should_strip {
             Ok(url_with_modified_path.path_and_query().unwrap().to_string())
@@ -2599,7 +2604,7 @@ impl ResolvedStaticResponse {
                 Ok(s) => {
                     res.headers_mut().insert(LOCATION, s.parse().unwrap());
                 }
-                Err(e) => {
+                Err(_e) => {
                     return Err((
                         exceptions::STATIC_RESPONSE_REDIRECT_ERROR.clone(),
                         merged_data.clone(),
