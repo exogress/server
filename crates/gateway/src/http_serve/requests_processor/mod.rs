@@ -76,7 +76,7 @@ mod static_dir;
 use crate::{
     dbip::LocationAndIsp,
     http_serve::requests_processor::{
-        modifications::substitute_str_with_group,
+        modifications::substitute_str_with_filter_matches,
         pass_through::ResolvedPassThrough,
         post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
     },
@@ -1300,10 +1300,7 @@ impl ResolvedModifyQuery {
                     if let Some(value) = initial_query_params.get(to_keep.as_str()) {
                         query_params.insert(
                             to_keep.to_string(),
-                            match substitute_str_with_group(value, filter_matchers)? {
-                                Replaced::Multiple(multiple) => multiple.join("/").into(),
-                                Replaced::Single(single) => single.into(),
-                            },
+                            substitute_str_with_filter_matches(value, filter_matchers)?.to_string(),
                         );
                     }
                 }
@@ -1314,10 +1311,7 @@ impl ResolvedModifyQuery {
         for (param, value) in self.0.set.iter() {
             params.insert(
                 param.to_string(),
-                match substitute_str_with_group(value, filter_matchers)? {
-                    Replaced::Multiple(multiple) => multiple.join("/").into(),
-                    Replaced::Single(single) => single.into(),
-                },
+                substitute_str_with_filter_matches(value, filter_matchers)?.to_string(),
             );
         }
 
@@ -1666,7 +1660,11 @@ impl ResolvedHandler {
             TrailingSlashModification::Unset => modified_url.ensure_trailing_slash(false),
         }
 
-        match apply_headers(req.headers_mut(), &request_modification.headers) {
+        match apply_headers(
+            req.headers_mut(),
+            &request_modification.headers,
+            &filter_matches,
+        ) {
             Ok(()) => {}
             Err(ex) => {
                 let rescueable = Rescueable::Exception {
@@ -1736,6 +1734,7 @@ impl ResolvedHandler {
                                 match apply_headers(
                                     res.headers_mut(),
                                     &modification.modifications.headers,
+                                    &filter_matches,
                                 ) {
                                     Ok(_) => {}
                                     Err(ex) => {
@@ -1826,27 +1825,30 @@ impl ResolvedHandler {
     }
 }
 
-fn is_header_value_valid(header_value: &HeaderValue) -> Result<(), Exception> {
-    if header_value.to_str().unwrap().contains("{{")
-        || header_value.to_str().unwrap().contains("}}")
-    {
-        return Err(MODIFICATION_ERROR.clone());
-    }
-
-    Ok(())
-}
-
 fn apply_headers(
     headers: &mut HeaderMap<HeaderValue>,
     modification: &ModifyHeaders,
+    filter_matches: &HashMap<SmolStr, Matched>,
 ) -> Result<(), Exception> {
     for (header_name, header_value) in &modification.append.0 {
-        is_header_value_valid(header_value)?;
-        headers.append(header_name.clone(), header_value.clone());
+        let substituted =
+            substitute_str_with_filter_matches(header_value.to_str().unwrap(), filter_matches)
+                .map_err(|_e| MODIFICATION_ERROR.clone())?;
+
+        headers.append(
+            header_name.clone(),
+            substituted.to_string().parse().unwrap(),
+        );
     }
     for (header_name, header_value) in &modification.insert.0 {
-        is_header_value_valid(header_value)?;
-        headers.insert(header_name.clone(), header_value.clone());
+        let substituted =
+            substitute_str_with_filter_matches(header_value.to_str().unwrap(), filter_matches)
+                .map_err(|_e| MODIFICATION_ERROR.clone())?;
+
+        headers.insert(
+            header_name.clone(),
+            substituted.to_string().parse().unwrap(),
+        );
     }
     for header_name in &modification.remove.0 {
         headers.remove(header_name);
@@ -2537,7 +2539,7 @@ impl RequestsProcessor {
                                 .collect::<Option<_>>()?,
                             account_unique_id,
                             rules_counter: rules_counter.clone(),
-                            languages: handler.languages,
+                            languages: None, //handler.languages,
                         })
                     }
                 })

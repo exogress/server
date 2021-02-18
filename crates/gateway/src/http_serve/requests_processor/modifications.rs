@@ -57,6 +57,15 @@ impl Replaced {
     }
 }
 
+impl ToString for Replaced {
+    fn to_string(&self) -> String {
+        match self {
+            Replaced::Multiple(multiple) => multiple.join("/").into(),
+            Replaced::Single(single) => single.as_str().into(),
+        }
+    }
+}
+
 fn replace_single_substitution(
     s: &str,
     filter_matches: &HashMap<SmolStr, Matched>,
@@ -138,9 +147,9 @@ fn replace_single_substitution(
     }
 }
 
-pub fn substitute_str_with_group(
+pub fn substitute_str_with_filter_matches(
     s: &str,
-    filter_matchers: &HashMap<SmolStr, Matched>,
+    filter_matches: &HashMap<SmolStr, Matched>,
 ) -> Result<Replaced, MatchPathModificationError> {
     if let Some(right) = s.strip_prefix("{{") {
         if let Some(middle) = right.strip_suffix("}}") {
@@ -148,7 +157,7 @@ pub fn substitute_str_with_group(
                 return Err(MatchPathModificationError::MultipleSegments);
             }
 
-            return replace_single_substitution(middle, filter_matchers);
+            return replace_single_substitution(middle, filter_matches);
         }
     }
 
@@ -158,7 +167,7 @@ pub fn substitute_str_with_group(
     let replaced = re.replace_all(s, |captures: &Captures<'_>| {
         let substitution = captures.get(1).unwrap().as_str();
 
-        match replace_single_substitution(substitution, filter_matchers) {
+        match replace_single_substitution(substitution, filter_matches) {
             Ok(replace) => match replace {
                 Replaced::Multiple(_) => {
                     if error.is_none() {
@@ -191,7 +200,7 @@ impl ResolvedPathSegmentModify {
         &self,
         groups: &HashMap<SmolStr, Matched>,
     ) -> Result<Replaced, MatchPathModificationError> {
-        substitute_str_with_group(&self.0, groups)
+        substitute_str_with_filter_matches(&self.0, groups)
     }
 }
 
