@@ -1,9 +1,8 @@
-use crate::http_serve::auth::{github::GithubOauth2Client, google::GoogleOauth2Client, JwtEcdsa};
-use cookie::Cookie;
-use exogress_common::{
-    config_core::{referenced, AuthProvider},
-    entities::HandlerName,
+use crate::http_serve::auth::{
+    github::GithubOauth2Client, google::GoogleOauth2Client, JwtEcdsa, Oauth2Provider,
 };
+use cookie::Cookie;
+use exogress_common::entities::HandlerName;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
 use handlebars::Handlebars;
 use http::{
@@ -16,7 +15,6 @@ use serde_json::json;
 use std::convert::TryInto;
 use typed_headers::{ContentType, HeaderMapExt};
 use url::Url;
-
 const LOGIN_TEMPLATE: &str = include_str!("../../templates/login.html.handlebars");
 
 #[derive(Serialize, Clone, Debug)]
@@ -29,10 +27,7 @@ fn render(
     mount_point_base_url: &MountPointBaseUrl,
     requested_url: &Url,
     handler_name: &HandlerName,
-    auth: &[(
-        AuthProvider,
-        Result<referenced::acl::Acl, referenced::Error>,
-    )],
+    auth: &[Oauth2Provider],
 ) -> String {
     let handlebars = Handlebars::new();
 
@@ -51,7 +46,7 @@ fn render(
 
     let providers: Vec<_> = auth
         .iter()
-        .map(|(provider, _)| {
+        .map(|provider| {
             let mut url = url.clone();
             url.query_pairs_mut()
                 .append_pair("provider", provider.to_string().as_str())
@@ -78,18 +73,15 @@ fn render(
 pub async fn respond_with_login(
     res: &mut Response<Body>,
     base_url: &MountPointBaseUrl,
-    maybe_provider: &Option<AuthProvider>,
+    provided_oauth2_provider: &Option<Oauth2Provider>,
     requested_url: &Url,
     handler_name: &HandlerName,
-    auth: &[(
-        AuthProvider,
-        Result<referenced::acl::Acl, referenced::Error>,
-    )],
+    auth: &[Oauth2Provider],
     jwt_ecdsa: &JwtEcdsa,
     google_oauth2_client: &GoogleOauth2Client,
     github_oauth2_client: &GithubOauth2Client,
 ) {
-    match maybe_provider {
+    match provided_oauth2_provider {
         None => {
             *res.status_mut() = StatusCode::OK;
             res.headers_mut()
@@ -98,7 +90,7 @@ pub async fn respond_with_login(
         }
         Some(provider) => {
             let redirect_to = match provider {
-                AuthProvider::Google => google_oauth2_client
+                Oauth2Provider::Google => google_oauth2_client
                     .save_state_and_retrieve_authorization_url(
                         &base_url,
                         jwt_ecdsa,
@@ -107,7 +99,7 @@ pub async fn respond_with_login(
                     )
                     .await
                     .expect("FIXME"),
-                AuthProvider::Github => github_oauth2_client
+                Oauth2Provider::Github => github_oauth2_client
                     .save_state_and_retrieve_authorization_url(
                         &base_url,
                         jwt_ecdsa,

@@ -1,4 +1,4 @@
-use exogress_common::{config_core::AuthProvider, entities::HandlerName};
+use exogress_common::entities::HandlerName;
 use exogress_server_common::{
     assistant::{GetValue, SetValue},
     url_prefix::MountPointBaseUrl,
@@ -44,24 +44,6 @@ impl FromStr for Oauth2Provider {
             "google" => Ok(Oauth2Provider::Google),
             "github" => Ok(Oauth2Provider::Github),
             _ => Err(()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum AuthProviderConfig {
-    Oauth2(Oauth2SsoClient),
-}
-
-impl From<AuthProvider> for AuthProviderConfig {
-    fn from(provider: AuthProvider) -> Self {
-        match provider {
-            AuthProvider::Google => AuthProviderConfig::Oauth2(Oauth2SsoClient {
-                provider: Oauth2Provider::Google,
-            }),
-            AuthProvider::Github => AuthProviderConfig::Oauth2(Oauth2SsoClient {
-                provider: Oauth2Provider::Github,
-            }),
         }
     }
 }

@@ -13,7 +13,6 @@ use exogress_common::{
     config_core::{
         referenced,
         referenced::acl::{Acl, AclEntry},
-        AuthProvider,
     },
     entities::HandlerName,
 };
@@ -44,8 +43,19 @@ struct Claims {
 }
 
 #[derive(Debug)]
+pub struct ResolvedGithubAuthDefinition {
+    pub acl: Result<Acl, referenced::Error>,
+}
+
+#[derive(Debug)]
+pub struct ResolvedGoogleAuthDefinition {
+    pub acl: Result<Acl, referenced::Error>,
+}
+
+#[derive(Debug)]
 pub struct ResolvedAuth {
-    pub providers: Vec<(AuthProvider, Result<Acl, referenced::Error>)>,
+    pub github: Option<ResolvedGithubAuthDefinition>,
+    pub google: Option<ResolvedGoogleAuthDefinition>,
     pub handler_name: HandlerName,
     pub mount_point_base_url: MountPointBaseUrl,
     pub jwt_ecdsa: JwtEcdsa,
@@ -92,19 +102,6 @@ impl ResolvedAuth {
             Body::from("<HTML><BODY>Redirecting to authorization page...</BODY></HTML>");
     }
 
-    fn auth_definition(
-        &self,
-        used_provider: &Oauth2Provider,
-    ) -> Option<&(AuthProvider, Result<Acl, referenced::Error>)> {
-        self.providers
-            .iter()
-            .find(|provider| match (&provider.0, used_provider) {
-                (&AuthProvider::Google, &Oauth2Provider::Google) => true,
-                (&AuthProvider::Github, &Oauth2Provider::Github) => true,
-                _ => false,
-            })
-    }
-
     fn acl_allowed_to<'a, 'b, 'c>(
         &'c self,
         identities: &'a [String],
@@ -143,6 +140,16 @@ impl ResolvedAuth {
         acl_allow_to
     }
 
+    fn auth_definition(
+        &self,
+        used_provider: &Oauth2Provider,
+    ) -> Option<&Result<Acl, referenced::Error>> {
+        match used_provider {
+            Oauth2Provider::Google => self.google.as_ref().map(|google| &google.acl),
+            Oauth2Provider::Github => self.github.as_ref().map(|github| &github.acl),
+        }
+    }
+
     pub async fn invoke(
         &self,
         req: &Request<Body>,
@@ -169,23 +176,14 @@ impl ResolvedAuth {
                         let handler_name: HandlerName =
                             query.get("handler")?.as_str().parse().ok()?;
 
-                        let maybe_default_provider: Option<AuthProvider> = query
-                            .get("provider")
-                            .cloned()
-                            // .or_else(|| {
-                            //     if self.providers.len() == 1 {
-                            //         Some(self.providers.iter().next().unwrap().0.to_string())
-                            //     } else {
-                            //         None
-                            //     }
-                            // })
-                            .map(|p| p.parse().unwrap());
+                        let provided_oauth2_provider: Option<Oauth2Provider> =
+                            query.get("provider").cloned().map(|p| p.parse().unwrap());
 
-                        Some((requested_url, handler_name, maybe_default_provider))
+                        Some((requested_url, handler_name, provided_oauth2_provider))
                     })();
 
                     match result {
-                        Some((requested_url, handler_name, maybe_provider)) => {
+                        Some((requested_url, handler_name, provided_oauth2_provider)) => {
                             if handler_name != self.handler_name {
                                 return HandlerInvocationResult::ToNextHandler;
                             }
@@ -193,10 +191,10 @@ impl ResolvedAuth {
                             respond_with_login(
                                 res,
                                 &self.mount_point_base_url,
-                                &maybe_provider,
+                                &provided_oauth2_provider,
                                 &requested_url,
                                 &handler_name,
-                                &self.providers,
+                                &self.enabled_providers(),
                                 &self.jwt_ecdsa,
                                 &self.google_oauth2_client,
                                 &self.github_oauth2_client,
@@ -235,7 +233,7 @@ impl ResolvedAuth {
                                         self.auth_definition(&used_provider);
 
                                     match maybe_auth_definition {
-                                        Some((_provider, acl_result)) => {
+                                        Some(acl_result) => {
                                             let acl = try_or_to_exception!(acl_result.as_ref());
 
                                             let acl_allow_to = self.acl_allowed_to(
@@ -375,7 +373,7 @@ impl ResolvedAuth {
                     let maybe_auth_definition = self.auth_definition(&granted_provider);
 
                     match maybe_auth_definition {
-                        Some((_provider, acl_result)) => {
+                        Some(acl_result) => {
                             let acl = try_or_to_exception!(acl_result.as_ref());
 
                             let identities = [granted_identity.clone()];
@@ -475,5 +473,15 @@ impl ResolvedAuth {
         }
 
         HandlerInvocationResult::ToNextHandler
+    }
+    fn enabled_providers(&self) -> Vec<Oauth2Provider> {
+        let mut providers = vec![];
+        if self.github.is_some() {
+            providers.push(Oauth2Provider::Github);
+        }
+        if self.google.is_some() {
+            providers.push(Oauth2Provider::Google);
+        }
+        providers
     }
 }

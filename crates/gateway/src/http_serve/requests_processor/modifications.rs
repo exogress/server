@@ -1,25 +1,26 @@
 use crate::http_serve::requests_processor::Matched;
+use exogress_common::common_utils::uri_ext::UriExt;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use regex::{Captures, RegexBuilder};
 use smol_str::SmolStr;
 use std::{borrow::Cow, num::ParseIntError};
 
-#[derive(Debug)]
-pub struct ResolvedPathSegmentsModify(pub SmolStr);
+#[derive(Debug, Hash, Clone, Eq, PartialEq)]
+pub struct ResolvedPathSegmentModify(pub SmolStr);
 
 #[derive(thiserror::Error, Debug)]
 pub enum MatchPathModificationError {
     #[error("parse error")]
     ParseIntError(#[from] ParseIntError),
 
-    #[error("non-existing reference number")]
-    NotExistingRefNum { main: SmolStr, second: Option<u8> },
+    #[error("non-existing reference")]
+    NotExistingReference { main: SmolStr, second: Option<u8> },
 
     #[error("multiple segments matched")]
     MultipleSegments,
 
-    #[error("not segments tried to being accesed")]
+    #[error("not segments tried to being accessed")]
     NotSegments,
 
     #[error("not matched tried to being accessed")]
@@ -39,6 +40,21 @@ pub enum MatchPathModificationError {
 pub enum Replaced {
     Multiple(Vec<SmolStr>),
     Single(SmolStr),
+}
+
+impl Replaced {
+    pub fn push_to_url(self, url: &mut http::Uri) {
+        match self {
+            Replaced::Multiple(multiple) => {
+                for seg in multiple {
+                    url.push_segment(seg.as_ref());
+                }
+            }
+            Replaced::Single(single) => {
+                url.push_segment(single.as_ref());
+            }
+        }
+    }
 }
 
 fn replace_single_substitution(
@@ -76,7 +92,7 @@ fn replace_single_substitution(
 
     let m = groups
         .get(first)
-        .ok_or_else(|| MatchPathModificationError::NotExistingRefNum {
+        .ok_or_else(|| MatchPathModificationError::NotExistingReference {
             main: first.into(),
             second: None,
         })?;
@@ -122,53 +138,60 @@ fn replace_single_substitution(
     }
 }
 
-impl ResolvedPathSegmentsModify {
+pub fn substitute_str_with_group(
+    s: &str,
+    groups: &HashMap<SmolStr, Matched>,
+) -> Result<Replaced, MatchPathModificationError> {
+    if let Some(right) = s.strip_prefix("{{") {
+        if let Some(middle) = right.strip_suffix("}}") {
+            if middle.contains("{{") || middle.contains("}}") {
+                return Err(MatchPathModificationError::MultipleSegments);
+            }
+
+            return replace_single_substitution(middle, groups);
+        }
+    }
+
+    let re = RegexBuilder::new(r"\{\{(.+?)\}\}").build().unwrap();
+    let mut error = None;
+
+    let replaced = re.replace_all(s, |captures: &Captures<'_>| {
+        let substitution = captures.get(1).unwrap().as_str();
+
+        match replace_single_substitution(substitution, groups) {
+            Ok(replace) => match replace {
+                Replaced::Multiple(_) => {
+                    if error.is_none() {
+                        error = Some(MatchPathModificationError::MultipleSegments);
+                    };
+                    return Cow::Borrowed("");
+                }
+                Replaced::Single(single) => {
+                    return Cow::Owned(single.to_string());
+                }
+            },
+            Err(e) => {
+                if error.is_none() {
+                    error = Some(e);
+                };
+                return Cow::Borrowed("");
+            }
+        }
+    });
+
+    if let Some(e) = error {
+        return Err(e);
+    }
+
+    Ok(Replaced::Single(replaced.into()))
+}
+
+impl ResolvedPathSegmentModify {
     pub fn substitute(
         &self,
         groups: &HashMap<SmolStr, Matched>,
     ) -> Result<Replaced, MatchPathModificationError> {
-        if let Some(right) = self.0.strip_prefix("{{") {
-            if let Some(middle) = right.strip_suffix("}}") {
-                if middle.contains("{{") || middle.contains("}}") {
-                    return Err(MatchPathModificationError::MultipleSegments);
-                }
-
-                return replace_single_substitution(middle, groups);
-            }
-        }
-
-        let re = RegexBuilder::new(r"\{\{(.+?)\}\}").build().unwrap();
-        let mut error = None;
-
-        let replaced = re.replace_all(self.0.as_str(), |captures: &Captures<'_>| {
-            let substitution = captures.get(1).unwrap().as_str();
-
-            match replace_single_substitution(substitution, groups) {
-                Ok(replace) => match replace {
-                    Replaced::Multiple(_) => {
-                        if error.is_none() {
-                            error = Some(MatchPathModificationError::MultipleSegments);
-                        };
-                        return Cow::Borrowed("");
-                    }
-                    Replaced::Single(single) => {
-                        return Cow::Owned(single.to_string());
-                    }
-                },
-                Err(e) => {
-                    if error.is_none() {
-                        error = Some(e);
-                    };
-                    return Cow::Borrowed("");
-                }
-            }
-        });
-
-        if let Some(e) = error {
-            return Err(e);
-        }
-
-        Ok(Replaced::Single(replaced.into()))
+        substitute_str_with_group(&self.0, groups)
     }
 }
 
@@ -179,7 +202,7 @@ mod test {
 
     #[test]
     fn test_modification_multiple() {
-        let modify = ResolvedPathSegmentsModify(SmolStr::from("{{ 3 }}"));
+        let modify = ResolvedPathSegmentModify(SmolStr::from("{{ 3 }}"));
         let mut data = HashMap::new();
         data.insert(
             "3".into(),
@@ -209,7 +232,7 @@ mod test {
 
     #[test]
     fn test_modification_single() {
-        let modify = ResolvedPathSegmentsModify(SmolStr::from(
+        let modify = ResolvedPathSegmentModify(SmolStr::from(
             "before-{{ 3.0 }}-middle-{{ param\\.a }}-after",
         ));
         let mut data = HashMap::new();
@@ -225,7 +248,7 @@ mod test {
 
     #[test]
     fn test_modification_single_error() {
-        let modify = ResolvedPathSegmentsModify(SmolStr::from("before-{{ 1 }}-after"));
+        let modify = ResolvedPathSegmentModify(SmolStr::from("before-{{ 1 }}-after"));
         let mut data = HashMap::new();
         data.insert("1".into(), {
             Matched::Segments(vec!["seg1".into(), "seg2".into()])

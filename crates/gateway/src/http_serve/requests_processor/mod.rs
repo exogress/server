@@ -6,13 +6,14 @@ use crate::{
     },
     http_serve::{
         auth::JwtEcdsa,
-        requests_processor::modifications::{Replaced, ResolvedPathSegmentsModify},
+        requests_processor::modifications::{Replaced, ResolvedPathSegmentModify},
     },
     mime_helpers::{is_mime_match, ordered_by_quality},
     public_hyper_client::MeteredHttpsConnector,
     rules_counter::AccountCounters,
     webapp::{ConfigData, ConfigsResponse},
 };
+pub use auth::{ResolvedGithubAuthDefinition, ResolvedGoogleAuthDefinition};
 use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use core::mem;
@@ -86,13 +87,15 @@ use exogress_common::{
         referenced,
         referenced::{Container, Parameter},
         refinable::RefinableSet,
-        ClientConfigRevision, Scope, TrailingSlashModification,
+        ClientConfigRevision, ModifyQuery, ModifyQueryStrategy, RedirectTo, RequestModifications,
+        Scope, TrailingSlashModification,
     },
     entities::{Exception, ParameterName},
 };
 use exogress_server_common::{logging::ExceptionProcessingStep, url_prefix::MountPointBaseUrl};
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use langtag::LanguageTagBuf;
+use linked_hash_map::LinkedHashMap;
 use memmap::Mmap;
 use regex::Regex;
 use std::sync::Arc;
@@ -710,7 +713,9 @@ impl ResolvedStaticResponseAction {
         handler: &ResolvedHandler,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        requested_url: &http::uri::Uri,
         additional_data: Option<&HashMap<SmolStr, SmolStr>>,
+        matches: Option<&HashMap<SmolStr, Matched>>,
         is_in_exception: bool,
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
@@ -733,6 +738,7 @@ impl ResolvedStaticResponseAction {
                 return handler.handle_rescueable(
                     req,
                     res,
+                    requested_url,
                     &rescueable,
                     true,
                     &self.rescue,
@@ -758,7 +764,15 @@ impl ResolvedStaticResponseAction {
                     },
                 ));
 
-                match static_response.invoke(req, res, data, &language, facts) {
+                match static_response.invoke(
+                    req,
+                    res,
+                    requested_url,
+                    data,
+                    matches,
+                    &language,
+                    facts,
+                ) {
                     Ok(()) => ResolvedHandlerProcessingResult::Processed,
                     Err((exception, data)) => {
                         *res = Response::new(Body::empty());
@@ -771,6 +785,7 @@ impl ResolvedStaticResponseAction {
                             handler.handle_rescueable(
                                 req,
                                 res,
+                                requested_url,
                                 &rescueable,
                                 false,
                                 &self.rescue,
@@ -804,7 +819,7 @@ enum ResolvedCatchAction {
 #[derive(Debug)]
 pub struct ResolvedFilter {
     pub path: ResolvedMatchingPath,
-    pub query: HashMap<SmolStr, Option<ResolvedMatchQueryValue>>,
+    pub query_params: HashMap<SmolStr, Option<ResolvedMatchQueryValue>>,
     pub method: MethodMatcher,
     pub trailing_slash: TrailingSlashFilterRule,
     pub base_path_replacement: Vec<UrlPathSegment>,
@@ -969,11 +984,10 @@ impl ResolvedMatchPathSegment {
 impl ResolvedFilter {
     fn query_match(
         &self,
-        query_pairs: HashMap<SmolStr, SmolStr>,
+        query_pairs: LinkedHashMap<SmolStr, SmolStr>,
     ) -> Option<HashMap<SmolStr, Matched>> {
         let mut h = HashMap::new();
-
-        for (expected_key, maybe_expected_val) in &self.query {
+        for (expected_key, maybe_expected_val) in &self.query_params {
             match maybe_expected_val {
                 Some(expected_val) => match query_pairs.get(expected_key) {
                     Some(provided_val) => match expected_val {
@@ -1059,13 +1073,13 @@ impl ResolvedFilter {
             return None;
         }
 
-        let query_pairs: HashMap<SmolStr, SmolStr> = url
+        let req_query_pairs: LinkedHashMap<SmolStr, SmolStr> = url
             .to_url()
             .query_pairs()
             .map(|(k, v)| (SmolStr::from(k), SmolStr::from(v)))
             .collect();
 
-        let query_matches = self.query_match(query_pairs)?;
+        let query_matches = self.query_match(req_query_pairs)?;
 
         let mut segments = vec![];
         {
@@ -1248,12 +1262,54 @@ struct ResolvedRule {
     action: ResolvedRuleAction,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedModifyQuery(ModifyQuery);
+
+impl ResolvedModifyQuery {
+    pub(crate) fn add_query(
+        &self,
+        uri: &mut http::Uri,
+        initial_query_params: &LinkedHashMap<String, String>,
+    ) {
+        let mut params = match &self.0.strategy {
+            ModifyQueryStrategy::Keep { remove } => {
+                let mut query_params = initial_query_params.clone();
+                for to_remove in remove {
+                    query_params.remove(to_remove.as_str());
+                }
+                query_params
+            }
+            ModifyQueryStrategy::Remove { keep } => {
+                let mut query_params: LinkedHashMap<String, String> = Default::default();
+                for to_keep in keep {
+                    if let Some(value) = initial_query_params.get(to_keep.as_str()) {
+                        query_params.insert(to_keep.to_string(), value.clone());
+                    }
+                }
+                query_params
+            }
+        };
+
+        for (param, value) in self.0.set.iter() {
+            params.insert(param.to_string(), value.to_string());
+        }
+
+        uri.set_query(params);
+    }
+}
+
+impl From<ModifyQuery> for ResolvedModifyQuery {
+    fn from(q: ModifyQuery) -> Self {
+        ResolvedModifyQuery(q)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ResolvedRequestModifications {
     headers: ModifyHeaders,
-    path: Option<Vec<ResolvedPathSegmentsModify>>,
+    path: Option<Vec<ResolvedPathSegmentModify>>,
     trailing_slash: TrailingSlashModification,
-    remove_query_params: Vec<SmolStr>,
+    modify_query: ResolvedModifyQuery,
 }
 
 impl ResolvedRule {
@@ -1388,14 +1444,13 @@ impl ResolvedHandler {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        requested_url: &http::uri::Uri,
         rescueable: &Rescueable<'_>,
         is_in_exception: bool,
         rescues: &Vec<ResolvedRescueItem>,
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
-        info!("handle rescueable: {:?}", rescueable);
-
         if let &Rescueable::Exception { exception, data } = rescueable {
             log_message
                 .steps
@@ -1413,11 +1468,6 @@ impl ResolvedHandler {
         };
 
         let result = loop {
-            error!(
-                "=> maybe_resolved_exception = {:?} ",
-                maybe_resolved_exception
-            );
-
             match maybe_resolved_exception {
                 None => match rescueable {
                     &Rescueable::Exception { exception, data } => {
@@ -1441,11 +1491,6 @@ impl ResolvedHandler {
                         data: &collected_data,
                     };
                     maybe_resolved_exception = Self::find_exception_handler(&rescues, &rethrow);
-
-                    error!(
-                        "in throw exception handler, the next resolved exception will be: {:?}",
-                        maybe_resolved_exception
-                    );
 
                     match maybe_resolved_exception {
                         Some(_) => {
@@ -1472,7 +1517,7 @@ impl ResolvedHandler {
                         collected_data
                             .extend(resp.data.iter().map(|(a, b)| (a.clone(), b.clone())));
                     }
-                    error!("=> found that we should response with static response action when handled exception. static_response = {:?}, rescueable = {:?}", static_response, rescueable);
+
                     // FIXME: this will probably break data merging if static-resp is innvolvedd
                     // FIXME: merged data shouldd be store to the cotaiier, so that onn exception nnew exception queue is processed
                     break RescueableHandleResult::StaticResponse(ResolvedStaticResponseAction {
@@ -1487,18 +1532,17 @@ impl ResolvedHandler {
         };
 
         match result {
-            RescueableHandleResult::StaticResponse(action) => {
-                info!("handle exception through {:?}", action);
-                action.handle_static_response(
-                    self,
-                    req,
-                    res,
-                    Some(&collected_data),
-                    is_in_exception,
-                    &language,
-                    log_message,
-                )
-            }
+            RescueableHandleResult::StaticResponse(action) => action.handle_static_response(
+                self,
+                req,
+                res,
+                requested_url,
+                Some(&collected_data),
+                None,
+                is_in_exception,
+                &language,
+                log_message,
+            ),
             RescueableHandleResult::NextHandler => {
                 info!("move on to next handler");
                 ResolvedHandlerProcessingResult::NextHandler
@@ -1559,7 +1603,7 @@ impl ResolvedHandler {
                 Some(action) => action,
             };
 
-        let mut modify_query = rebased_url.query_pairs();
+        let query_modifications = rebased_url.query_pairs();
         let mut modified_url = rebased_url.clone();
 
         modified_url.clear_query();
@@ -1593,19 +1637,11 @@ impl ResolvedHandler {
             TrailingSlashModification::Unset => modified_url.ensure_trailing_slash(false),
         }
 
-        info!("modified_url = {:?}", modified_url);
-
         apply_headers(req.headers_mut(), &request_modification.headers);
-        for remove_query_param in request_modification.remove_query_params.iter() {
-            info!("remove query param: {}", remove_query_param);
-            modify_query.remove(&remove_query_param.to_string());
-        }
 
-        info!("set query to {:?}", modify_query);
-
-        modified_url.set_query(modify_query);
-
-        info!("Request headers after modification: {:?}", req.headers());
+        request_modification
+            .modify_query
+            .add_query(&mut modified_url, &query_modifications);
 
         match action {
             ResolvedRuleAction::Invoke { rescue } => {
@@ -1636,11 +1672,10 @@ impl ResolvedHandler {
 
                         let rescueable = Rescueable::StatusCode(res.status());
 
-                        error!("=> handle rescueable {:?}", rescueable);
-
                         self.handle_rescueable(
                             req,
                             res,
+                            requested_url,
                             &rescueable,
                             false,
                             rescue,
@@ -1659,6 +1694,7 @@ impl ResolvedHandler {
                         self.handle_rescueable(
                             req,
                             res,
+                            requested_url,
                             &rescueable,
                             false,
                             &rescue,
@@ -1673,10 +1709,10 @@ impl ResolvedHandler {
             }
             ResolvedRuleAction::Throw { exception, data } => {
                 let rescueable = Rescueable::Exception { exception, data };
-                warn!("=> handle rescueable generated by throw: {:?}", rescueable);
                 return self.handle_rescueable(
                     req,
                     res,
+                    requested_url,
                     &rescueable,
                     false,
                     &self.catches,
@@ -1689,7 +1725,9 @@ impl ResolvedHandler {
                     self,
                     req,
                     res,
+                    requested_url,
                     None,
+                    Some(&matches),
                     false,
                     &language,
                     log_message,
@@ -1761,19 +1799,40 @@ fn resolve_static_response(
         },
         headers: match &static_response {
             StaticResponse::Raw(raw) => raw.headers.0.clone(),
-            StaticResponse::Redirect(redirect) => {
-                let mut headers = redirect.headers.0.clone();
-                headers.insert(
-                    LOCATION,
-                    redirect.destination.to_destiation_string().parse().unwrap(),
-                );
-                headers
-            }
+            StaticResponse::Redirect(redirect) => redirect.headers.0.clone(),
         },
         data: data
             .iter()
             .map(|(k, v)| (k.as_str().into(), v.as_str().into()))
             .collect(),
+
+        maybe_redirect: match &static_response {
+            StaticResponse::Redirect(redirect) => Some(ResolvedRedirectResponse {
+                location: match &redirect.destination {
+                    RedirectTo::Root => ResolvedModifieableRedirectTo::Root,
+                    RedirectTo::AbsoluteUrl(url) => {
+                        ResolvedModifieableRedirectTo::AbsoluteUrl(url.clone())
+                    }
+                    RedirectTo::WithBaseUrl(base, segments) => {
+                        ResolvedModifieableRedirectTo::WithBaseUrl(
+                            base.clone(),
+                            segments
+                                .iter()
+                                .map(|s| ResolvedPathSegmentModify(s.0.clone()))
+                                .collect(),
+                        )
+                    }
+                    RedirectTo::Segments(segments) => ResolvedModifieableRedirectTo::Segments(
+                        segments
+                            .iter()
+                            .map(|s| ResolvedPathSegmentModify(s.0.clone()))
+                            .collect(),
+                    ),
+                },
+                query_modify: redirect.query_params.clone().into(),
+            }),
+            StaticResponse::Raw(_) => None,
+        },
     };
 
     Ok(resolved)
@@ -2046,18 +2105,16 @@ impl RequestsProcessor {
                             resolved_variant: match handler.variant {
                                 ClientHandlerVariant::Auth(auth) => {
                                     ResolvedHandlerVariant::Auth(auth::ResolvedAuth {
-                                        providers: auth
-                                            .providers
-                                            .into_iter()
-                                            .map(|auth_def| {
-                                                (
-                                                    auth_def.name,
-                                                    auth_def.acl.resolve_non_referenced(
-                                                        &params,
-                                                    )
-                                                )
-                                            })
-                                            .collect(),
+                                        github: auth.github.map(|github| ResolvedGithubAuthDefinition {
+                                            acl: github.acl.resolve_non_referenced(
+                                                &params,
+                                            )
+                                        }),
+                                        google: auth.google.map(|google| ResolvedGoogleAuthDefinition {
+                                            acl: google.acl.resolve_non_referenced(
+                                                &params,
+                                            )
+                                        }),
                                         handler_name: handler_name.clone(),
                                         mount_point_base_url: mount_point_base_url.clone(),
                                         jwt_ecdsa: jwt_ecdsa.clone(),
@@ -2305,7 +2362,7 @@ impl RequestsProcessor {
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
                                             path: rule.filter.path.into(),
-                                            query: rule.filter.query.inner.into_iter().map(|(k, v)| {
+                                            query_params: rule.filter.query_params.inner.into_iter().map(|(k, v)| {
                                                 (k, v.map(From::from))
                                             }).collect(),
                                             method: rule.filter.methods,
@@ -2315,12 +2372,12 @@ impl RequestsProcessor {
                                         request_modifications: rule
                                             .action
                                             .modify_request()
-                                            .map(|r| {
+                                            .map(|r: &RequestModifications| {
                                                 ResolvedRequestModifications {
                                                     headers: r.headers.clone(),
-                                                    path: r.path.as_ref().map(|p| p.iter().map(|p| ResolvedPathSegmentsModify(p.0.clone())).collect()),
+                                                    path: r.path.as_ref().map(|p| p.iter().map(|p| ResolvedPathSegmentModify(p.0.clone())).collect()),
                                                     trailing_slash: r.trailing_slash.clone(),
-                                                    remove_query_params: r.query.remove.clone(),
+                                                    modify_query: r.query_params.clone().into(),
                                                 }
                                             })
                                             .unwrap_or_default(),
@@ -2416,6 +2473,68 @@ impl Drop for RequestsProcessor {
     }
 }
 
+#[derive(Debug, Hash, Clone, Eq, PartialEq)]
+pub enum ResolvedModifieableRedirectTo {
+    AbsoluteUrl(http::Uri),
+    WithBaseUrl(http::Uri, Vec<ResolvedPathSegmentModify>),
+    Segments(Vec<ResolvedPathSegmentModify>),
+    Root,
+}
+
+impl ResolvedModifieableRedirectTo {
+    fn replace_segment(
+        segment: &ResolvedPathSegmentModify,
+        matches: Option<&HashMap<SmolStr, Matched>>,
+    ) -> anyhow::Result<Replaced> {
+        match matches {
+            None => Ok(Replaced::Single(segment.0.clone())),
+            Some(matches) => Ok(segment.substitute(matches)?),
+        }
+    }
+
+    pub fn to_destination_string(
+        &self,
+        query_pairs: &LinkedHashMap<String, String>,
+        query_modify: &ResolvedModifyQuery,
+        matches: Option<&HashMap<SmolStr, Matched>>,
+    ) -> anyhow::Result<String> {
+        let (mut url_with_modified_path, should_strip) = match self {
+            ResolvedModifieableRedirectTo::AbsoluteUrl(url) => (url.clone(), false),
+            ResolvedModifieableRedirectTo::Root => (http::Uri::from_static("http://base/"), true),
+            ResolvedModifieableRedirectTo::WithBaseUrl(base_url, segments) => {
+                let mut url = base_url.clone();
+                for segment in segments {
+                    let replaced = Self::replace_segment(segment, matches)?;
+                    replaced.push_to_url(&mut url);
+                }
+                (url, false)
+            }
+            ResolvedModifieableRedirectTo::Segments(segments) => {
+                let mut url = http::Uri::from_static("http://base");
+                for segment in segments {
+                    let replaced = Self::replace_segment(segment, matches)?;
+                    replaced.push_to_url(&mut url);
+                }
+                (url, true)
+            }
+        };
+
+        query_modify.add_query(&mut url_with_modified_path, query_pairs);
+
+        if should_strip {
+            Ok(url_with_modified_path.path_and_query().unwrap().to_string())
+        } else {
+            Ok(url_with_modified_path.to_string())
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedRedirectResponse {
+    location: ResolvedModifieableRedirectTo,
+    query_modify: ResolvedModifyQuery,
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedStaticResponse {
     status_code: StatusCode,
@@ -2423,6 +2542,7 @@ struct ResolvedStaticResponse {
     body: Vec<ResponseBody>,
     headers: HeaderMap,
     data: HashMap<SmolStr, SmolStr>,
+    maybe_redirect: Option<ResolvedRedirectResponse>,
 }
 
 impl ResolvedStaticResponse {
@@ -2451,11 +2571,15 @@ impl ResolvedStaticResponse {
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
+        requested_url: &http::uri::Uri,
         additional_data: HashMap<SmolStr, SmolStr>,
+        matches: Option<&HashMap<SmolStr, Matched>>,
         _handler_best_language: &Option<LanguageTagBuf>,
         facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
         *res = Response::new(Body::empty());
+
+        let query_pairs = requested_url.query_pairs();
 
         let mut merged_data = self.data.clone();
         merged_data.extend(additional_data.into_iter());
@@ -2464,6 +2588,24 @@ impl ResolvedStaticResponse {
 
         for (k, v) in &self.headers {
             res.headers_mut().append(k, v.clone());
+        }
+
+        if let Some(redirect) = &self.maybe_redirect {
+            match redirect.location.to_destination_string(
+                &query_pairs,
+                &redirect.query_modify,
+                matches,
+            ) {
+                Ok(s) => {
+                    res.headers_mut().insert(LOCATION, s.parse().unwrap());
+                }
+                Err(e) => {
+                    return Err((
+                        exceptions::STATIC_RESPONSE_REDIRECT_ERROR.clone(),
+                        merged_data.clone(),
+                    ));
+                }
+            }
         }
 
         *res.status_mut() = self.status_code.clone();
@@ -2563,7 +2705,7 @@ mod test {
                 MatchPathSingleSegment::Any,
             )])
             .into(),
-            query: Default::default(),
+            query_params: Default::default(),
             method: Default::default(),
             trailing_slash: Default::default(),
             base_path_replacement: vec![],

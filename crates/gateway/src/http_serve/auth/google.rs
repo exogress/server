@@ -6,7 +6,7 @@ use crate::http_serve::auth::{
 };
 use exogress_common::entities::HandlerName;
 use exogress_server_common::url_prefix::MountPointBaseUrl;
-use hashbrown::HashMap;
+use linked_hash_map::LinkedHashMap;
 use oauth2::{
     basic::BasicClient, reqwest::async_http_client, AuthUrl, AuthorizationCode, ClientId,
     ClientSecret, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
@@ -135,7 +135,7 @@ impl GoogleOauth2Client {
 
     pub async fn process_callback(
         &self,
-        mut params: HashMap<String, String>,
+        mut params: LinkedHashMap<String, String>,
     ) -> Result<CallbackResult, Oauth2FlowError> {
         let received_state = CsrfToken::new(
             params
