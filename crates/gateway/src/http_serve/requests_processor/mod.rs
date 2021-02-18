@@ -61,7 +61,7 @@ use weighted_rs::{SmoothWeight, Weight};
 #[macro_use]
 mod macros;
 
-mod application_firewall;
+// mod application_firewall;
 mod auth;
 mod gcs_bucket;
 mod helpers;
@@ -579,7 +579,7 @@ pub enum ResolvedHandlerVariant {
     Auth(auth::ResolvedAuth),
     S3Bucket(s3_bucket::ResolvedS3Bucket),
     GcsBucket(gcs_bucket::ResolvedGcsBucket),
-    ApplicationFirewall(application_firewall::ResolvedApplicationFirewall),
+    // ApplicationFirewall(application_firewall::ResolvedApplicationFirewall),
     PassThrough(pass_through::ResolvedPassThrough),
 }
 
@@ -591,7 +591,7 @@ impl ResolvedHandlerVariant {
             ResolvedHandlerVariant::Auth(_) => None,
             ResolvedHandlerVariant::S3Bucket(s3) => Some(s3.is_cache_enabled),
             ResolvedHandlerVariant::GcsBucket(gcs) => Some(gcs.is_cache_enabled),
-            ResolvedHandlerVariant::ApplicationFirewall(_) => None,
+            // ResolvedHandlerVariant::ApplicationFirewall(_) => None,
             ResolvedHandlerVariant::PassThrough(_) => None,
         }
     }
@@ -603,7 +603,7 @@ impl ResolvedHandlerVariant {
             ResolvedHandlerVariant::Auth(_) => None,
             ResolvedHandlerVariant::S3Bucket(s3) => Some(&s3.post_processing),
             ResolvedHandlerVariant::GcsBucket(gcs) => Some(&gcs.post_processing),
-            ResolvedHandlerVariant::ApplicationFirewall(_) => None,
+            // ResolvedHandlerVariant::ApplicationFirewall(_) => None,
             ResolvedHandlerVariant::PassThrough(_) => None,
         }
     }
@@ -674,11 +674,11 @@ impl ResolvedHandlerVariant {
                     .invoke(req, res, requested_url, modified_url, language, log_message)
                     .await
             }
-            ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
-                application_firewall
-                    .invoke(req, res, requested_url, modified_url, language, log_message)
-                    .await
-            }
+            // ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
+            //     application_firewall
+            //         .invoke(req, res, requested_url, modified_url, language, log_message)
+            //         .await
+            // }
             ResolvedHandlerVariant::PassThrough(pass_through) => {
                 pass_through
                     .invoke(req, res, requested_url, modified_url, log_message)
@@ -2428,12 +2428,12 @@ impl RequestsProcessor {
                                         is_cache_enabled: gcs_bucket.cache.enabled,
                                     })
                                 }
-                                ClientHandlerVariant::ApplicationFirewall(app_firewall) => {
-                                    ResolvedHandlerVariant::ApplicationFirewall(application_firewall::ResolvedApplicationFirewall {
-                                        uri_xss: app_firewall.uri_xss,
-                                        uri_sqli: app_firewall.uri_sqli,
-                                    })
-                                }
+                                // ClientHandlerVariant::ApplicationFirewall(app_firewall) => {
+                                //     ResolvedHandlerVariant::ApplicationFirewall(application_firewall::ResolvedApplicationFirewall {
+                                //         uri_xss: app_firewall.uri_xss,
+                                //         uri_sqli: app_firewall.uri_sqli,
+                                //     })
+                                // }
                                 ClientHandlerVariant::PassThrough(_) => {
                                     ResolvedHandlerVariant::PassThrough(ResolvedPassThrough {})
                                 }

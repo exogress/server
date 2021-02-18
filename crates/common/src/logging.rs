@@ -96,25 +96,25 @@ pub enum HandlerProcessingStep {
     GcsBucket(GcsBucketHandlerLogMessage),
     #[serde(rename = "static_dir")]
     StaticDir(StaticDirHandlerLogMessage),
-    #[serde(rename = "application_firewall")]
-    ApplicationFirewall(ApplicationFirewallLogMessage),
+    // #[serde(rename = "application_firewall")]
+    // ApplicationFirewall(ApplicationFirewallLogMessage),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum ApplicationFirewallAction {
-    #[serde(rename = "permitted")]
-    Permitted,
-
-    #[serde(rename = "prohibited")]
-    Prohibited,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ApplicationFirewallLogMessage {
-    pub detected: Vec<String>,
-    pub action: ApplicationFirewallAction,
-    pub language: Option<LanguageTagBuf>,
-}
+// #[derive(Serialize, Deserialize, Clone, Debug)]
+// pub enum ApplicationFirewallAction {
+//     #[serde(rename = "permitted")]
+//     Permitted,
+//
+//     #[serde(rename = "prohibited")]
+//     Prohibited,
+// }
+//
+// #[derive(Serialize, Deserialize, Clone, Debug)]
+// pub struct ApplicationFirewallLogMessage {
+//     pub detected: Vec<String>,
+//     pub action: ApplicationFirewallAction,
+//     pub language: Option<LanguageTagBuf>,
+// }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StaticDirHandlerLogMessage {
