@@ -91,7 +91,7 @@ use exogress_common::{
         ClientConfigRevision, ModifyQuery, ModifyQueryStrategy, RedirectTo, RequestModifications,
         Scope, TrailingSlashModification,
     },
-    entities::{Exception, ParameterName},
+    entities::{serde::Serializer, Exception, ParameterName},
 };
 use exogress_server_common::{logging::ExceptionProcessingStep, url_prefix::MountPointBaseUrl};
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
@@ -99,6 +99,10 @@ use langtag::LanguageTagBuf;
 use linked_hash_map::LinkedHashMap;
 use memmap::Mmap;
 use regex::Regex;
+use serde::{
+    ser::{SerializeMap, SerializeSeq},
+    Serialize,
+};
 use std::sync::Arc;
 
 pub struct RequestsProcessor {
@@ -945,6 +949,32 @@ pub enum Matched {
     Multiple(BTreeMap<u8, SmolStr>),
     Single(SmolStr),
     None,
+}
+
+impl Serialize for Matched {
+    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Matched::Segments(s) => {
+                let mut seq = serializer.serialize_seq(Some(s.len()))?;
+                for item in s.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Matched::Multiple(multiple) => {
+                let mut seq = serializer.serialize_map(Some(multiple.len()))?;
+                for (idx, item) in multiple.iter() {
+                    seq.serialize_entry(idx, item)?;
+                }
+                seq.end()
+            }
+            Matched::Single(s) => serializer.serialize_str(s),
+            Matched::None => serializer.serialize_none(),
+        }
+    }
 }
 
 impl Matched {
@@ -2767,6 +2797,8 @@ impl ResolvedStaticResponse {
                         let rendering_data = json!({
                             "data": merged_data.clone(),
                             "facts": facts,
+                            "url": requested_url.to_string(),
+                            "matches": matches,
                         });
 
                         handlebars
