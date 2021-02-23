@@ -87,6 +87,7 @@ pub async fn server(
                                     instance_id,
                                     access_key_id,
                                     account_unique_id,
+                                    base_urls: _,
                                 } = match presence_client
                                     .set_online(
                                         &authorization,
@@ -161,6 +162,7 @@ pub async fn server(
                                                 serde_json::to_string(
                                                     &SignalerHandshakeResponse::Ok {
                                                         instance_id: response.instance_id,
+                                                        base_urls: response.base_urls.clone(),
                                                     },
                                                 )
                                                 .unwrap(),
@@ -292,13 +294,20 @@ pub async fn server(
 
                                                             match msg_parsed {
                                                                 WsInstanceToCloudMessage::InstanceConfig(InstanceConfigMessage { config }) => {
-                                                                    presence_client
+                                                                    let instance_updated = presence_client
                                                                         .update_presence(
                                                                             &instance_id,
                                                                             &authorization,
                                                                             &config,
                                                                         )
                                                                         .await?;
+                                                                    info!(
+                                                                        "Base URLs served by the client: {}",
+                                                                        itertools::join(
+                                                                            instance_updated.base_urls.iter().map(|b| b.to_https_url()),
+                                                                            ", "
+                                                                        )
+                                                                    );
                                                                 }
 
                                                                 WsInstanceToCloudMessage::HealthState(health_probes) => {

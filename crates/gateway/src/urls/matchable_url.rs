@@ -1,4 +1,4 @@
-use exogress_server_common::url_prefix::MountPointBaseUrl;
+use exogress_common::entities::url_prefix::MountPointBaseUrl;
 use std::{fmt, str::FromStr};
 use url::Url;
 

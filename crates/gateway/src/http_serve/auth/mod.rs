@@ -1,8 +1,5 @@
-use exogress_common::entities::HandlerName;
-use exogress_server_common::{
-    assistant::{GetValue, SetValue},
-    url_prefix::MountPointBaseUrl,
-};
+use exogress_common::entities::{url_prefix::MountPointBaseUrl, HandlerName};
+use exogress_server_common::assistant::{GetValue, SetValue};
 use http::StatusCode;
 use oauth2::{basic::BasicTokenResponse, reqwest::Error};
 use reqwest::Identity;

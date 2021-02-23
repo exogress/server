@@ -2,8 +2,7 @@ use crate::http_serve::auth::{
     github::GithubOauth2Client, google::GoogleOauth2Client, JwtEcdsa, Oauth2Provider,
 };
 use cookie::Cookie;
-use exogress_common::entities::HandlerName;
-use exogress_server_common::url_prefix::MountPointBaseUrl;
+use exogress_common::entities::{url_prefix::MountPointBaseUrl, HandlerName};
 use handlebars::Handlebars;
 use http::{
     header::{LOCATION, SET_COOKIE},
@@ -15,6 +14,7 @@ use serde_json::json;
 use std::convert::TryInto;
 use typed_headers::{ContentType, HeaderMapExt};
 use url::Url;
+
 const LOGIN_TEMPLATE: &str = include_str!("../../templates/login.html.handlebars");
 
 #[derive(Serialize, Clone, Debug)]

@@ -17,11 +17,11 @@ use exogress_common::{
         ClientConfig, ClientConfigRevision, ProjectConfig, Scope,
     },
     entities::{
-        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
-        ParameterName, ProfileName, ProjectName, Upstream,
+        url_prefix::MountPointBaseUrl, AccessKeyId, AccountName, AccountUniqueId, ConfigName,
+        InstanceId, MountPointName, ParameterName, ProfileName, ProjectName, Upstream,
     },
 };
-use exogress_server_common::{logging::LogMessage, presence, url_prefix::MountPointBaseUrl};
+use exogress_server_common::{logging::LogMessage, presence};
 use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;

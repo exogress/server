@@ -9,7 +9,7 @@ use lru_time_cache::LruCache;
 use patricia_tree::PatriciaMap;
 
 use crate::urls::matchable_url::MatchableUrl;
-use exogress_server_common::url_prefix::MountPointBaseUrl;
+use exogress_common::entities::url_prefix::MountPointBaseUrl;
 
 struct Inner {
     // List of prefix with expiration according to policies
@@ -54,7 +54,7 @@ impl Inner {
     ) {
         let s: String = url_prefix.to_string().into();
 
-        info!("Cleanup all requests_processorss with prefix: {}", s);
+        info!("Cleanup all requests_processors with prefix: {}", s);
 
         let items_for_invalidation = self
             .from_prefix_lookup_tree

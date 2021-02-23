@@ -14,13 +14,10 @@ use exogress_common::{
         referenced,
         referenced::acl::{Acl, AclEntry},
     },
-    entities::HandlerName,
+    entities::{url_prefix::MountPointBaseUrl, HandlerName},
 };
-use exogress_server_common::{
-    logging::{
-        AclAction, AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
-    },
-    url_prefix::MountPointBaseUrl,
+use exogress_server_common::logging::{
+    AclAction, AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
 };
 use globset::Glob;
 use http::{

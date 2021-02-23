@@ -2,8 +2,8 @@
 use exogress_common::{
     config_core::ClientConfig,
     entities::{
-        AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProfileName,
-        ProjectName, SmolStr, Upstream,
+        url_prefix::MountPointBaseUrl, AccessKeyId, AccountName, AccountUniqueId,
+        HealthCheckProbeName, InstanceId, ProfileName, ProjectName, SmolStr, Upstream,
     },
     signaling::ProbeHealthStatus,
 };
@@ -20,6 +20,12 @@ pub struct InstanceRegistered {
     pub instance_id: InstanceId,
     pub account_unique_id: AccountUniqueId,
     pub access_key_id: AccessKeyId,
+    pub base_urls: Vec<MountPointBaseUrl>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstanceUpdated {
+    pub base_urls: Vec<MountPointBaseUrl>,
 }
 
 #[derive(Clone, Debug)]
@@ -225,7 +231,7 @@ impl Client {
         instance_id: &InstanceId,
         authorization: &str,
         config: &ClientConfig,
-    ) -> Result<Nothing, Error> {
+    ) -> Result<InstanceUpdated, Error> {
         self.execute_presence(
             false,
             Method::PUT,

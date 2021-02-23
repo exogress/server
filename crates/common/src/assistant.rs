@@ -1,6 +1,6 @@
-use crate::{logging::LogMessage, url_prefix::MountPointBaseUrl};
+use crate::logging::LogMessage;
 use chrono::serde::ts_milliseconds;
-use exogress_common::entities::{AccountUniqueId, ConfigId};
+use exogress_common::entities::{url_prefix::MountPointBaseUrl, AccountUniqueId, ConfigId};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 

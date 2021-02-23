@@ -7,4 +7,3 @@ pub mod director;
 pub mod logging;
 pub mod presence;
 pub mod prometheus;
-pub mod url_prefix;

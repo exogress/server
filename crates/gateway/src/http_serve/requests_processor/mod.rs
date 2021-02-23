@@ -91,9 +91,9 @@ use exogress_common::{
         ClientConfigRevision, ModifyQuery, ModifyQueryStrategy, RedirectTo, RequestModifications,
         Scope, TrailingSlashModification,
     },
-    entities::{serde::Serializer, Exception, ParameterName},
+    entities::{serde::Serializer, url_prefix::MountPointBaseUrl, Exception, ParameterName},
 };
-use exogress_server_common::{logging::ExceptionProcessingStep, url_prefix::MountPointBaseUrl};
+use exogress_server_common::logging::ExceptionProcessingStep;
 use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
 use langtag::LanguageTagBuf;
 use linked_hash_map::LinkedHashMap;
