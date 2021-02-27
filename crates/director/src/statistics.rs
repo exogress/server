@@ -19,6 +19,12 @@ lazy_static! {
         &["successful_retry", "max_retries", "retries"]
     )
     .unwrap();
+    pub static ref NUM_DNS_REQUESTS: IntCounterVec = register_int_counter_vec!(
+        "dns_requests",
+        "Number of processed DNS requests",
+        &["success"]
+    )
+    .unwrap();
 }
 
 fn dump_prometheus() -> String {

@@ -212,7 +212,9 @@ impl InMemoryAuthorityWithConstCname {
                 1,
             );
 
-            info!("return {:?}", cname_record_set);
+            crate::statistics::NUM_DNS_REQUESTS
+                .with_label_values(&["1"])
+                .inc();
 
             return Some(Arc::new(cname_record_set));
         }
