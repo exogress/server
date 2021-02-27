@@ -16,12 +16,13 @@ extern crate quickcheck;
 extern crate quickcheck_macros;
 
 mod balancer;
+mod dns_server;
 mod forwarder;
 mod statistics;
 mod termination;
 mod tls;
 
-use crate::{balancer::ShardedGateways, termination::StopReason};
+use crate::{balancer::ShardedGateways, dns_server::DnsServer, termination::StopReason};
 use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
@@ -92,6 +93,36 @@ fn main() {
                 .required(true)
                 .multiple(true)
                 .help("Gateway address in form weight:ip")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("ns_port")
+                .long("ns-port")
+                .required(true)
+                .help("DNS server port")
+                .takes_value(true)
+                .default_value("10053"),
+        )
+        .arg(
+            Arg::with_name("ns")
+                .long("ns")
+                .required(true)
+                .help("DNS short zone name server")
+                .takes_value(true)
+                .multiple(true),
+        )
+        .arg(
+            Arg::with_name("ns_cname")
+                .long("ns-cname")
+                .required(true)
+                .help("DNS CNAME for all records")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("ns_zone")
+                .long("ns-zone")
+                .required(true)
+                .help("DNS short zone name")
                 .takes_value(true),
         );
 
@@ -183,6 +214,28 @@ fn main() {
 
     let sharded_gateways = ShardedGateways::new(gateways, 4096).expect("Gateways error");
 
+    let ns_cname_for_all = matches
+        .value_of("ns_cname")
+        .expect("no --ns-cname provided")
+        .to_string();
+
+    let ns_zone = matches
+        .value_of("ns_zone")
+        .expect("no --ns-zone provided")
+        .to_string();
+
+    let ns_servers = matches
+        .values_of("ns")
+        .expect("no --ns provided")
+        .map(|ns| ns.to_string())
+        .collect::<Vec<String>>();
+
+    let ns_port: u16 = matches
+        .value_of("ns_port")
+        .expect("no --ns-port provided")
+        .parse()
+        .expect("bad ns-port");
+
     let listen_http = matches
         .value_of("listen_http")
         .expect("no --listen-http provided")
@@ -222,6 +275,16 @@ fn main() {
             .build()
             .unwrap()
             .spawn();
+
+        let _dns_server = DnsServer::new(
+            &ns_zone,
+            &ns_servers,
+            "team.exogress.com.",
+            &ns_cname_for_all,
+            ns_port,
+        )
+        .await
+        .expect("Failed to initialize DNS server");
 
         tokio::select! {
             r = forwarder => {
