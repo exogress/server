@@ -20,7 +20,7 @@ lazy_static! {
     )
     .unwrap();
     pub static ref NUM_DNS_REQUESTS: IntCounterVec = register_int_counter_vec!(
-        "dns_requests",
+        "director_dns_requests",
         "Number of processed DNS requests",
         &["success"]
     )
