@@ -41,7 +41,7 @@ impl GoogleClientCreds {
             auth_url,
             Some(token_url),
         )
-        .set_redirect_url(
+        .set_redirect_uri(
             RedirectUrl::new(self.redirect_url.to_string()).expect("Invalid redirect URL"),
         )
     }

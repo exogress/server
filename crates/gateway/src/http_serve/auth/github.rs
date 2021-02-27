@@ -37,7 +37,7 @@ impl GithubClientCreds {
 
         // Set up the config for the Github OAuth2 process.
         BasicClient::new(client_id, Some(client_secret), auth_url, Some(token_url))
-            .set_redirect_url(
+            .set_redirect_uri(
                 RedirectUrl::new(self.redirect_url.to_string()).expect("Invalid redirect URL"),
             )
     }
