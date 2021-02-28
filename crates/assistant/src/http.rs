@@ -456,10 +456,8 @@ pub async fn server(
                     let res: Result<String, redis::RedisError> = async move {
                         let mut redis_conn = redis.get_async_connection().await?;
 
-                        info!("retrieve key: {}", key);
                         let r = redis_conn.get(key.as_str()).await?;
                         redis_conn.del(key.as_str()).await?;
-                        info!("result: {}", r);
 
                         Ok(r)
                     }
@@ -484,27 +482,42 @@ pub async fn server(
         .and(warp::filters::method::get())
         .and_then({
             shadow_clone!(redis);
+            shadow_clone!(db_client);
+            shadow_clone!(elastic_client);
 
             move || {
                 shadow_clone!(redis);
+                shadow_clone!(db_client);
+                shadow_clone!(elastic_client);
 
                 async move {
-                    let res: Result<String, redis::RedisError> = async move {
+                    let res = async move {
                         let mut redis_conn = redis.get_async_connection().await?;
                         let r = redis_conn.set("assistant_healthcheck", "1").await?;
-                        Ok(r)
+                        Ok::<String, redis::RedisError>(r)
                     }
                     .await;
 
-                    match res {
-                        Ok(_) => Ok::<_, warp::reject::Rejection>(warp::http::StatusCode::OK),
-                        Err(e) => {
-                            error!("health check: redis error: {}", e);
-                            Ok::<_, warp::reject::Rejection>(
-                                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            )
-                        }
+                    if let Err(e) = res {
+                        error!("health check: redis error: {}", e);
+                        return Ok::<_, warp::reject::Rejection>(
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        );
                     }
+
+                    if !elastic_client.health().await {
+                        return Ok::<_, warp::reject::Rejection>(
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        );
+                    }
+
+                    if !db_client.health().await {
+                        return Ok::<_, warp::reject::Rejection>(
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        );
+                    }
+
+                    Ok::<_, warp::reject::Rejection>(warp::http::StatusCode::OK)
                 }
             }
         });

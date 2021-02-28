@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use elasticsearch::{
     cert::{Certificate, CertificateValidation},
+    cluster::ClusterHealthParts,
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
     BulkOperation, BulkParts, Elasticsearch,
 };
@@ -31,6 +32,42 @@ impl ElasticsearchClient {
 
         let client = Elasticsearch::new(transport);
         Ok(ElasticsearchClient { client })
+    }
+
+    pub async fn health(&self) -> bool {
+        let res = self
+            .client
+            .cluster()
+            .health(ClusterHealthParts::None)
+            .send()
+            .await;
+
+        match res {
+            Ok(resp) => match resp.json::<serde_json::Value>().await {
+                Ok(r) => match r.get::<String>("status".to_string()) {
+                    Some(r) => {
+                        if r != "yellow" && r != "green" {
+                            error!("cluster state is {}", r);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    None => {
+                        error!("bad response: no status field");
+                        false
+                    }
+                },
+                Err(e) => {
+                    error!("bad response: json parse failed: {}", e);
+                    false
+                }
+            },
+            Err(e) => {
+                error!("elasticsearch health status error: {}", e);
+                false
+            }
+        }
     }
 
     pub async fn save_log_messages(&self, messages: &[LogMessage]) -> anyhow::Result<()> {

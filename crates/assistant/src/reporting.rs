@@ -1,4 +1,5 @@
 use exogress_server_common::assistant::StatisticsReport;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct MongoDbClient {
@@ -20,6 +21,22 @@ impl MongoDbClient {
         info!("collections = {:?}", collections);
 
         Ok(MongoDbClient { db })
+    }
+
+    pub async fn health(&self) -> bool {
+        let r =
+            tokio::time::timeout(Duration::from_secs(5), self.db.list_collection_names(None)).await;
+        match r {
+            Ok(Ok(_)) => true,
+            Ok(Err(e)) => {
+                error!("mongo health error: {}", e);
+                false
+            }
+            Err(_e) => {
+                error!("mongo timeout");
+                false
+            }
+        }
     }
 
     pub async fn register_statistics_report(
