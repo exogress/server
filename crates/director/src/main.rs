@@ -104,6 +104,14 @@ fn main() {
                 .default_value("10053"),
         )
         .arg(
+            Arg::with_name("ns_bind_addr")
+                .long("ns-bind-addr")
+                .required(true)
+                .help("DNS server addr to bind to")
+                .takes_value(true)
+                .multiple(true),
+        )
+        .arg(
             Arg::with_name("ns")
                 .long("ns")
                 .required(true)
@@ -230,6 +238,12 @@ fn main() {
         .map(|ns| ns.to_string())
         .collect::<Vec<String>>();
 
+    let ns_bind_addr = matches
+        .values_of("ns_bind_addr")
+        .expect("no --ns-bind-addr")
+        .map(|ns| ns.parse().expect("bad ns-bind-addr provided"))
+        .collect::<Vec<IpAddr>>();
+
     let ns_port: u16 = matches
         .value_of("ns_port")
         .expect("no --ns-port provided")
@@ -281,6 +295,7 @@ fn main() {
             &ns_servers,
             "team.exogress.com.",
             &ns_cname_for_all,
+            &ns_bind_addr,
             ns_port,
         )
         .await

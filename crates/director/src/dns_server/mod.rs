@@ -2,7 +2,7 @@ use futures::channel::oneshot;
 use std::{
     collections::BTreeMap,
     convert::TryInto,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -35,11 +35,12 @@ impl DnsServer {
         ns_servers: &[String],
         soa_rname: &str,
         target: &str,
+        bind_to: &[IpAddr],
         port: u16,
     ) -> anyhow::Result<Self> {
         info!(
-            "spawn DNS server for zone {} served by {:?}, with rname {}, CNAME all to {} on port {}", 
-              short_zone, ns_servers, soa_rname, target, port);
+            "spawn DNS server for zone {} served by {:?}, with rname {}, CNAME all to {} on {:?} port {}", 
+              short_zone, ns_servers, soa_rname, target, bind_to, port);
 
         let short_zone_lower_name: LowerName = short_zone.parse()?;
 
@@ -109,11 +110,13 @@ impl DnsServer {
 
         let mut server = ServerFuture::new(catalog);
 
-        let udp = UdpSocket::bind(SocketAddr::from(([0u8, 0, 0, 0], port))).await?;
-        let tcp = TcpListener::bind(SocketAddr::from(([0u8, 0, 0, 0], port))).await?;
+        for addr in bind_to {
+            let udp = UdpSocket::bind(SocketAddr::from((addr.clone(), port))).await?;
+            server.register_socket(udp);
 
-        server.register_socket(udp);
-        server.register_listener(tcp, Duration::from_secs(5));
+            let tcp = TcpListener::bind(SocketAddr::from((addr.clone(), port))).await?;
+            server.register_listener(tcp, Duration::from_secs(5));
+        }
 
         let (stop_tx, stop_rx) = oneshot::channel();
 
