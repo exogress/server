@@ -1,3 +1,4 @@
+use crate::int_api_client::IntApiClient;
 use futures::channel::oneshot;
 use std::{
     collections::BTreeMap,
@@ -11,7 +12,7 @@ use tokio::{
     select,
 };
 use trust_dns_server::{
-    authority::{Catalog, ZoneType},
+    authority::Catalog,
     client::{
         proto::rr::rdata::SOA,
         rr::{LowerName, RrKey},
@@ -35,6 +36,7 @@ impl DnsServer {
         ns_servers: &[String],
         soa_rname: &str,
         target: &str,
+        int_api_client: IntApiClient,
         bind_to: &[IpAddr],
         port: u16,
     ) -> anyhow::Result<Self> {
@@ -97,12 +99,11 @@ impl DnsServer {
         catalog.upsert(
             short_zone_lower_name,
             Box::new(Arc::new(RwLock::new(
-                authority::InMemoryAuthorityWithConstCname::new(
+                authority::ShortZoneAuthority::new(
                     short_zone.parse()?,
                     records,
                     target.parse().unwrap(),
-                    ZoneType::Primary,
-                    false,
+                    int_api_client,
                 )
                 .map_err(|e| anyhow!("{}", e))?,
             ))),

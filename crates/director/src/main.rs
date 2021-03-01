@@ -18,11 +18,15 @@ extern crate quickcheck_macros;
 mod balancer;
 mod dns_server;
 mod forwarder;
+mod int_api_client;
 mod statistics;
 mod termination;
 mod tls;
 
-use crate::{balancer::ShardedGateways, dns_server::DnsServer, termination::StopReason};
+use crate::{
+    balancer::ShardedGateways, dns_server::DnsServer, int_api_client::IntApiClient,
+    termination::StopReason,
+};
 use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
@@ -140,7 +144,7 @@ fn main() {
                 exogress_server_common::clap::log::add_args(spawn_args),
             ),
         ),
-        false,
+        true,
         false,
         false,
     );
@@ -168,8 +172,15 @@ fn main() {
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
     let IntApiBaseUrls {
-        int_client_cert, ..
-    } = exogress_server_common::clap::int_api::extract_matches(&matches, false, false, false);
+        int_client_cert,
+        webapp_url,
+        ..
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
+
+    let int_api_client = IntApiClient::new(
+        webapp_url.expect("INT api url is not provided"),
+        int_client_cert.clone(),
+    );
 
     let listen_int_http_addr = matches
         .value_of("listen_int_http")
@@ -295,6 +306,7 @@ fn main() {
             &ns_servers,
             "team.exogress.com.",
             &ns_cname_for_all,
+            int_api_client,
             &ns_bind_addr,
             ns_port,
         )

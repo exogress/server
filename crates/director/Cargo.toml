@@ -37,6 +37,8 @@ trust-dns-resolver = "0.20"
 trust-dns-server = { version = "0.20", features = ["dnssec-ring"] }
 warp = { version = "0.3", features =["websocket", "tls", "compression"] }
 mimalloc = "0.1.22"
+url = "2"
+reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils"], default-features = false }

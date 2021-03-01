@@ -25,31 +25,38 @@ use trust_dns_server::client::{
     },
 };
 
-use trust_dns_server::authority::{
-    AnyRecords, AuthLookup, Authority, LookupError, LookupRecords, LookupResult, MessageRequest,
-    UpdateResult, ZoneType,
+use crate::int_api_client::IntApiClient;
+use anyhow::Error;
+use futures::FutureExt;
+use trust_dns_server::{
+    authority::{
+        AnyRecords, AuthLookup, Authority, LookupError, LookupRecords, LookupResult,
+        MessageRequest, UpdateResult, ZoneType,
+    },
+    proto::rr::rdata::TXT,
 };
 
 /// InMemoryAuthorityWithConstCname is responsible for storing the resource records for a particular zone.
 ///
 /// Authorities default to DNSClass IN. The ZoneType specifies if this should be treated as the
 /// start of authority for the zone, is a Secondary, or a cached zone.
-pub struct InMemoryAuthorityWithConstCname {
+#[derive(Clone)]
+pub struct ShortZoneAuthority {
     origin: LowerName,
     class: DNSClass,
     records: BTreeMap<RrKey, Arc<RecordSet>>,
     cname_record: Name,
-    zone_type: ZoneType,
-    allow_axfr: bool,
+
     // Private key mapped to the Record of the DNSKey
     //  TODO: these private_keys should be stored securely. Ideally, we have keys only stored per
     //   server instance, but that requires requesting updates from the parent zone, which may or
     //   may not support dynamic updates to register the new key... Trust-DNS will provide support
     //   for this, in some form, perhaps alternate root zones...
-    secure_keys: Vec<Signer>,
+    // secure_keys: Vec<Signer>,
+    int_api_client: IntApiClient,
 }
 
-impl InMemoryAuthorityWithConstCname {
+impl ShortZoneAuthority {
     /// Creates a new Authority.
     ///
     /// # Arguments
@@ -69,10 +76,15 @@ impl InMemoryAuthorityWithConstCname {
         origin: Name,
         records: BTreeMap<RrKey, RecordSet>,
         cname_record: Name,
-        zone_type: ZoneType,
-        allow_axfr: bool,
+        int_api_client: IntApiClient,
     ) -> Result<Self, String> {
-        let mut this = Self::empty(origin.clone(), cname_record, zone_type, allow_axfr);
+        let mut this = Self::empty(
+            origin.clone(),
+            cname_record,
+            int_api_client,
+            ZoneType::Primary,
+            false,
+        );
 
         // SOA must be present
         let serial = records
@@ -108,15 +120,20 @@ impl InMemoryAuthorityWithConstCname {
     /// # Warning
     ///
     /// This is an invalid zone, SOA must be added
-    pub fn empty(origin: Name, cname_record: Name, zone_type: ZoneType, allow_axfr: bool) -> Self {
+    pub fn empty(
+        origin: Name,
+        cname_record: Name,
+        int_api_client: IntApiClient,
+        zone_type: ZoneType,
+        allow_axfr: bool,
+    ) -> Self {
         Self {
             origin: LowerName::new(&origin),
             class: DNSClass::IN,
             records: BTreeMap::new(),
             cname_record,
-            zone_type,
-            allow_axfr,
-            secure_keys: Vec::new(),
+            // secure_keys: Vec::new(),
+            int_api_client,
         }
     }
 
@@ -130,15 +147,10 @@ impl InMemoryAuthorityWithConstCname {
         self.class
     }
 
-    /// Enables AXFRs of all the zones records
-    pub fn set_allow_axfr(&mut self, allow_axfr: bool) {
-        self.allow_axfr = allow_axfr;
-    }
-
-    /// Retrieve the Signer, which contains the private keys, for this zone
-    pub fn secure_keys(&self) -> &[Signer] {
-        &self.secure_keys
-    }
+    // /// Retrieve the Signer, which contains the private keys, for this zone
+    // pub fn secure_keys(&self) -> &[Signer] {
+    //     &self.secure_keys
+    // }
 
     /// Get all the records
     pub fn records(&self) -> &BTreeMap<RrKey, Arc<RecordSet>> {
@@ -189,13 +201,67 @@ impl InMemoryAuthorityWithConstCname {
         soa.serial()
     }
 
-    fn inner_lookup(
+    async fn inner_lookup(
         &self,
         name: &LowerName,
         record_type: RecordType,
         and_rrsigs: bool,
         supported_algorithms: SupportedAlgorithms,
     ) -> Option<Arc<RecordSet>> {
+        if name.to_string().starts_with("_acme-challenge.") {
+            match self
+                .int_api_client
+                .acme_dns_challenge_verification(
+                    "_acme-challenge",
+                    record_type.to_string().as_str(),
+                    name.base_name().to_string().as_str(),
+                )
+                .await
+            {
+                Ok(res) => {
+                    // TODO: properly track erroneous DNS requests
+                    let mut rs = RecordSet::new(&name.clone().into(), record_type, 1);
+
+                    let rdata: Option<_> = (|| match record_type {
+                        RecordType::CNAME => Some(RData::CNAME(res.parse().ok()?)),
+                        RecordType::TXT => Some(RData::TXT(TXT::new(vec![res]))),
+                        _ => {
+                            return None;
+                        }
+                    })();
+
+                    let rdata = match rdata {
+                        Some(rdata) => rdata,
+                        None => {
+                            crate::statistics::NUM_DNS_REQUESTS
+                                .with_label_values(&["0"])
+                                .inc();
+                            return None;
+                        }
+                    };
+
+                    rs.insert(
+                        Record::from_rdata(name.clone().into(), self.minimum_ttl(), rdata),
+                        1,
+                    );
+
+                    crate::statistics::NUM_DNS_REQUESTS
+                        .with_label_values(&["1"])
+                        .inc();
+
+                    return Some(Arc::new(rs));
+                }
+                Err(e) => {
+                    crate::statistics::NUM_DNS_REQUESTS
+                        .with_label_values(&["0"])
+                        .inc();
+
+                    info!("Error resolving {} addr: {}", name, e);
+                    return None;
+                }
+            }
+        }
+
         if record_type == RecordType::CNAME
             || record_type == RecordType::A
             || record_type == RecordType::AAAA
@@ -220,16 +286,15 @@ impl InMemoryAuthorityWithConstCname {
         }
 
         // this range covers all the records for any of the RecordTypes at a given label.
-        let start_range_key = RrKey::new(name.clone(), RecordType::Unknown(u16::min_value()));
-        let end_range_key = RrKey::new(name.clone(), RecordType::Unknown(u16::max_value()));
+        let start_range_key = RrKey::new(name.clone(), RecordType::Unknown(u16::MIN));
+        let end_range_key = RrKey::new(name.clone(), RecordType::Unknown(u16::MAX));
 
         fn aname_covers_type(key_type: RecordType, query_type: RecordType) -> bool {
             (query_type == RecordType::A || query_type == RecordType::AAAA)
                 && key_type == RecordType::ANAME
         }
 
-        let lookup = self
-            .records
+        self.records
             .range(&start_range_key..&end_range_key)
             // remember CNAME can be the only record at a particular label
             .find(|(key, _)| {
@@ -237,106 +302,7 @@ impl InMemoryAuthorityWithConstCname {
                     || key.record_type == RecordType::CNAME
                     || aname_covers_type(key.record_type, record_type)
             })
-            .map(|(_key, rr_set)| rr_set);
-
-        // TODO: maybe unwrap this recursion.
-        match lookup {
-            None => self.inner_lookup_wildcard(name, record_type, and_rrsigs, supported_algorithms),
-            l => l.cloned(),
-        }
-    }
-
-    fn inner_lookup_wildcard(
-        &self,
-        name: &LowerName,
-        record_type: RecordType,
-        and_rrsigs: bool,
-        supported_algorithms: SupportedAlgorithms,
-    ) -> Option<Arc<RecordSet>> {
-        // if this is a wildcard or a root, both should break continued lookups
-        let wildcard = if name.is_wildcard() || name.is_root() {
-            return None;
-        } else {
-            name.clone().into_wildcard()
-        };
-
-        self.inner_lookup(&wildcard, record_type, and_rrsigs, supported_algorithms)
-            // we need to change the name to the query name in the result set since this was a wildcard
-            .map(|rrset| {
-                let mut new_answer =
-                    RecordSet::new(name.borrow(), rrset.record_type(), rrset.ttl());
-
-                let (records, _rrsigs): (Vec<&Record>, Vec<&Record>) = rrset
-                    .records(and_rrsigs, supported_algorithms)
-                    .partition(|r| r.record_type() != RecordType::DNSSEC(DNSSECRecordType::RRSIG));
-
-                for record in records {
-                    new_answer.add_rdata(record.rdata().clone());
-                }
-
-                #[cfg(feature = "dnssec")]
-                for rrsig in _rrsigs {
-                    new_answer.insert_rrsig(rrsig.clone())
-                }
-
-                Arc::new(new_answer)
-            })
-    }
-
-    /// Search for additional records to include in the response
-    ///
-    /// # Arguments
-    ///
-    /// * query_type - original type in the request query
-    /// * next_name - the name from the CNAME, ANAME, MX, etc. record that is being searched
-    /// * search_type - the root search type, ANAME, CNAME, MX, i.e. the begging of the chain
-    fn additional_search(
-        &self,
-        query_type: RecordType,
-        next_name: LowerName,
-        _search_type: RecordType,
-        and_rrsigs: bool,
-        supported_algorithms: SupportedAlgorithms,
-    ) -> Option<Vec<Arc<RecordSet>>> {
-        let mut additionals: Vec<Arc<RecordSet>> = vec![];
-
-        // if it's a CNAME or other forwarding record, we'll be adding additional records based on the query_type
-        let mut query_types_arr = [query_type; 2];
-        let query_types: &[RecordType] = match query_type {
-            RecordType::ANAME | RecordType::NS | RecordType::MX | RecordType::SRV => {
-                query_types_arr = [RecordType::A, RecordType::AAAA];
-                &query_types_arr[..]
-            }
-            _ => &query_types_arr[..1],
-        };
-
-        for query_type in query_types {
-            // loop and collect any additional records to send
-            let mut next_name = Some(next_name.clone());
-            while let Some(search) = next_name.take() {
-                let additional =
-                    self.inner_lookup(&search, *query_type, and_rrsigs, supported_algorithms);
-                let mut continue_name = None;
-
-                if let Some(additional) = additional {
-                    // assuming no crazy long chains...
-                    if !additionals.contains(&additional) {
-                        additionals.push(additional.clone());
-                    }
-
-                    continue_name =
-                        maybe_next_name(&additional, *query_type).map(|(name, _search_type)| name);
-                }
-
-                next_name = continue_name;
-            }
-        }
-
-        if !additionals.is_empty() {
-            Some(additionals)
-        } else {
-            None
-        }
+            .map(|(_key, rr_set)| rr_set.clone())
     }
 
     #[cfg(any(feature = "dnssec", feature = "sqlite"))]
@@ -729,18 +695,18 @@ fn maybe_next_name(
     // }
 }
 
-impl Authority for InMemoryAuthorityWithConstCname {
+impl Authority for ShortZoneAuthority {
     type Lookup = AuthLookup;
     type LookupFuture = future::Ready<Result<Self::Lookup, LookupError>>;
 
     /// What type is this zone
     fn zone_type(&self) -> ZoneType {
-        self.zone_type
+        ZoneType::Primary
     }
 
     /// Return true if AXFR is allowed
     fn is_axfr_allowed(&self) -> bool {
-        self.allow_axfr
+        false
     }
 
     /// Takes the UpdateMessage, extracts the Records, and applies the changes to the record set.
@@ -830,163 +796,59 @@ impl Authority for InMemoryAuthorityWithConstCname {
         is_secure: bool,
         supported_algorithms: SupportedAlgorithms,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Lookup, LookupError>> + Send>> {
-        // Collect the records from each rr_set
-        let (result, additionals): (LookupResult<LookupRecords>, Option<LookupRecords>) =
+        let authority = self.clone();
+        let name = name.clone();
+
+        Box::pin(async move {
             match query_type {
                 RecordType::AXFR | RecordType::ANY => {
-                    let result = AnyRecords::new(
-                        is_secure,
-                        supported_algorithms,
-                        self.records.values().cloned().collect(),
-                        query_type,
-                        name.clone(),
-                    );
-                    (Ok(LookupRecords::AnyRecords(result)), None)
+                    // let result = AnyRecords::new(
+                    //     is_secure,
+                    //     supported_algorithms,
+                    //     self.records.values().cloned().collect(),
+                    //     query_type,
+                    //     name.clone(),
+                    // );
+                    // Ok(LookupRecords::AnyRecords(result))
+                    Ok(AuthLookup::answers(LookupRecords::Empty, None))
                 }
                 _ => {
                     // perform the lookup
-                    let answer =
-                        self.inner_lookup(name, query_type, is_secure, supported_algorithms);
-
-                    // evaluate any cnames for additional inclusion
-                    let additionals_root_chain_type: Option<(_, _)> = answer
-                        .as_ref()
-                        .and_then(|a| maybe_next_name(&*a, query_type))
-                        .and_then(|(search_name, search_type)| {
-                            info!("additional search");
-                            self.additional_search(
-                                query_type,
-                                search_name,
-                                search_type,
-                                is_secure,
-                                supported_algorithms,
-                            )
-                            .map(|adds| (adds, search_type))
-                        });
-
-                    // if the chain started with an ANAME, take the A or AAAA record from the list
-                    let (additionals, answer) =
-                        match (additionals_root_chain_type, answer, query_type) {
-                            (
-                                Some((additionals, RecordType::ANAME)),
-                                Some(answer),
-                                RecordType::A,
-                            )
-                            | (
-                                Some((additionals, RecordType::ANAME)),
-                                Some(answer),
-                                RecordType::AAAA,
-                            ) => {
-                                // This should always be true...
-                                debug_assert_eq!(answer.record_type(), RecordType::ANAME);
-
-                                // in the case of ANAME the final record should be the A or AAAA record
-                                let (rdatas, a_aaaa_ttl) = {
-                                    let last_record = additionals.last();
-                                    let a_aaaa_ttl =
-                                        last_record.map_or(u32::max_value(), |r| r.ttl());
-
-                                    // grap the rdatas
-                                    let rdatas: Option<Vec<RData>> = last_record
-                                        .and_then(|record| match record.record_type() {
-                                            RecordType::A | RecordType::AAAA => {
-                                                // the RRSIGS will be useless since we're changing the record type
-                                                Some(record.records_without_rrsigs())
-                                            }
-                                            _ => None,
-                                        })
-                                        .map(|records| {
-                                            records.map(Record::rdata).cloned().collect::<Vec<_>>()
-                                        });
-
-                                    (rdatas, a_aaaa_ttl)
-                                };
-
-                                // now build up a new RecordSet
-                                //   the name comes from the ANAME record
-                                //   according to the rfc the ttl is from the ANAME
-                                //   TODO: technically we should take the min of the potential CNAME chain
-                                let ttl = answer.ttl().min(a_aaaa_ttl);
-                                let mut new_answer = RecordSet::new(answer.name(), query_type, ttl);
-
-                                for rdata in rdatas.into_iter().flatten() {
-                                    new_answer.add_rdata(rdata);
-                                }
-
-                                // if DNSSEC is enabled, and the request had the DO set, sign the recordset
-                                #[cfg(feature = "dnssec")]
-                                {
-                                    use log::warn;
-
-                                    // ANAME's are constructed on demand, so need to be signed before return
-                                    if is_secure {
-                                        Self::sign_rrset(
-                                            &mut new_answer,
-                                            self.secure_keys(),
-                                            self.minimum_ttl(),
-                                            self.class(),
-                                        )
-                                        // rather than failing the request, we'll just warn
-                                        .map_err(|e| warn!("failed to sign ANAME record: {}", e))
-                                        .ok();
-                                    }
-                                }
-
-                                // prepend answer to additionals here (answer is the ANAME record)
-                                let additionals = std::iter::once(answer)
-                                    .chain(additionals.into_iter())
-                                    .collect();
-
-                                // return the new answer
-                                //   because the searched set was an Arc, we need to arc too
-                                (Some(additionals), Some(Arc::new(new_answer)))
-                            }
-                            (Some((additionals, _)), answer, _) => (Some(additionals), answer),
-                            (None, answer, _) => (None, answer),
-                        };
-
-                    // map the answer to a result
-                    let answer = answer
+                    let result = authority
+                        .inner_lookup(&name, query_type, is_secure, supported_algorithms)
+                        .await
                         .map_or(Err(LookupError::from(ResponseCode::NXDomain)), |rr_set| {
                             Ok(LookupRecords::new(is_secure, supported_algorithms, rr_set))
                         });
 
-                    let additionals = additionals
-                        .map(|a| LookupRecords::many(is_secure, supported_algorithms, a));
-
-                    (answer, additionals)
-                }
-            };
-
-        // This is annoying. The 1035 spec literally specifies that most DNS authorities would want to store
-        //   records in a list except when there are a lot of records. But this makes indexed lookups by name+type
-        //   always return empty sets. This is only important in the negative case, where other DNS authorities
-        //   generally return NoError and no results when other types exist at the same name. bah.
-        // TODO: can we get rid of this?
-        let result = match result {
-            Err(LookupError::ResponseCode(ResponseCode::NXDomain)) => {
-                if self
-                    .records
-                    .keys()
-                    .any(|key| key.name() == name || name.zone_of(key.name()))
-                {
-                    return Box::pin(future::err(LookupError::NameExists));
-                } else {
-                    let code = if self.origin().zone_of(name) {
-                        ResponseCode::NXDomain
-                    } else {
-                        ResponseCode::Refused
-                    };
-                    return Box::pin(future::err(LookupError::from(code)));
+                    // This is annoying. The 1035 spec literally specifies that most DNS authorities would want to store
+                    //   records in a list except when there are a lot of records. But this makes indexed lookups by name+type
+                    //   always return empty sets. This is only important in the negative case, where other DNS authorities
+                    //   generally return NoError and no results when other types exist at the same name. bah.
+                    // TODO: can we get rid of this?
+                    match result {
+                        Err(LookupError::ResponseCode(ResponseCode::NXDomain)) => {
+                            if authority
+                                .records
+                                .keys()
+                                .any(|key| key.name() == &name || name.zone_of(key.name()))
+                            {
+                                Err(LookupError::NameExists)
+                            } else {
+                                let code = if authority.origin().zone_of(&name) {
+                                    ResponseCode::NXDomain
+                                } else {
+                                    ResponseCode::Refused
+                                };
+                                Err(LookupError::from(code))
+                            }
+                        }
+                        Err(e) => Err(e),
+                        o => Ok(AuthLookup::answers(o?, None)),
+                    }
                 }
             }
-            Err(e) => return Box::pin(future::err(e)),
-            o => o,
-        };
-
-        Box::pin(future::ready(
-            result.map(|answers| AuthLookup::answers(answers, additionals)),
-        ))
+        })
     }
 
     fn search(

@@ -945,7 +945,7 @@ dependencies = [
 [[package]]
 name = "exogress-common"
 version = "0.0.1-beta.1"
-source = "git+https://github.com/exogress/exogress.git?branch=master#7c3e516c0592dc2e36088f435090367b92c791c9"
+source = "git+https://github.com/exogress/exogress.git?branch=master#f3f4e9a13681496a4d8f4e4c7e8efac6a03fa4c6"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1031,6 +1031,7 @@ dependencies = [
  "quickcheck_macros",
  "rand 0.8.3",
  "rand_xoshiro",
+ "reqwest",
  "seahash",
  "sentry",
  "serde",
@@ -1045,6 +1046,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-dns-resolver",
  "trust-dns-server",
+ "url",
  "warp",
 ]
 
@@ -2073,9 +2075,9 @@ dependencies = [
 
 [[package]]
 name = "lru_time_cache"
-version = "0.11.8"
+version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da6e3532e40db8c80ce84d6b5e1d9ae555ad47e57ce3344e1c072f5cb9b7fdc8"
+checksum = "e8405c7ed7db2948e8876e7b53e8ec8051682be5b3ac00e5429f0eab5e6dbaa5"
 
 [[package]]
 name = "magick_rust"
@@ -3848,9 +3850,9 @@ checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
 
 [[package]]
 name = "sqlformat"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74c70f0235b9925cbb106c52af1a28b5ea4885a8b851e328b8562e257a389c2d"
+checksum = "6d86e3c77ff882a828346ba401a7ef4b8e440df804491c6064fe8295765de71c"
 dependencies = [
  "lazy_static",
  "maplit",
