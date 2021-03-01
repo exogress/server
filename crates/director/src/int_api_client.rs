@@ -1,3 +1,4 @@
+use reqwest::Identity;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use url::Url;
@@ -7,7 +8,6 @@ use warp::http;
 pub struct IntApiClient {
     reqwest: reqwest::Client,
     webapp_base_url: Url,
-    maybe_identity: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,16 +17,19 @@ struct Response {
 
 impl IntApiClient {
     pub fn new(webapp_base_url: Url, maybe_identity: Option<Vec<u8>>) -> IntApiClient {
+        let mut builder = reqwest::ClientBuilder::new()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .use_rustls_tls()
+            .trust_dns(true);
+
+        if let Some(identity) = maybe_identity {
+            builder = builder.identity(Identity::from_pem(&identity).unwrap());
+        }
+
         IntApiClient {
-            reqwest: reqwest::ClientBuilder::new()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(5))
-                .use_rustls_tls()
-                .trust_dns(true)
-                .build()
-                .unwrap(),
+            reqwest: builder.build().unwrap(),
             webapp_base_url,
-            maybe_identity,
         }
     }
 
