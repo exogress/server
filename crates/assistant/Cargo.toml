@@ -30,6 +30,7 @@ prometheus = "0.11.0"
 lazy_static = "1.4.0"
 mimalloc = "0.1.22"
 simd-json = "0.3.23"
+itertools = "0.10"
 
 elasticsearch =  { version = "7.10.1-alpha.1", default-features = false, features = ["rustls-tls"]}
 mongodb = "2.0.0-alpha"

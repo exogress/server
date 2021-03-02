@@ -10,6 +10,7 @@ use exogress_server_common::{
 };
 use futures::{channel::mpsc, pin_mut, FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
+use itertools::Itertools;
 use redis::AsyncCommands;
 use std::{convert::TryInto, io, net::SocketAddr, path::PathBuf};
 use stop_handle::{StopHandle, StopWait};
@@ -128,35 +129,43 @@ pub async fn server(
                                         shadow_clone!(elastic_client);
 
                                         async move {
-                                            while let Some(report) = elastic_saver_rx.next().await {
-                                                info!("Start saving to elasticsearch");
-                                                let start_time = crate::statistics::ACCOUNT_LOGS_SAVE_TIME.start_timer();
+                                            while let Some(messages) = elastic_saver_rx.next().await {
+                                                let grouped = messages
+                                                    .into_iter()
+                                                    .into_group_map_by(|msg| {
+                                                        format!("{}-{}", msg.account_unique_id, msg.date.format("%Y.%m.%d")).to_lowercase()
+                                                    });
 
-                                                let res = tokio::time::timeout(
-                                                    Duration::from_secs(5),
-                                                    elastic_client.save_log_messages(&report)
-                                                ).await;
+                                                for (index, messages_for_index) in grouped {
+                                                    info!("Start saving to elasticsearch index {}", index);
+                                                    let start_time = crate::statistics::ACCOUNT_LOGS_SAVE_TIME.start_timer();
 
-                                                let is_ok = match res {
-                                                    Err(e) => {
-                                                        error!("Failed to save to elasticsearch: {}", e);
-                                                        false
-                                                    }
-                                                    Ok(Err(e)) => {
-                                                        error!("Failed to save to elasticsearch: {}", e);
-                                                        false
-                                                    }
-                                                    Ok(Ok(_)) => {
-                                                        start_time.observe_duration();
-                                                        true
-                                                    }
-                                                };
+                                                    let res = tokio::time::timeout(
+                                                        Duration::from_secs(5),
+                                                        elastic_client.save_log_messages(index, messages_for_index)
+                                                    ).await;
 
-                                                crate::statistics::ACCOUNT_LOGS_SAVE
-                                                    .with_label_values(&[
-                                                        if is_ok { "" } else { "1" },
-                                                    ])
-                                                    .inc();
+                                                    let is_ok = match res {
+                                                        Err(e) => {
+                                                            error!("Failed to save to elasticsearch: {}", e);
+                                                            false
+                                                        }
+                                                        Ok(Err(e)) => {
+                                                            error!("Failed to save to elasticsearch: {}", e);
+                                                            false
+                                                        }
+                                                        Ok(Ok(_)) => {
+                                                            start_time.observe_duration();
+                                                            true
+                                                        }
+                                                    };
+
+                                                    crate::statistics::ACCOUNT_LOGS_SAVE
+                                                        .with_label_values(&[
+                                                            if is_ok { "" } else { "1" },
+                                                        ])
+                                                        .inc();
+                                                }
                                             }
 
                                             Ok::<_, anyhow::Error>(())

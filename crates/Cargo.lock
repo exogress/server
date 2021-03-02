@@ -917,6 +917,7 @@ dependencies = [
  "exogress-server-common",
  "futures",
  "hashbrown 0.9.1",
+ "itertools 0.10.0",
  "lazy_static",
  "mimalloc",
  "mongodb",

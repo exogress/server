@@ -3,10 +3,11 @@ use elasticsearch::{
     cert::{Certificate, CertificateValidation},
     cluster::ClusterHealthParts,
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
+    indices::{IndicesCreateParts, IndicesPutMappingParts},
     BulkOperation, BulkParts, Elasticsearch,
 };
 use exogress_server_common::logging::LogMessage;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::{fs::File, io::AsyncReadExt};
 
 #[derive(Clone)]
@@ -70,18 +71,37 @@ impl ElasticsearchClient {
         }
     }
 
-    pub async fn save_log_messages(&self, messages: &[LogMessage]) -> anyhow::Result<()> {
-        let index = "accounts_logs";
+    pub async fn save_log_messages(
+        &self,
+        index: String,
+        messages: Vec<LogMessage>,
+    ) -> anyhow::Result<()> {
+        let body: Vec<BulkOperation<_>> = messages
+            .into_iter()
+            .map(|msg| BulkOperation::index(msg).into())
+            .collect();
 
-        let mut body: Vec<BulkOperation<_>> = vec![];
-        for msg in messages {
-            let op = BulkOperation::index(msg).into();
-            body.push(op);
-        }
+        self.client
+            .indices()
+            .create(IndicesCreateParts::Index(index.as_str()))
+            .send()
+            .await?;
+
+        self.client
+            .indices()
+            .put_mapping(IndicesPutMappingParts::Index(&[index.as_str()]))
+            .body(json!({
+                "properties" : {
+                    "date" : { "type" : "date" },
+                    "client_addr": { "type": "ip" }
+                }
+            }))
+            .send()
+            .await?;
 
         match self
             .client
-            .bulk(BulkParts::Index(index))
+            .bulk(BulkParts::Index(index.as_str()))
             .body(body)
             .send()
             .await

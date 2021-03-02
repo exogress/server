@@ -331,7 +331,7 @@ impl RequestsProcessor {
 
         let mut log_message = LogMessage {
             gw_location: self.gw_location.clone(),
-            time: Utc::now(),
+            date: Utc::now(),
             client_addr: remote_addr.ip(),
             account_unique_id: self.account_unique_id.clone(),
             project: self.project_name.clone(),

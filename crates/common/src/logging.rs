@@ -14,7 +14,7 @@ use std::{net::IpAddr, sync::Arc, time::Duration};
 pub struct LogMessage {
     pub gw_location: SmolStr,
     #[serde(with = "ts_milliseconds")]
-    pub time: chrono::DateTime<chrono::Utc>,
+    pub date: chrono::DateTime<chrono::Utc>,
     pub client_addr: IpAddr,
 
     pub account_unique_id: AccountUniqueId,
