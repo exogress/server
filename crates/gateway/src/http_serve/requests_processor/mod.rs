@@ -94,7 +94,9 @@ use exogress_common::{
     entities::{serde::Serializer, url_prefix::MountPointBaseUrl, Exception, ParameterName},
 };
 use exogress_server_common::logging::ExceptionProcessingStep;
-use http::header::{HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY};
+use http::header::{
+    HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
+};
 use langtag::LanguageTagBuf;
 use linked_hash_map::LinkedHashMap;
 use memmap::Mmap;
@@ -332,12 +334,17 @@ impl RequestsProcessor {
         let mut log_message = LogMessage {
             gw_location: self.gw_location.clone(),
             date: Utc::now(),
-            client_addr: remote_addr.ip(),
+            remote_addr: remote_addr.ip(),
             account_unique_id: self.account_unique_id.clone(),
             project: self.project_name.clone(),
             mount_point: self.mount_point_name.clone(),
             url: requested_url.to_string().into(),
             method: req.method().to_string().into(),
+            protocol: format!("{:?}", req.version()).into(),
+            user_agent: req
+                .headers()
+                .get(USER_AGENT)
+                .map(|v| v.to_str().unwrap_or_default().into()),
             status_code: None,
             time_taken: None,
             content_len: None,

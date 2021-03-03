@@ -15,13 +15,17 @@ pub struct LogMessage {
     pub gw_location: SmolStr,
     #[serde(with = "ts_milliseconds")]
     pub date: chrono::DateTime<chrono::Utc>,
-    pub client_addr: IpAddr,
+    pub remote_addr: IpAddr,
 
     pub account_unique_id: AccountUniqueId,
     pub project: ProjectName,
     pub mount_point: MountPointName,
     pub url: SmolStr,
     pub method: SmolStr,
+
+    pub protocol: SmolStr,
+
+    pub user_agent: Option<SmolStr>,
 
     pub status_code: Option<u16>,
 
