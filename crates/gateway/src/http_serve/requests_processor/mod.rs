@@ -350,6 +350,7 @@ impl RequestsProcessor {
             content_len: None,
             steps: vec![],
             facts: facts.clone(),
+            str: None,
         };
 
         self.do_process(
@@ -365,6 +366,8 @@ impl RequestsProcessor {
 
         log_message.time_taken = Some(started_at.elapsed());
         log_message.status_code = Some(res.status().as_u16());
+
+        log_message.set_message_string();
 
         self.log_messages_tx
             .clone()

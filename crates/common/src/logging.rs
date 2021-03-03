@@ -37,6 +37,31 @@ pub struct LogMessage {
     pub steps: Vec<ProcessingStep>,
 
     pub facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
+
+    pub str: Option<String>,
+}
+
+impl LogMessage {
+    pub fn set_message_string(&mut self) {
+        self.str = Some(format!(
+            "[{}] {} {} {} \"{} {} {}\" {} \"{}\"",
+            self.date.format("%d/%b/%Y:%H:%M:%S %z"),
+            self.mount_point,
+            self.gw_location,
+            self.remote_addr,
+            self.method,
+            self.url,
+            self.protocol,
+            self.status_code
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            self.user_agent
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        ));
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
