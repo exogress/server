@@ -192,6 +192,7 @@ pub async fn tunnels_acceptor(
                     shadow_clone!(mut tunnel_counters_tx);
 
                     async move {
+                        let query_params = req.uri().query().unwrap_or("").to_string();
                         if req.version() != Version::HTTP_11 {
                             bail!("not HTTP/1.1, abort connection");
                         }
@@ -224,7 +225,10 @@ pub async fn tunnels_acceptor(
                                     .await?
                                     .account_unique_id;
 
-                                info!("Accepted tunnel from instance {}", tunnel_hello.instance_id);
+                                info!(
+                                    "Accepted tunnel from instance {}. Params: {}",
+                                    tunnel_hello.instance_id, query_params
+                                );
 
                                 let resp = TunnelHelloResponse::Ok { tunnel_id };
 
