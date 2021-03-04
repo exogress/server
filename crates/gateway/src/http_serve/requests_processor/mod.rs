@@ -858,7 +858,7 @@ pub enum ResolvedMatchQueryValue {
     AnySingleSegment,
     MayBeAnyMultipleSegments,
     Exact(SmolStr),
-    Regex(Regex),
+    Regex(Box<Regex>),
     Choice(AhoCorasick),
 }
 
@@ -949,7 +949,7 @@ impl From<MatchPathSegment> for ResolvedMatchPathSegment {
 pub enum ResolvedMatchPathSegment {
     Any,
     Exact(UrlPathSegment),
-    Regex(Regex),
+    Regex(Box<Regex>),
     Choice(AhoCorasick),
 }
 
