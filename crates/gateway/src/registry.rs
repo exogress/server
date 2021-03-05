@@ -54,8 +54,6 @@ impl Inner {
     ) {
         let s: String = url_prefix.to_string().into();
 
-        info!("Cleanup all requests_processors with prefix: {}", s);
-
         let items_for_invalidation = self
             .from_prefix_lookup_tree
             .iter_prefix(s.as_ref())

@@ -133,45 +133,39 @@ impl AssistantClient {
                             let text = msg.into_text().unwrap();
 
                             match serde_json::from_str::<WsToGwMessage>(text.as_str()) {
-                                Ok(ws_message) => {
-                                    info!("Process message {:?}", ws_message);
-                                    match ws_message {
-                                        WsToGwMessage::WebAppNotification(notification) => {
-                                            match notification.action {
-                                                Action::Invalidate {
-                                                    url_prefixes,
-                                                    config_ids,
-                                                } => {
-                                                    for url_prefix in url_prefixes.into_iter() {
-                                                        let domain_only = url_prefix.domain_only();
-                                                        mappings
-                                                            .remove_by_notification_if_time_applicable(
-                                                                &domain_only,
-                                                                &notification.generated_at,
-                                                            );
-
-                                                        let host = url_prefix.host().to_string();
-
-                                                        info!(
-                                                            "invalidate certificate for: {}",
-                                                            host
+                                Ok(ws_message) => match ws_message {
+                                    WsToGwMessage::WebAppNotification(notification) => {
+                                        match notification.action {
+                                            Action::Invalidate {
+                                                url_prefixes,
+                                                config_ids,
+                                            } => {
+                                                for url_prefix in url_prefixes.into_iter() {
+                                                    let domain_only = url_prefix.domain_only();
+                                                    mappings
+                                                        .remove_by_notification_if_time_applicable(
+                                                            &domain_only,
+                                                            &notification.generated_at,
                                                         );
 
-                                                        webapp_client.forget_certificate(host);
-                                                    }
+                                                    let host = url_prefix.host().to_string();
 
-                                                    for config_id in &config_ids {
-                                                        client_tunnels.close_tunnel(config_id);
-                                                    }
+                                                    info!("invalidate certificate for: {}", host);
+
+                                                    webapp_client.forget_certificate(host);
+                                                }
+
+                                                for config_id in &config_ids {
+                                                    client_tunnels.close_tunnel(config_id);
                                                 }
                                             }
                                         }
-                                        WsToGwMessage::GwConfig(gw_tls) => {
-                                            info!("Received common gateway TLS config");
-                                            *tls_gw_common.write() = Some(gw_tls);
-                                        }
                                     }
-                                }
+                                    WsToGwMessage::GwConfig(gw_tls) => {
+                                        info!("Received common gateway TLS config");
+                                        *tls_gw_common.write() = Some(gw_tls);
+                                    }
+                                },
                                 Err(e) => {
                                     error!("error parsing notification in redis: {}", e);
                                     stop_handle.stop(StopReason::NotificationChannelError);

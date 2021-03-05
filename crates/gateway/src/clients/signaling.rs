@@ -19,9 +19,9 @@ pub enum Error {
 
 pub async fn request_connection(
     mut int_base_url: Url,
-    hostname: SmolStr,
+    hostname: &SmolStr,
     config_id: ConfigId,
-    maybe_identity: Option<Vec<u8>>,
+    maybe_identity: &Option<Vec<u8>>,
 ) -> Result<(), Error> {
     let mut builder = reqwest::ClientBuilder::new()
         .redirect(reqwest::redirect::Policy::none())
@@ -36,7 +36,7 @@ pub async fn request_connection(
     let client = builder.build().expect("could not create reqwest client");
 
     let msg = TunnelRequest {
-        hostname,
+        hostname: hostname.clone(),
         max_tunnels_count: MAX_ALLOWED_TUNNELS as u16,
     };
 
@@ -62,7 +62,7 @@ pub async fn request_connection(
         .send()
         .await?;
 
-    info!("resp {:?}", resp);
+    info!("request connection result status-code: {}", resp.status());
 
     match resp.status() {
         reqwest::StatusCode::NOT_FOUND => Err(Error::ClientNotConnected),

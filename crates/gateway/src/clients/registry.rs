@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use exogress_common::tunnel::{Compression, ConnectTarget, Connector, TunneledConnection};
 
@@ -96,8 +96,13 @@ pub struct InstanceConnections {
     pub instance_connector: InstanceConnector,
 }
 
+pub struct TunnelRequestedInner {
+    pub(crate) reset_event: Arc<ManualResetEvent>,
+    _requestor_stop_tx: oneshot::Sender<()>,
+}
+
 pub enum TunnelConnectionState {
-    Requested(Arc<ManualResetEvent>),
+    Requested(TunnelRequestedInner),
     Connected(HashMap<InstanceId, InstanceConnections>),
     // Blocked,
 }
@@ -188,48 +193,75 @@ impl ClientTunnels {
     {
         let maybe_identity = self.maybe_identity.clone();
 
-        let start_time = crate::statistics::TUNNEL_ESTABLISHMENT_TIME.start_timer();
-
-        let (maybe_reset_event, should_request) = {
+        let (maybe_reset_event, maybe_requestor_stop_rx) = {
             let mut locked = self.inner.lock();
             let maybe_clients = locked.by_config.get(&config_id);
 
             match maybe_clients {
                 None => {
+                    let (requestor_stop_tx, requestor_stop_rx) = oneshot::channel();
                     let reset_event = Arc::new(ManualResetEvent::new(false));
+                    let tunnel_requested = TunnelRequestedInner {
+                        reset_event: reset_event.clone(),
+                        _requestor_stop_tx: requestor_stop_tx,
+                    };
                     locked.by_config.insert(
                         config_id.clone(),
-                        TunnelConnectionState::Requested(reset_event.clone()),
+                        TunnelConnectionState::Requested(tunnel_requested),
                     );
 
-                    (Some(reset_event), true)
+                    (Some(reset_event), Some(requestor_stop_rx))
                 }
                 Some(state) => match state {
-                    TunnelConnectionState::Requested(reset_event) => {
-                        (Some(reset_event.clone()), false)
+                    TunnelConnectionState::Requested(runnel_requested) => {
+                        (Some(runnel_requested.reset_event.clone()), None)
                     }
-                    _ => (None, false),
+                    _ => (None, None),
                 },
             }
         };
 
-        if should_request {
-            let res = request_connection(
-                self.signaler_base_url.clone(),
-                individual_hostname,
-                config_id.clone(),
-                maybe_identity,
-            )
-            .await;
-            start_time.observe_duration();
-            match res {
-                Ok(()) => {}
-                Err(e) => {
-                    error!("Error requesting connection: {}", e);
-                    self.inner.lock().by_config.remove(&config_id);
-                    return None;
+        let start_time = crate::statistics::TUNNEL_ESTABLISHMENT_TIME.start_timer();
+
+        if let Some(requestor_stop_rx) = maybe_requestor_stop_rx {
+            info!(
+                "request instances with config_id `{}` to establish tunnels",
+                config_id
+            );
+
+            let signaler_base_url = self.signaler_base_url.clone();
+
+            let requestor = {
+                shadow_clone!(config_id);
+
+                async move {
+                    loop {
+                        let res = request_connection(
+                            signaler_base_url.clone(),
+                            &individual_hostname,
+                            config_id.clone(),
+                            &maybe_identity,
+                        )
+                        .await;
+                        match res {
+                            Ok(()) => {}
+                            Err(e) => {
+                                error!("Error requesting connection: {}", e);
+                            }
+                        }
+                        sleep(Duration::from_secs(1)).await;
+                    }
                 }
-            }
+            };
+
+            let stoppable_requestor = async {
+                tokio::select! {
+                    _ = requestor => {},
+                    _ = requestor_stop_rx => {},
+                }
+            };
+
+            tokio::spawn(stoppable_requestor);
         }
 
         if let Some(reset_event) = maybe_reset_event {
@@ -239,6 +271,8 @@ impl ClientTunnels {
                 return None;
             }
         }
+
+        start_time.observe_duration();
 
         // at this point we probably have connection accepted
         {

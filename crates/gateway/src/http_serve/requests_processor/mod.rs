@@ -237,8 +237,6 @@ impl RequestsProcessor {
                     None
                 };
 
-                info!("best_language = {:?}", best_language);
-
                 let result = handler
                     .handle_request(
                         req,

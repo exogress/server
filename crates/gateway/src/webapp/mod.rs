@@ -34,7 +34,7 @@ use reqwest::Identity;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{sync::Arc, time::Duration};
-use tokio::time::timeout;
+use tokio::time::{timeout, sleep};
 use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
@@ -536,32 +536,63 @@ impl Client {
                                                 let generated_at =
                                                     configs_response.generated_at.clone();
 
-                                                let requests_processor =
-                                                    match RequestsProcessor::new(
-                                                        configs_response,
-                                                        google_oauth2_client,
-                                                        github_oauth2_client,
-                                                        assistant_base_url,
-                                                        tunnels,
-                                                        rules_counters.clone(),
-                                                        individual_hostname,
-                                                        maybe_identity,
-                                                        traffic_counters_tx.clone(),
-                                                        log_messages_tx,
-                                                        &gw_location,
-                                                        cache,
-                                                        presence_client.clone(),
-                                                        dbip.clone(),
-                                                        resolver,
-                                                    ) {
-                                                        Ok(rp) => rp,
-                                                        Err(e) => {
-                                                            error!("Error creating RequestsProcessor: {}", e);
-                                                            crate::statistics::CONFIGS_PROCESSING_ERRORS.inc();
-                                                            *config_error.lock() = Some(e);
-                                                            return;
+                                                let requests_processor_result = {
+                                                    let mut last_err = None;
+                                                    let mut retry = 0;
+                                                    loop {
+                                                        match RequestsProcessor::new(
+                                                            configs_response.clone(),
+                                                            google_oauth2_client.clone(),
+                                                            github_oauth2_client.clone(),
+                                                            assistant_base_url.clone(),
+                                                            tunnels.clone(),
+                                                            rules_counters.clone(),
+                                                            individual_hostname.clone(),
+                                                            maybe_identity.clone(),
+                                                            traffic_counters_tx.clone(),
+                                                            log_messages_tx.clone(),
+                                                            &gw_location,
+                                                            cache.clone(),
+                                                            presence_client.clone(),
+                                                            dbip.clone(),
+                                                            resolver.clone(),
+                                                        ) {
+                                                            Ok(rp) => {
+                                                                warn!("requests processor ok retry {}", retry);
+                                                                break Ok(rp)
+                                                            },
+                                                            Err(e) => {
+                                                                warn!("requests processor retrieval error retry {}: {}", retry, e);
+                                                                last_err = Some(e);
+                                                            }
                                                         }
-                                                    };
+
+                                                        retry += 1;
+
+                                                        if retry == 5 {
+                                                            match last_err {
+                                                                Some(e) => {
+                                                                    break Err(e);
+                                                                }
+                                                                None => {
+                                                                    unreachable!()
+                                                                }
+                                                            }
+                                                        }
+
+                                                        sleep(Duration::from_millis(500)).await;
+                                                    }
+                                                };
+
+                                                let requests_processor = match requests_processor_result {
+                                                    Err(e) => {
+                                                        error!("Error creating RequestsProcessor: {}", e);
+                                                        crate::statistics::CONFIGS_PROCESSING_ERRORS.inc();
+                                                        *config_error.lock() = Some(e);
+                                                        return;
+                                                    }
+                                                    Ok(rp) => rp,
+                                                };
 
                                                 requests_processors_registry.upsert(
                                                     &url_prefix,

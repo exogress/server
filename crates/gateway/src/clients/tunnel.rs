@@ -148,11 +148,9 @@ pub async fn tunnels_acceptor(
 
                 let mut tls_conn = match accept_result {
                     Err(_) => {
-                        warn!("Timeout TLS tunnel connection");
                         return Ok(());
                     }
                     Ok(Err(e)) => {
-                        warn!("Error accepting TLS connection: {}", e);
                         return Ok(());
                     }
                     Ok(Ok(r)) => r,
@@ -297,7 +295,7 @@ pub async fn tunnels_acceptor(
                                 match locked.by_config.entry(config_id.clone()) {
                                     Entry::Occupied(mut rec) => {
                                         match rec.get_mut() {
-                                            TunnelConnectionState::Requested(reset_event) => {
+                                            TunnelConnectionState::Requested(requested) => {
                                                 let mut c = HashMap::new();
                                                 let mut tunnels = HashMap::new();
                                                 tunnels.insert(
@@ -320,7 +318,7 @@ pub async fn tunnels_acceptor(
                                                 };
 
                                                 c.insert(instance_id, instance_conections);
-                                                reset_event.set();
+                                                requested.reset_event.set();
                                                 rec.insert(TunnelConnectionState::Connected(c));
                                             }
                                             TunnelConnectionState::Connected(c) => {
