@@ -68,25 +68,25 @@ impl ResolvedProxy {
         base64::encode(m.digest().bytes().as_ref())
     }
 
-    fn retrieve_connection_failed(&self, instance_id: &InstanceId) {
-        warn!(
-            "Failed to connect to instance {}. Try next instance",
-            instance_id
-        );
-        tokio::spawn({
-            let presence_client = self.presence_client.clone();
-            shadow_clone!(instance_id);
-
-            async move {
-                info!("Request instance {} to go offline", instance_id);
-                let res = presence_client.set_offline(&instance_id, "", true).await;
-                info!(
-                    "Request instance {} to go offline res = {:?}",
-                    instance_id, res
-                );
-            }
-        });
-    }
+    // fn retrieve_connection_failed(&self, instance_id: &InstanceId) {
+    //     warn!(
+    //         "Failed to connect to instance {}. Try next instance",
+    //         instance_id
+    //     );
+    //     tokio::spawn({
+    //         let presence_client = self.presence_client.clone();
+    //         shadow_clone!(instance_id);
+    //
+    //         async move {
+    //             info!("Request instance {} to go offline", instance_id);
+    //             let res = presence_client.set_offline(&instance_id, "", true).await;
+    //             info!(
+    //                 "Request instance {} to go offline res = {:?}",
+    //                 instance_id, res
+    //             );
+    //         }
+    //     });
+    // }
     pub async fn invoke(
         &self,
         req: &mut Request<Body>,
@@ -187,7 +187,7 @@ impl ResolvedProxy {
                                     .await
                             }
                             None => {
-                                self.retrieve_connection_failed(&instance_id);
+                                // self.retrieve_connection_failed(&instance_id);
                                 continue 'instances;
                             }
                         };
@@ -282,7 +282,7 @@ impl ResolvedProxy {
                         {
                             Some(http_client) => http_client,
                             None => {
-                                self.retrieve_connection_failed(&instance_id);
+                                // self.retrieve_connection_failed(&instance_id);
                                 continue 'instances;
                             }
                         };

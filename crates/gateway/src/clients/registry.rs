@@ -8,6 +8,7 @@ use tokio::time::{sleep, timeout};
 use exogress_common::tunnel::{Compression, ConnectTarget, Connector, TunneledConnection};
 
 use crate::clients::signaling::request_connection;
+use core::fmt;
 use exogress_common::entities::{ConfigId, InstanceId, TunnelId};
 use futures::{channel::oneshot, future::BoxFuture, FutureExt};
 use http::Uri;
@@ -105,6 +106,19 @@ pub enum TunnelConnectionState {
     Requested(TunnelRequestedInner),
     Connected(HashMap<InstanceId, InstanceConnections>),
     // Blocked,
+}
+
+impl fmt::Debug for TunnelConnectionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TunnelConnectionState::Requested(_) => {
+                write!(f, "requested")
+            }
+            TunnelConnectionState::Connected(_) => {
+                write!(f, "connected")
+            }
+        }
+    }
 }
 
 impl TunnelConnectionState {
@@ -281,15 +295,30 @@ impl ClientTunnels {
             let by_config_name = &locked.by_config;
 
             match by_config_name.get(&config_id) {
-                None => {}
+                None => {
+                    info!(
+                        "no storage for config_id {} exist after reset event happened",
+                        config_id
+                    );
+                    None
+                }
                 Some(state) => {
                     if let TunnelConnectionState::Connected(connections) = state {
-                        return connections.get(&instance_id).map(R::retrieve);
+                        if let Some(instance_connector) = connections.get(&instance_id) {
+                            Some(R::retrieve(instance_connector))
+                        } else {
+                            info!(
+                                "after reset event, expected instance {} is not connected",
+                                instance_id
+                            );
+                            None
+                        }
+                    } else {
+                        info!("after reset event tunnel connection state is not in connected state. state is {:?}", state);
+                        None
                     }
                 }
             }
         }
-
-        None
     }
 }

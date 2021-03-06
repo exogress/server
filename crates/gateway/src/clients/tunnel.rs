@@ -150,7 +150,7 @@ pub async fn tunnels_acceptor(
                     Err(_) => {
                         return Ok(());
                     }
-                    Ok(Err(e)) => {
+                    Ok(Err(_e)) => {
                         return Ok(());
                     }
                     Ok(Ok(r)) => r,
