@@ -11,6 +11,7 @@ use crate::clients::signaling::request_connection;
 use core::fmt;
 use exogress_common::entities::{ConfigId, InstanceId, TunnelId};
 use futures::{channel::oneshot, future::BoxFuture, FutureExt};
+use hashbrown::hash_map::Entry;
 use http::Uri;
 use smol_str::SmolStr;
 use std::{task, task::Poll};
@@ -121,20 +122,6 @@ impl fmt::Debug for TunnelConnectionState {
     }
 }
 
-impl TunnelConnectionState {
-    pub fn close(&mut self) {
-        if let TunnelConnectionState::Connected(s) = self {
-            for inner in s.values_mut() {
-                for (_, stop_tx) in inner.storage.values_mut() {
-                    if let Some(stop) = stop_tx.take() {
-                        let _ = stop.send(());
-                    }
-                }
-            }
-        };
-    }
-}
-
 pub struct ClientTunnelsInner {
     pub(crate) by_config: HashMap<ConfigId, TunnelConnectionState>,
 }
@@ -185,11 +172,21 @@ impl ClientTunnels {
         }
     }
 
-    pub fn close_tunnel(&self, config_id: &ConfigId) {
+    pub fn close_all_config_tunnels(&self, config_id: &ConfigId) {
         let mut locked = self.inner.lock();
-        let tunnel = locked.by_config.get_mut(config_id);
-        if let Some(tunnel) = tunnel {
-            tunnel.close();
+        let tunnel_entry = locked.by_config.entry(config_id.clone());
+        if let Entry::Occupied(mut tunnel) = tunnel_entry {
+            // not sure why do we need to explicitly send stop signal. just removing the whole entry should dbe enough
+            if let TunnelConnectionState::Connected(s) = tunnel.get_mut() {
+                for inner in s.values_mut() {
+                    for (_, stop_tx) in inner.storage.values_mut() {
+                        if let Some(stop) = stop_tx.take() {
+                            let _ = stop.send(());
+                        }
+                    }
+                }
+            }
+            tunnel.remove_entry();
         }
     }
 

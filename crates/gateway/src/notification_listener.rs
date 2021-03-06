@@ -156,7 +156,12 @@ impl AssistantClient {
                                                 }
 
                                                 for config_id in &config_ids {
-                                                    client_tunnels.close_tunnel(config_id);
+                                                    info!(
+                                                        "Closing all tunnels with config {}",
+                                                        config_id
+                                                    );
+                                                    client_tunnels
+                                                        .close_all_config_tunnels(config_id);
                                                 }
                                             }
                                         }
