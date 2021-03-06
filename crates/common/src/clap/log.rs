@@ -53,7 +53,7 @@ pub fn add_args<'a>(app: clap::App<'a, 'a>) -> clap::App<'a, 'a> {
 
 pub async fn handle<'a>(
     matches: ArgMatches<'a>,
-    service_name: &'static str,
+    facility: &'static str,
     resolver: TokioAsyncResolver,
     maybe_int_client_cert: Option<Vec<u8>>,
 ) -> Result<impl Future<Output = ()>, anyhow::Error> {
@@ -93,7 +93,7 @@ pub async fn handle<'a>(
 
         if !matches.is_present("gelf_is_tls") {
             Logger::builder()
-                .additional_field("service", service_name)
+                .additional_field("facility", facility)
                 .init_tcp_with_subscriber((address, gelf_port).into(), subscriber)
                 .map_err(|e| anyhow!("TCP subscriber init error: {:?}", e))?
         } else {
@@ -115,7 +115,7 @@ pub async fn handle<'a>(
             }
 
             Logger::builder()
-                .additional_field("service", service_name)
+                .additional_field("facility", facility)
                 .init_tls_with_subscriber(
                     (address, gelf_port).into(),
                     gelf_host.clone(),
