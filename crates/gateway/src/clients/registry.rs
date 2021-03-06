@@ -196,6 +196,7 @@ impl ClientTunnels {
     /// Return active client tunnel if exists.
     /// Otherwise, request a new tunnel through signalling channel and
     /// wait for the actual connection
+    #[instrument(skip(self, individual_hostname), fields(config_id = %config_id, instance_id=%instance_id))]
     pub async fn retrieve_connector<R>(
         &self,
         config_id: &ConfigId,
@@ -207,12 +208,15 @@ impl ClientTunnels {
     {
         let maybe_identity = self.maybe_identity.clone();
 
+        info!("retrieve connection");
+
         let (maybe_reset_event, maybe_requestor_stop_rx) = {
             let mut locked = self.inner.lock();
             let maybe_clients = locked.by_config.get(&config_id);
 
             match maybe_clients {
                 None => {
+                    info!("no data in clients storage");
                     let (requestor_stop_tx, requestor_stop_rx) = oneshot::channel();
                     let reset_event = Arc::new(ManualResetEvent::new(false));
                     let tunnel_requested = TunnelRequestedInner {
@@ -226,12 +230,22 @@ impl ClientTunnels {
 
                     (Some(reset_event), Some(requestor_stop_rx))
                 }
-                Some(state) => match state {
-                    TunnelConnectionState::Requested(runnel_requested) => {
-                        (Some(runnel_requested.reset_event.clone()), None)
+                Some(state) => {
+                    info!("data for clients found. state: {:?}", state);
+
+                    match state {
+                        TunnelConnectionState::Requested(runnel_requested) => {
+                            info!("already requested! return reset-event to wait for");
+
+                            (Some(runnel_requested.reset_event.clone()), None)
+                        }
+                        state => {
+                            info!("current state  is {:?}. nothing to wait and don't trigger connect request", state);
+
+                            (None, None)
+                        }
                     }
-                    _ => (None, None),
-                },
+                }
             }
         };
 
@@ -308,8 +322,8 @@ impl ClientTunnels {
                             Some(R::retrieve(instance_connector))
                         } else {
                             info!(
-                                "after reset event, expected instance {} is not connected",
-                                instance_id
+                                "after reset event, expected instance {} is not connected. state = {:?}",
+                                instance_id, state
                             );
                             None
                         }
