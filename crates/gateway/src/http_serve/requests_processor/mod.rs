@@ -2349,7 +2349,8 @@ impl RequestsProcessor {
                                             )
                                             .get(&proxy.upstream)
                                             .cloned()?,
-                                        instance_ids: {
+                                        instance_is: instance_ids.as_ref().map(|ids| ids.keys().cloned().collect()).unwrap_or_default(),
+                                        balancer: {
                                             let mut balancer = SmoothWeight::<InstanceId>::new();
                                             let instance_ids = instance_ids
                                                 .as_ref()

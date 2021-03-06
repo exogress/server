@@ -30,15 +30,18 @@ use super::helpers::{
 use crate::http_serve::requests_processor::post_processing::ResolvedPostProcessing;
 use exogress_common::{common_utils::uri_ext::UriExt, config_core::UpstreamDefinition};
 use futures::StreamExt;
+use hashbrown::HashSet;
 use langtag::LanguageTagBuf;
 use rand::{thread_rng, RngCore};
-use std::io;
+use std::{io, time::Duration};
+use tokio::time::sleep;
 use tokio_tungstenite::WebSocketStream;
 
 pub struct ResolvedProxy {
     pub name: Upstream,
     pub upstream: UpstreamDefinition,
-    pub instance_ids: Mutex<SmoothWeight<InstanceId>>,
+    pub instance_is: HashSet<InstanceId>,
+    pub balancer: Mutex<SmoothWeight<InstanceId>>,
     pub client_tunnels: ClientTunnels,
     pub config_id: ConfigId,
     pub individual_hostname: SmolStr,
@@ -156,8 +159,8 @@ impl ResolvedProxy {
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
 
-        'instances: loop {
-            let selected_instance_id = Weight::next(&mut *self.instance_ids.lock());
+        'instances: for _ in 0..4 {
+            let selected_instance_id = Weight::next(&mut *self.balancer.lock());
 
             match selected_instance_id {
                 Some(instance_id) => {
@@ -188,6 +191,7 @@ impl ResolvedProxy {
                             }
                             None => {
                                 // self.retrieve_connection_failed(&instance_id);
+                                sleep(Duration::from_millis(50)).await;
                                 continue 'instances;
                             }
                         };
@@ -283,6 +287,7 @@ impl ResolvedProxy {
                             Some(http_client) => http_client,
                             None => {
                                 // self.retrieve_connection_failed(&instance_id);
+                                sleep(Duration::from_millis(50)).await;
                                 continue 'instances;
                             }
                         };
@@ -335,6 +340,11 @@ impl ResolvedProxy {
                     }
                 }
             }
+        }
+
+        HandlerInvocationResult::Exception {
+            name: exceptions::PROXY_INSTANCE_UNREACHABLE.clone(),
+            data: Default::default(),
         }
     }
 }

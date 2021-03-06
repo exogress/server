@@ -185,9 +185,7 @@ pub async fn tunnels_acceptor(
         async move {
             Ok::<_, hyper::Error>(service_fn({
                 move |mut req: Request<Body>| {
-                    shadow_clone!(tunnels);
-                    shadow_clone!(webapp);
-                    shadow_clone!(mut tunnel_counters_tx);
+                    shadow_clone!(tunnels, webapp, mut tunnel_counters_tx);
 
                     async move {
                         let query_params = req.uri().query().unwrap_or("").to_string();
