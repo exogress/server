@@ -124,7 +124,7 @@ fn main() {
 
             exogress_server_common::clap::log::handle(
                 matches.clone(),
-                "signaker",
+                "signaler",
                 resolver.clone(),
                 None,
             )
