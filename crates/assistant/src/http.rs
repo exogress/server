@@ -208,7 +208,6 @@ pub async fn server(
                                                     let mut txt = msg.to_str().unwrap().to_string();
                                                     match simd_json::from_str::<WsFromGwMessage>(&mut txt) {
                                                         Ok(msg) => {
-                                                            info!("received GW: {:?}", msg);
                                                             crate::statistics::GW_MESSAGES_PARSED
                                                                 .with_label_values(&[
                                                                     "",
@@ -217,11 +216,9 @@ pub async fn server(
 
                                                             match msg {
                                                                 WsFromGwMessage::Statistics { report } => {
-                                                                    info!("Will save statistics report to mongodb");
                                                                     mongo_saver_tx.send(report).await?;
                                                                 },
                                                                 WsFromGwMessage::Logs { report } => {
-                                                                    info!("Will save logs to elasticsearch");
                                                                     elastic_saver_tx.send(report).await?;
                                                                 }
                                                                 _ => {},
