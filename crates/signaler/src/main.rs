@@ -159,9 +159,7 @@ fn main() {
     let signaler_id: String = Ulid::new().to_string().into();
 
     let maybe_panic = rt.block_on({
-        shadow_clone!(webapp_base_url);
-        shadow_clone!(int_client_cert);
-        shadow_clone!(signaler_id);
+        shadow_clone!(webapp_base_url, int_client_cert, signaler_id);
 
         AssertUnwindSafe(async move {
             println!("spawn presence client");

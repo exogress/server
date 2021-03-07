@@ -1,7 +1,7 @@
 use crate::termination::StopReason;
 use exogress_common::{
     entities::{AccountName, ConfigName, ProjectName},
-    signaling::{TunnelRequest, TunnelRequestResponse},
+    signaling::{TunnelRequest, TunnelRequestResponse, WsCloudToInstanceMessage},
 };
 use futures::FutureExt;
 use redis::AsyncCommands;
@@ -28,7 +28,6 @@ pub async fn server(
             / "tunnels"
     )
     .and(warp::filters::method::put())
-    .and(warp::header("authorization"))
     .and(warp::body::json())
     .and_then({
         shadow_clone!(redis);
@@ -36,12 +35,13 @@ pub async fn server(
         move |account: AccountName,
               project: ProjectName,
               config_name: ConfigName,
-              _authorization: String, //TODO: check authorization
               body: TunnelRequest| {
             shadow_clone!(mut redis);
 
             async move {
-                let serialized = serde_json::to_string_pretty(&body).unwrap();
+                let serialized =
+                    serde_json::to_string_pretty(&WsCloudToInstanceMessage::TunnelRequest(body))
+                        .unwrap();
 
                 match redis.get_async_connection().await {
                     Ok(mut conn) => {

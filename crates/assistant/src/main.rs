@@ -226,9 +226,7 @@ fn main() {
     let assistant_id: String = Ulid::new().to_string().into();
 
     let maybe_panic = rt.block_on({
-        shadow_clone!(webapp_base_url);
-        shadow_clone!(assistant_id);
-        shadow_clone!(int_client_cert);
+        shadow_clone!(webapp_base_url, assistant_id, int_client_cert);
 
         AssertUnwindSafe(async move {
             info!("Register assistant");

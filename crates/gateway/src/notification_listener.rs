@@ -117,8 +117,7 @@ impl AssistantClient {
 
         #[allow(unreachable_code)]
         let consume = {
-            shadow_clone!(stop_handle);
-            shadow_clone!(mut ch_ws_tx);
+            shadow_clone!(stop_handle, mut ch_ws_tx);
 
             async move {
                 while let Some(msg) = ws_rx.next().await {
@@ -209,8 +208,7 @@ impl AssistantClient {
         };
 
         let produce = {
-            shadow_clone!(mut ch_ws_tx);
-            shadow_clone!(stop_handle);
+            shadow_clone!(mut ch_ws_tx, stop_handle);
 
             async move {
                 while let Some(report) = gw_to_assistant_messages_rx.next().await {

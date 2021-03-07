@@ -189,18 +189,19 @@ pub async fn server(
 
     let (incoming_https_connections_tx, incoming_https_connections_rx) = mpsc::channel(16);
     let https_acceptor = tokio::spawn({
-        shadow_clone!(webapp_client);
-        shadow_clone!(public_gw_base_url);
+        shadow_clone!(webapp_client, public_gw_base_url);
 
         #[allow(unreachable_code)]
         async move {
             let listener = TcpListener::bind(listen_https_addr).await?;
             loop {
-                shadow_clone!(tls_gw_common);
-                shadow_clone!(incoming_https_connections_tx);
-                shadow_clone!(public_gw_base_url);
-                shadow_clone!(webapp_client);
-                shadow_clone!(mut https_counters_tx);
+                shadow_clone!(
+                    tls_gw_common,
+                    incoming_https_connections_tx,
+                    public_gw_base_url,
+                    webapp_client,
+                    mut https_counters_tx
+                );
 
                 let (mut conn, _director_addr) = listener.accept().await?;
 
@@ -208,9 +209,7 @@ pub async fn server(
                     shadow_clone!(mut incoming_https_connections_tx);
 
                     async move {
-                        shadow_clone!(tls_gw_common);
-                        shadow_clone!(public_gw_base_url);
-                        shadow_clone!(webapp_client);
+                        shadow_clone!(tls_gw_common, public_gw_base_url, webapp_client);
 
                         let handshake = async {
                             conn.set_nodelay(true)?;
@@ -511,28 +510,32 @@ pub async fn server(
     });
 
     let make_service = make_service_fn::<_, AcceptedIo<_>, _>(move |socket| {
-        shadow_clone!(webapp_client);
-        shadow_clone!(tunnels);
-        shadow_clone!(individual_hostname);
-        shadow_clone!(public_gw_base_url);
-        shadow_clone!(google_oauth2_client);
-        shadow_clone!(github_oauth2_client);
-        shadow_clone!(assistant_base_url);
-        shadow_clone!(maybe_identity);
+        shadow_clone!(
+            webapp_client,
+            tunnels,
+            individual_hostname,
+            public_gw_base_url,
+            google_oauth2_client,
+            github_oauth2_client,
+            assistant_base_url,
+            maybe_identity
+        );
 
         let local_addr = socket.local_addr();
         let remote_addr = socket.remote_addr();
 
         async move {
             Ok::<_, hyper::Error>(service_fn(move |mut req: Request<Body>| {
-                shadow_clone!(webapp_client);
-                shadow_clone!(tunnels);
-                shadow_clone!(individual_hostname);
-                shadow_clone!(public_gw_base_url);
-                shadow_clone!(google_oauth2_client);
-                shadow_clone!(github_oauth2_client);
-                shadow_clone!(assistant_base_url);
-                shadow_clone!(maybe_identity);
+                shadow_clone!(
+                    webapp_client,
+                    tunnels,
+                    individual_hostname,
+                    public_gw_base_url,
+                    google_oauth2_client,
+                    github_oauth2_client,
+                    assistant_base_url,
+                    maybe_identity
+                );
 
                 async move {
                     let handle = AssertUnwindSafe(async move {

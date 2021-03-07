@@ -10,7 +10,10 @@ use exogress_common::{
 use warp::Filter;
 
 use crate::termination::StopReason;
-use exogress_common::common_utils::backoff::Backoff;
+use exogress_common::{
+    common_utils::backoff::Backoff,
+    signaling::{ConfigUpdateResult, WsCloudToInstanceMessage},
+};
 use exogress_server_common::{
     presence,
     presence::{Error, InstanceRegistered, UpstreamHealthReport},
@@ -59,9 +62,7 @@ pub async fn server(
             move |channel_connect_params: ChannelConnectParams,
                   ws: warp::ws::Ws,
                   authorization: String| {
-                shadow_clone!(redis);
-                shadow_clone!(presence_client);
-                shadow_clone!(stop_handle);
+                shadow_clone!(redis, presence_client, stop_handle);
 
                 ws.on_upgrade({
                     move |mut websocket| async move {
@@ -193,8 +194,7 @@ pub async fn server(
                                 start_time.observe_duration();
 
                                 let r = {
-                                    shadow_clone!(presence_client);
-                                    shadow_clone!(authorization);
+                                    shadow_clone!(presence_client, authorization);
 
                                     async move {
                                         let mut messages_pubsub =
@@ -296,9 +296,7 @@ pub async fn server(
                                             mpsc::channel(2);
 
                                         let process_incoming = {
-                                            shadow_clone!(mut to_ws_tx);
-                                            shadow_clone!(presence_client);
-                                            shadow_clone!(authorization);
+                                            shadow_clone!(mut to_ws_tx, presence_client, authorization);
 
                                             async move {
                                                 while let Some(msg_res) = rx.next().await {
@@ -312,20 +310,57 @@ pub async fn server(
 
                                                             match msg_parsed {
                                                                 WsInstanceToCloudMessage::InstanceConfig(InstanceConfigMessage { config }) => {
-                                                                    let instance_updated = presence_client
+                                                                    let instance_updated_result = presence_client
                                                                         .update_presence(
                                                                             &instance_id,
                                                                             &authorization,
                                                                             &config,
                                                                         )
-                                                                        .await?;
-                                                                    info!(
-                                                                        "Base URLs served by the client: {}",
-                                                                        itertools::join(
-                                                                            instance_updated.base_urls.iter().map(|b| b.to_https_url()),
-                                                                            ", "
-                                                                        )
-                                                                    );
+                                                                        .await;
+                                                                    match instance_updated_result {
+                                                                        Err(Error::Conflict) => {
+                                                                            to_ws_tx
+                                                                                .send(warp::filters::ws::Message::text(
+                                                                                    serde_json::to_string_pretty(
+                                                                                        &WsCloudToInstanceMessage::ConfigUpdateResult(
+                                                                                            ConfigUpdateResult::Error {
+                                                                                                msg:  "conflict".to_string(),
+                                                                                            })).unwrap()
+                                                                                ))
+                                                                                .await?;
+                                                                        }
+                                                                        Err(Error::BadRequest(str)) => {
+                                                                            to_ws_tx
+                                                                                .send(warp::filters::ws::Message::text(
+                                                                                    serde_json::to_string_pretty(
+                                                                                        &WsCloudToInstanceMessage::ConfigUpdateResult(
+                                                                                            ConfigUpdateResult::Error {
+                                                                                                msg: str.unwrap_or_else(||"bad request".to_string()),
+                                                                                            })).unwrap()
+                                                                                ))
+                                                                                .await?;
+                                                                        }
+                                                                        Err(e) => {
+                                                                            info!("could not update config: {}", e);
+                                                                            to_ws_tx
+                                                                                .send(warp::filters::ws::Message::close_with(
+                                                                                    1011u16,
+                                                                                    serde_json::to_string_pretty(&SERVER_ERROR_CLOSE_REASON).unwrap()
+                                                                                ))
+                                                                                .await?;
+                                                                        }
+                                                                        Ok(response) => {
+                                                                            to_ws_tx
+                                                                                .send(warp::filters::ws::Message::text(
+                                                                                    serde_json::to_string_pretty(
+                                                                                        &WsCloudToInstanceMessage::ConfigUpdateResult(
+                                                                                            ConfigUpdateResult::Ok {
+                                                                                                base_urls: response.base_urls.clone(),
+                                                                                            })).unwrap()
+                                                                                ))
+                                                                                .await?;
+                                                                        }
+                                                                    };
                                                                 }
 
                                                                 WsInstanceToCloudMessage::HealthState(health_probes) => {

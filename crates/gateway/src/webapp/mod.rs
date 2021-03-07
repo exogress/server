@@ -455,9 +455,7 @@ impl Client {
             .retrieve_configs
             .entry(host.clone().into())
             .or_insert_with({
-                shadow_clone!(matchable_url);
-                shadow_clone!(config_error);
-                shadow_clone!(gw_location);
+                shadow_clone!(matchable_url, config_error, gw_location);
 
                 let base_url = self.webapp_base_url.clone();
                 let reqwest = self.reqwest.clone();
@@ -478,19 +476,7 @@ impl Client {
 
                     // initiate query
                     tokio::spawn({
-                        shadow_clone!(ready_event);
-                        shadow_clone!(reqwest);
-                        shadow_clone!(base_url);
-                        shadow_clone!(google_oauth2_client);
-                        shadow_clone!(github_oauth2_client);
-                        shadow_clone!(assistant_base_url);
-                        shadow_clone!(maybe_identity);
-                        shadow_clone!(public_gw_base_url);
-                        shadow_clone!(rules_counters);
-                        shadow_clone!(config_error);
-                        shadow_clone!(cache);
-                        shadow_clone!(presence_client);
-                        shadow_clone!(dbip);
+                        shadow_clone!(ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, maybe_identity, public_gw_base_url, rules_counters, config_error, cache, presence_client, dbip);
 
                         async move {
                             let retrieval_started_at = crate::statistics::CONFIGS_RETRIEVAL_TIME.start_timer();

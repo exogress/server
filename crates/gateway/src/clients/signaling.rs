@@ -35,7 +35,7 @@ pub async fn request_connection(
 
     let client = builder.build().expect("could not create reqwest client");
 
-    let msg = TunnelRequest {
+    let tunnel_request = TunnelRequest {
         hostname: hostname.clone(),
         max_tunnels_count: MAX_ALLOWED_TUNNELS as u16,
     };
@@ -57,8 +57,7 @@ pub async fn request_connection(
 
     let resp = client
         .put(int_base_url)
-        .header("authorization", "FIXME")
-        .json(&msg)
+        .json(&tunnel_request)
         .send()
         .await?;
 

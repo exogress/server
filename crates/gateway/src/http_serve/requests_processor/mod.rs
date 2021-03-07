@@ -2177,25 +2177,27 @@ impl RequestsProcessor {
             (config_name, config_revision, upstreams, instance_ids, active_profile, mp),
         ) in grouped_mount_points.into_iter()
         {
-            shadow_clone!(instance_ids);
-            shadow_clone!(project_rescue);
-            shadow_clone!(jwt_ecdsa);
-            shadow_clone!(mount_point_base_url);
-            shadow_clone!(google_oauth2_client);
-            shadow_clone!(github_oauth2_client);
-            shadow_clone!(assistant_base_url);
-            shadow_clone!(maybe_identity);
-            shadow_clone!(client_tunnels);
-            shadow_clone!(individual_hostname);
-            shadow_clone!(account_name);
-            shadow_clone!(account_unique_id);
-            shadow_clone!(project_name);
-            shadow_clone!(rules_counter);
-            shadow_clone!(resolver);
-            shadow_clone!(traffic_counters);
-            shadow_clone!(presence_client);
-            shadow_clone!(params);
-            shadow_clone!(active_profile);
+            shadow_clone!(
+                instance_ids,
+                project_rescue,
+                jwt_ecdsa,
+                mount_point_base_url,
+                google_oauth2_client,
+                github_oauth2_client,
+                assistant_base_url,
+                maybe_identity,
+                client_tunnels,
+                individual_hostname,
+                account_name,
+                account_unique_id,
+                project_name,
+                rules_counter,
+                resolver,
+                traffic_counters,
+                presence_client,
+                params,
+                active_profile
+            );
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
                 resolver: resolver.clone(),

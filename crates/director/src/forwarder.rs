@@ -81,8 +81,7 @@ async fn forwarder(
 
     let tcp = TcpListener::bind(addr).await?;
     loop {
-        shadow_clone!(buf_pool);
-        shadow_clone!(sharded_gateways);
+        shadow_clone!(buf_pool, sharded_gateways);
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {

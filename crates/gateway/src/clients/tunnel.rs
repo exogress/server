@@ -136,8 +136,7 @@ pub async fn tunnels_acceptor(
         shadow_clone!(tls_acceptor);
 
         while let Ok((tcp_stream, _)) = listener.accept().await {
-            shadow_clone!(tls_acceptor);
-            shadow_clone!(mut accepted_connection_tx);
+            shadow_clone!(tls_acceptor, mut accepted_connection_tx);
 
             tokio::spawn(async move {
                 tcp_stream.set_nodelay(true)?;
@@ -178,9 +177,7 @@ pub async fn tunnels_acceptor(
     });
 
     let make_service = make_service_fn(move |_| {
-        shadow_clone!(tunnels);
-        shadow_clone!(webapp);
-        shadow_clone!(tunnel_counters_tx);
+        shadow_clone!(tunnels, webapp, tunnel_counters_tx);
 
         async move {
             Ok::<_, hyper::Error>(service_fn({

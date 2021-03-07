@@ -67,29 +67,17 @@ pub async fn server(
         .and(warp::filters::query::query::<HashMap<String, String>>())
         .and(warp::filters::ws::ws())
         .map({
-            shadow_clone!(redis);
-            shadow_clone!(db_client);
-            shadow_clone!(webapp_client);
-            shadow_clone!(presence_client);
-            shadow_clone!(elastic_client);
+            shadow_clone!(redis, db_client, webapp_client, presence_client, elastic_client);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
-                shadow_clone!(mut redis);
-                shadow_clone!(common_gw_tls_config);
-                shadow_clone!(db_client);
-                shadow_clone!(webapp_client);
-                shadow_clone!(presence_client);
-                shadow_clone!(stop_handle);
-                shadow_clone!(elastic_client);
+                shadow_clone!(mut redis, common_gw_tls_config, db_client, webapp_client, presence_client, stop_handle, elastic_client);
 
                 let gw_location = query.get("location").unwrap().clone();
 
                 let start_time = crate::statistics::CHANELS_ESTABLISHMENT_TIME.start_timer();
                 ws.on_upgrade(move |websocket| {
                     {
-                        shadow_clone!(gw_hostname);
-                        shadow_clone!(stop_handle);
-                        shadow_clone!(elastic_client);
+                        shadow_clone!(gw_hostname,stop_handle,elastic_client);
 
                         async move {
                             match presence_client.set_online(&gw_hostname).await {
@@ -174,8 +162,7 @@ pub async fn server(
 
 
                                     let mongo_saver = tokio::spawn({
-                                        shadow_clone!(gw_hostname);
-                                        shadow_clone!(gw_location);
+                                        shadow_clone!(gw_hostname, gw_location);
 
                                         async move {
                                             while let Some(report) = mongo_saver_rx.next().await {
@@ -195,8 +182,7 @@ pub async fn server(
                                     });
 
                                     let msg_receiver = {
-                                        shadow_clone!(mut ch_ws_tx);
-                                        shadow_clone!(gw_hostname);
+                                        shadow_clone!(mut ch_ws_tx, gw_hostname);
 
                                         async move {
                                             while let Some(Ok(msg)) = ws_rx.next().await {
@@ -487,14 +473,10 @@ pub async fn server(
     let health = warp::path!("int" / "healthcheck")
         .and(warp::filters::method::get())
         .and_then({
-            shadow_clone!(redis);
-            shadow_clone!(db_client);
-            shadow_clone!(elastic_client);
+            shadow_clone!(redis, db_client, elastic_client);
 
             move || {
-                shadow_clone!(redis);
-                shadow_clone!(db_client);
-                shadow_clone!(elastic_client);
+                shadow_clone!(redis, db_client, elastic_client);
 
                 async move {
                     let res = async move {
