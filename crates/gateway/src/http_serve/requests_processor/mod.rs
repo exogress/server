@@ -108,6 +108,7 @@ use serde::{
 use std::sync::Arc;
 
 pub struct RequestsProcessor {
+    pub is_active: bool,
     ordered_handlers: Vec<ResolvedHandler>,
     pub generated_at: DateTime<Utc>,
     pub google_oauth2_client: super::auth::google::GoogleOauth2Client,
@@ -2593,7 +2594,12 @@ impl RequestsProcessor {
         merged_resolved_handlers.sort_by(|left, right| left.priority.cmp(&right.priority));
 
         Ok(RequestsProcessor {
-            ordered_handlers: merged_resolved_handlers,
+            is_active: resp.is_active,
+            ordered_handlers: if resp.is_active {
+                merged_resolved_handlers
+            } else {
+                vec![]
+            },
             generated_at: resp.generated_at,
             google_oauth2_client,
             github_oauth2_client,
