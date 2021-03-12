@@ -3,41 +3,49 @@ use std::net::SocketAddr;
 use futures::{channel::mpsc, pin_mut, select_biased, FutureExt, SinkExt, StreamExt};
 use tokio::time::Duration;
 
-use exogress_common::{
-    entities::{AccountName, ProfileName, ProjectName},
-    signaling::{InstanceConfigMessage, SignalerHandshakeResponse, WsInstanceToCloudMessage},
-};
-use warp::Filter;
-
 use crate::termination::StopReason;
 use exogress_common::{
     common_utils::backoff::Backoff,
-    signaling::{ConfigUpdateResult, WsCloudToInstanceMessage},
+    entities::{AccountName, ProfileName, ProjectName},
+    signaling::{
+        ConfigUpdateResult, InstanceConfigMessage, SignalerHandshakeResponse,
+        WsCloudToInstanceMessage, WsInstanceToCloudMessage,
+    },
 };
 use exogress_server_common::{
     presence,
     presence::{Error, InstanceRegistered, UpstreamHealthReport},
 };
+use lazy_static::lazy_static;
 use shadow_clone::shadow_clone;
 use stop_handle::{StopHandle, StopWait};
+use warp::Filter;
 
 const CONFIG_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct CloseFrameReason {
-    error: &'static str,
+    error: String,
 }
 
-const CONFLICT_CLOSE_REASON: CloseFrameReason = CloseFrameReason { error: "conflict" };
-const FORBIDDEN_CLOSE_REASON: CloseFrameReason = CloseFrameReason { error: "forbidden" };
-const UNAUTHORIZED_CLOSE_REASON: CloseFrameReason = CloseFrameReason {
-    error: "unauthorized",
-};
-const SERVER_ERROR_CLOSE_REASON: CloseFrameReason = CloseFrameReason {
-    error: "internal server error",
-};
-const CONNECTION_FINISHED_CLOSE_REASON: CloseFrameReason = CloseFrameReason { error: "finished" };
+lazy_static! {
+    static ref CONFLICT_CLOSE_REASON: CloseFrameReason = CloseFrameReason {
+        error: "conflict".to_string()
+    };
+    static ref FORBIDDEN_CLOSE_REASON: CloseFrameReason = CloseFrameReason {
+        error: "forbidden".to_string()
+    };
+    static ref UNAUTHORIZED_CLOSE_REASON: CloseFrameReason = CloseFrameReason {
+        error: "unauthorized".to_string(),
+    };
+    static ref SERVER_ERROR_CLOSE_REASON: CloseFrameReason = CloseFrameReason {
+        error: "internal server error".to_string(),
+    };
+    static ref CONNECTION_FINISHED_CLOSE_REASON: CloseFrameReason = CloseFrameReason {
+        error: "finished".to_string()
+    };
+}
 
 #[derive(Debug, Deserialize)]
 struct ChannelConnectParams {
@@ -120,7 +128,7 @@ pub async fn server(
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 4001u16,
-                                                serde_json::to_string_pretty(&UNAUTHORIZED_CLOSE_REASON).unwrap(),
+                                                serde_json::to_string_pretty(&*UNAUTHORIZED_CLOSE_REASON).unwrap(),
                                             ))
                                             .await;
                                         crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
@@ -132,7 +140,7 @@ pub async fn server(
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 4003u16,
-                                                serde_json::to_string_pretty(&FORBIDDEN_CLOSE_REASON).unwrap()
+                                                serde_json::to_string_pretty(&*FORBIDDEN_CLOSE_REASON).unwrap()
                                             ))
                                             .await;
                                         return;
@@ -144,7 +152,7 @@ pub async fn server(
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 4009u16,
-                                                serde_json::to_string_pretty(&CONFLICT_CLOSE_REASON).unwrap()
+                                                serde_json::to_string_pretty(&*CONFLICT_CLOSE_REASON).unwrap()
                                             ))
                                             .await;
                                         return;
@@ -155,10 +163,18 @@ pub async fn server(
                                             maybe_str.as_ref().unwrap_or(&"".to_string())
                                         );
                                         crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
+                                        let msg  = if let Some(error) = maybe_str {
+                                            CloseFrameReason {
+                                                error,
+                                            }
+                                        } else {
+                                            (*SERVER_ERROR_CLOSE_REASON).clone()
+                                        };
+
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 4000u16,
-                                                serde_json::to_string_pretty(&SERVER_ERROR_CLOSE_REASON).unwrap()
+                                                serde_json::to_string_pretty(&msg).unwrap()
                                             ))
                                             .await;
                                         return;
@@ -169,7 +185,7 @@ pub async fn server(
                                         let _ = websocket
                                             .send(warp::filters::ws::Message::close_with(
                                                 1011u16,
-                                                serde_json::to_string_pretty(&SERVER_ERROR_CLOSE_REASON).unwrap()
+                                                serde_json::to_string_pretty(&*SERVER_ERROR_CLOSE_REASON).unwrap()
                                             ))
                                             .await;
                                         return;
@@ -245,7 +261,7 @@ pub async fn server(
                                             let _ = tx
                                                 .send(warp::filters::ws::Message::close_with(
                                                     1000u16,
-                                                    serde_json::to_string_pretty(&CONNECTION_FINISHED_CLOSE_REASON).unwrap()
+                                                    serde_json::to_string_pretty(&*CONNECTION_FINISHED_CLOSE_REASON).unwrap()
                                                 ))
                                                 .await;
 
@@ -345,7 +361,7 @@ pub async fn server(
                                                                             to_ws_tx
                                                                                 .send(warp::filters::ws::Message::close_with(
                                                                                     1011u16,
-                                                                                    serde_json::to_string_pretty(&SERVER_ERROR_CLOSE_REASON).unwrap()
+                                                                                    serde_json::to_string_pretty(&*SERVER_ERROR_CLOSE_REASON).unwrap()
                                                                                 ))
                                                                                 .await?;
                                                                         }
