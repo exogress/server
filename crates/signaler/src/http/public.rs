@@ -24,7 +24,7 @@ use warp::Filter;
 const CONFIG_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct CloseFrameReason {
     error: String,
 }
@@ -164,8 +164,12 @@ pub async fn server(
                                         );
                                         crate::statistics::CHANNEL_ESTABLISHMENT_ERRORS.inc();
                                         let msg  = if let Some(error) = maybe_str {
-                                            CloseFrameReason {
-                                                error,
+                                            if let Ok(s) = serde_json::from_str(error.as_str()) {
+                                                s
+                                            } else {
+                                                CloseFrameReason {
+                                                    error,
+                                                }
                                             }
                                         } else {
                                             (*SERVER_ERROR_CLOSE_REASON).clone()
