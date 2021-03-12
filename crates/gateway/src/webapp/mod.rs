@@ -191,9 +191,14 @@ pub struct JwtEcdsaResponse {
     pub public_key: String,
 }
 
+fn default_as_true() -> bool {
+    true
+}
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct ConfigsResponse {
     pub strict_transport_security: Option<u64>,
+    #[serde(default = "default_as_true")]
     pub is_active: bool,
     #[serde(with = "ts_milliseconds")]
     pub generated_at: DateTime<Utc>,
