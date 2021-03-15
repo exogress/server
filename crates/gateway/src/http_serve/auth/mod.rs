@@ -23,6 +23,15 @@ pub enum Oauth2Provider {
     Github,
 }
 
+impl Oauth2Provider {
+    pub fn display_name(&self) -> String {
+        match self {
+            Oauth2Provider::Google => "Google".to_string(),
+            Oauth2Provider::Github => "GitHub".to_string(),
+        }
+    }
+}
+
 impl ToString for Oauth2Provider {
     fn to_string(&self) -> std::string::String {
         match self {

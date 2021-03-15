@@ -21,6 +21,7 @@ const LIMIT_REACHED_TEMPLATE: &str = include_str!("../../templates/limit-reached
 #[derive(Serialize, Clone, Debug)]
 struct ProviderInfo {
     name: String,
+    display_name: String,
     link: String,
 }
 
@@ -69,6 +70,7 @@ fn render_login(
 
             ProviderInfo {
                 name: provider.to_string(),
+                display_name: provider.display_name(),
                 link,
             }
         })
