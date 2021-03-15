@@ -1,31 +1,54 @@
+<!DOCTYPE html>
 <html>
+
 <head>
-    <title>This site requires authentication</title>
-    <link rel="stylesheet" href="https://unpkg.com/purecss@2.0.5/build/pure-min.css" integrity="sha384-LTIDeidl25h2dPxrB2Ekgc9c7sEC3CWGM6HeFmuDNUjX76Ert4Z4IY714dhZHPLd" crossorigin="anonymous">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>This site requires authorization</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.1/css/bulma.min.css">
     <style>
-        .custom-restricted-width {
-            /* To limit the menu width to the content of the menu: */
-            display: inline-block;
-            /* Or set the width explicitly: */
-            /* width: 10em; */
+        .block:not(:last-child) {
+            margin-bottom: 2.5rem;
+        }
+
+        .block {
+            text-align: center;
         }
     </style>
 </head>
+
 <body>
-<div>
-    <div class="pure-menu custom-restricted-width">
-        <span class="pure-menu-heading">Choose authentication provider:</span>
-        <ul class="pure-menu-list">
-            {{#each providers}}
-                <li class="pure-menu-item" style="height: 50px">
-                    <a href="{{ this.link }}" class="pure-menu-link">
-                        <img style="height: 32px" src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg" />
-                        {{ this.name }}
-                    </a>
-                </li>
-            {{/each}}
-        </ul>
+<section class="section is-large">
+    <div class="columns is-mobile is-centered">
+        <div class="column is-half">
+            <div class="block">
+                <h1 class="title">This site requires authorization</h1>
+            </div>
+
+            <div class="block">
+                <aside class="menu">
+                    <ul class="menu-list">
+                        {{#each providers}}
+                            <li>
+                                <a href="{{ this.link }}">
+                                    <img style="height: 32px; margin-right: 10px;"
+                                         src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg">
+                                    <span class="subtitle">{{ this.name }}</span>
+                                </a>
+                            </li>
+                        {{/each}}
+                    </ul>
+                </aside>
+            </div>
+        </div>
     </div>
-</div>
+</section>
+<footer class="footer">
+    <div class="content has-text-centered">
+        <p>
+            Powered by <a href="https://exogress.com">Exogress</a>
+        </p>
+    </div>
+</footer>
 </body>
 </html>
