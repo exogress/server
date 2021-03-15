@@ -16,6 +16,7 @@ use typed_headers::{ContentType, HeaderMapExt};
 use url::Url;
 
 const LOGIN_TEMPLATE: &str = include_str!("../../templates/login.html.handlebars");
+const LIMIT_REACHED_TEMPLATE: &str = include_str!("../../templates/limit-reached.html.handlebars");
 
 #[derive(Serialize, Clone, Debug)]
 struct ProviderInfo {
@@ -23,7 +24,15 @@ struct ProviderInfo {
     link: String,
 }
 
-fn render(
+pub fn render_limit_reached() -> String {
+    let handlebars = Handlebars::new();
+
+    handlebars
+        .render_template(LIMIT_REACHED_TEMPLATE, &json!({}))
+        .unwrap()
+}
+
+fn render_login(
     mount_point_base_url: &MountPointBaseUrl,
     requested_url: &Url,
     handler_name: &HandlerName,
@@ -86,7 +95,7 @@ pub async fn respond_with_login(
             *res.status_mut() = StatusCode::OK;
             res.headers_mut()
                 .typed_insert::<ContentType>(&ContentType(mime::TEXT_HTML_UTF_8));
-            *res.body_mut() = Body::from(render(base_url, requested_url, handler_name, auth));
+            *res.body_mut() = Body::from(render_login(base_url, requested_url, handler_name, auth));
         }
         Some(provider) => {
             let redirect_to = match provider {

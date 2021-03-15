@@ -75,10 +75,13 @@ mod static_dir;
 
 use crate::{
     dbip::LocationAndIsp,
-    http_serve::requests_processor::{
-        modifications::substitute_str_with_filter_matches,
-        pass_through::ResolvedPassThrough,
-        post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
+    http_serve::{
+        requests_processor::{
+            modifications::substitute_str_with_filter_matches,
+            pass_through::ResolvedPassThrough,
+            post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
+        },
+        templates::render_limit_reached,
     },
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
@@ -95,11 +98,13 @@ use exogress_common::{
 };
 use exogress_server_common::logging::ExceptionProcessingStep;
 use http::header::{
-    HeaderName, CACHE_CONTROL, LOCATION, RANGE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
+    HeaderName, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, RANGE,
+    STRICT_TRANSPORT_SECURITY, USER_AGENT,
 };
 use langtag::LanguageTagBuf;
 use linked_hash_map::LinkedHashMap;
 use memmap::Mmap;
+use mime::TEXT_HTML_UTF_8;
 use regex::Regex;
 use serde::{
     ser::{SerializeMap, SerializeSeq},
@@ -327,52 +332,61 @@ impl RequestsProcessor {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
     ) {
-        let started_at = Instant::now();
-        let facts = Arc::new(Mutex::new(HashMap::<SmolStr, SmolStr>::new()));
+        if self.is_active {
+            let started_at = Instant::now();
+            let facts = Arc::new(Mutex::new(HashMap::<SmolStr, SmolStr>::new()));
 
-        let mut log_message = LogMessage {
-            gw_location: self.gw_location.clone(),
-            date: Utc::now(),
-            remote_addr: remote_addr.ip(),
-            account_unique_id: self.account_unique_id.clone(),
-            project: self.project_name.clone(),
-            mount_point: self.mount_point_name.clone(),
-            url: requested_url.to_string().into(),
-            method: req.method().to_string().into(),
-            protocol: format!("{:?}", req.version()).into(),
-            user_agent: req
-                .headers()
-                .get(USER_AGENT)
-                .map(|v| v.to_str().unwrap_or_default().into()),
-            status_code: None,
-            time_taken: None,
-            content_len: None,
-            steps: vec![],
-            facts: facts.clone(),
-            str: None,
-        };
+            let mut log_message = LogMessage {
+                gw_location: self.gw_location.clone(),
+                date: Utc::now(),
+                remote_addr: remote_addr.ip(),
+                account_unique_id: self.account_unique_id.clone(),
+                project: self.project_name.clone(),
+                mount_point: self.mount_point_name.clone(),
+                url: requested_url.to_string().into(),
+                method: req.method().to_string().into(),
+                protocol: format!("{:?}", req.version()).into(),
+                user_agent: req
+                    .headers()
+                    .get(USER_AGENT)
+                    .map(|v| v.to_str().unwrap_or_default().into()),
+                status_code: None,
+                time_taken: None,
+                content_len: None,
+                steps: vec![],
+                facts: facts.clone(),
+                str: None,
+            };
+            self.do_process(
+                req,
+                res,
+                requested_url,
+                local_addr,
+                remote_addr,
+                facts,
+                &mut log_message,
+            )
+            .await;
+            log_message.time_taken = Some(started_at.elapsed());
+            log_message.status_code = Some(res.status().as_u16());
 
-        self.do_process(
-            req,
-            res,
-            requested_url,
-            local_addr,
-            remote_addr,
-            facts,
-            &mut log_message,
-        )
-        .await;
+            log_message.set_message_string();
 
-        log_message.time_taken = Some(started_at.elapsed());
-        log_message.status_code = Some(res.status().as_u16());
-
-        log_message.set_message_string();
-
-        self.log_messages_tx
-            .clone()
-            .send(log_message)
-            .await
-            .unwrap();
+            self.log_messages_tx
+                .clone()
+                .send(log_message)
+                .await
+                .unwrap();
+        } else {
+            let body = render_limit_reached();
+            {
+                let headers = res.headers_mut();
+                headers.insert(CONTENT_TYPE, TEXT_HTML_UTF_8.to_string().parse().unwrap());
+                headers.insert(CONTENT_LENGTH, body.len().into());
+                headers.insert("server", HeaderValue::from_static("exogress"));
+            }
+            *res.body_mut() = Body::from(body);
+        }
     }
 
     fn save_to_cache(
