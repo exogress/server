@@ -94,7 +94,9 @@ use exogress_common::{
         ClientConfigRevision, ModifyQuery, ModifyQueryStrategy, RedirectTo, RequestModifications,
         Scope, TrailingSlashModification,
     },
-    entities::{serde::Serializer, url_prefix::MountPointBaseUrl, Exception, ParameterName},
+    entities::{
+        serde::Serializer, url_prefix::MountPointBaseUrl, Exception, ParameterName, ProjectUniqueId,
+    },
 };
 use exogress_server_common::logging::ExceptionProcessingStep;
 use http::header::{
@@ -123,6 +125,7 @@ pub struct RequestsProcessor {
     strict_transport_security: Option<u64>,
     rules_counter: AccountCounters,
     pub account_unique_id: AccountUniqueId,
+    pub project_unique_id: ProjectUniqueId,
     _stop_public_counter_tx: oneshot::Sender<()>,
     cache: Cache,
     pub project_name: ProjectName,
@@ -167,7 +170,8 @@ impl RequestsProcessor {
             .lock()
             .insert("mount_point_hostname".into(), self.url_prefix.host().into());
 
-        self.rules_counter.register_request(&self.account_unique_id);
+        self.rules_counter
+            .register_request(&self.account_unique_id, &self.project_unique_id);
 
         let mut processed_by = None;
         let original_req_headers = req.headers().clone();
@@ -338,6 +342,7 @@ impl RequestsProcessor {
 
             let mut log_message = LogMessage {
                 gw_location: self.gw_location.clone(),
+                project_unique_id: self.project_unique_id.clone(),
                 date: Utc::now(),
                 remote_addr: remote_addr.ip(),
                 account_unique_id: self.account_unique_id.clone(),
@@ -1429,6 +1434,7 @@ pub struct ResolvedHandler {
     resolved_rules: Vec<ResolvedRule>,
 
     account_unique_id: AccountUniqueId,
+    project_unique_id: ProjectUniqueId,
     rules_counter: AccountCounters,
 
     languages: Option<Vec<langtag::LanguageTagBuf>>,
@@ -1651,7 +1657,8 @@ impl ResolvedHandler {
             .iter()
             .filter_map(|resolved_rule| resolved_rule.get_action(rebased_url, method))
             .inspect(|_| {
-                self.rules_counter.register_rule(&self.account_unique_id);
+                self.rules_counter
+                    .register_rule(&self.account_unique_id, &self.project_unique_id);
             })
             .next()
     }
@@ -2096,7 +2103,10 @@ impl RequestsProcessor {
         crate::statistics::ACTIVE_REQUESTS_PROCESSORS.inc();
 
         let max_pop_cache_size_bytes = resp.max_pop_cache_size_bytes;
-        let traffic_counters = TrafficCounters::new(resp.account_unique_id.clone());
+        let traffic_counters = TrafficCounters::new(
+            resp.account_unique_id.clone(),
+            resp.project_unique_id.clone(),
+        );
         let (stop_public_counter_tx, stop_public_counter_rx) = oneshot::channel();
         tokio::spawn(TrafficCounters::spawn_flusher(
             traffic_counters.clone(),
@@ -2116,6 +2126,7 @@ impl RequestsProcessor {
 
         let mount_point_base_url = resp.url_prefix;
         let account_unique_id = resp.account_unique_id;
+        let project_unique_id = resp.project_unique_id;
         let account_name = resp.account;
         let project_name = resp.project;
         let params = resp.params.clone();
@@ -2205,6 +2216,7 @@ impl RequestsProcessor {
                 individual_hostname,
                 account_name,
                 account_unique_id,
+                project_unique_id,
                 project_name,
                 rules_counter,
                 resolver,
@@ -2233,9 +2245,7 @@ impl RequestsProcessor {
                     }
                 })
                 .map({
-                    shadow_clone!(active_profile);
-                    shadow_clone!(mount_point_name);
-                    shadow_clone!(refinable);
+                    shadow_clone!(active_profile, mount_point_name, refinable);
 
                     move |(handler_name, handler)| {
                         let replace_base_path = handler
@@ -2594,6 +2604,7 @@ impl RequestsProcessor {
                                 })
                                 .collect::<Option<_>>()?,
                             account_unique_id,
+                            project_unique_id: project_unique_id.clone(),
                             rules_counter: rules_counter.clone(),
                             languages: None, //handler.languages,
                         })
@@ -2614,6 +2625,7 @@ impl RequestsProcessor {
             } else {
                 vec![]
             },
+            project_unique_id: project_unique_id.clone(),
             generated_at: resp.generated_at,
             google_oauth2_client,
             github_oauth2_client,

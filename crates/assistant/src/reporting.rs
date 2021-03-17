@@ -53,6 +53,7 @@ impl MongoDbClient {
                 .map(|rec| {
                     bson::doc! {
                         "account_unique_id": rec.account_unique_id.to_string(),
+                        "project_unique_id": rec.project_unique_id.to_string(),
                         "gw_hostname": gw_hostname,
                         "gw_location": gw_location,
                         "start_of_period": rec.flushed_at,
@@ -68,6 +69,7 @@ impl MongoDbClient {
                 .map(|rec| {
                     bson::doc! {
                         "account_unique_id": rec.account_unique_id.to_string(),
+                        "project_unique_id": rec.project_unique_id.to_string(),
                         "gw_hostname": gw_hostname,
                         "gw_location": gw_location,
                         "start_of_period": rec.flushed_at,

@@ -39,6 +39,7 @@ use crate::{
         traffic_counter::{RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters},
     },
     webapp,
+    webapp::AuthorizeTunnelResponse,
 };
 use exogress_common::entities::{ConfigId, TunnelId};
 use futures::{
@@ -208,15 +209,17 @@ pub async fn tunnels_acceptor(
                                 upgraded.read_exact(&mut payload).await?;
                                 let tunnel_hello = bincode::deserialize::<TunnelHello>(&payload)?;
 
-                                let account_unique_id = webapp
+                                let AuthorizeTunnelResponse {
+                                    account_unique_id,
+                                    project_unique_id,
+                                } = webapp
                                     .authorize_tunnel(
                                         &tunnel_hello.project_name,
                                         &tunnel_hello.instance_id,
                                         &tunnel_hello.access_key_id,
                                         &tunnel_hello.secret_access_key,
                                     )
-                                    .await?
-                                    .account_unique_id;
+                                    .await?;
 
                                 info!(
                                     "Accepted tunnel from instance {}. Params: {}",
@@ -231,18 +234,26 @@ pub async fn tunnels_acceptor(
                                     .await?;
                                 upgraded.write_all(&resp_bytes).await?;
 
-                                Ok::<_, anyhow::Error>((tunnel_hello, account_unique_id))
+                                Ok::<_, anyhow::Error>((
+                                    tunnel_hello,
+                                    account_unique_id,
+                                    project_unique_id,
+                                ))
                             };
 
-                            let (tunnel_hello, account_unique_id) =
+                            let (tunnel_hello, account_unique_id, project_unique_id) =
                                 match timeout(Duration::from_secs(5), accept_tunnel).await {
-                                    Ok(Ok((tunnel_hello, account_unique_id))) => {
+                                    Ok(Ok((
+                                        tunnel_hello,
+                                        account_unique_id,
+                                        project_unique_id,
+                                    ))) => {
                                         // warn!(
                                         //     "accepted new TLS tunnel with tunnel_hello {:?}",
                                         //     tunnel_hello
                                         // );
 
-                                        (tunnel_hello, account_unique_id)
+                                        (tunnel_hello, account_unique_id, project_unique_id)
                                     }
                                     Ok(Err(e)) => {
                                         warn!("error on TLS tunnel: {}. Closing connection", e);
@@ -256,7 +267,10 @@ pub async fn tunnels_acceptor(
                                     }
                                 };
 
-                            let counters = TrafficCounters::new(account_unique_id.clone());
+                            let counters = TrafficCounters::new(
+                                account_unique_id.clone(),
+                                project_unique_id.clone(),
+                            );
                             let metered = TrafficCountedStream::new(
                                 upgraded,
                                 counters.clone(),

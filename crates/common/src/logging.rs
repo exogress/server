@@ -1,7 +1,7 @@
 use chrono::serde::ts_milliseconds;
 use exogress_common::entities::{
-    AccountUniqueId, ConfigName, Exception, InstanceId, MountPointName, ProjectName, SmolStr,
-    Upstream,
+    AccountUniqueId, ConfigName, Exception, InstanceId, MountPointName, ProjectName,
+    ProjectUniqueId, SmolStr, Upstream,
 };
 use hashbrown::HashMap;
 use langtag::LanguageTagBuf;
@@ -19,6 +19,7 @@ pub struct LogMessage {
 
     pub account_unique_id: AccountUniqueId,
     pub project: ProjectName,
+    pub project_unique_id: ProjectUniqueId,
     pub mount_point: MountPointName,
     pub url: SmolStr,
     pub method: SmolStr,

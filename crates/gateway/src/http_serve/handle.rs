@@ -230,7 +230,7 @@ pub async fn server(
                             return Err(anyhow!("no hostname in ClientHello"));
                         };
 
-                        let (cert, pkey, maybe_account_unique_id) = if public_gw_base_url
+                        let (cert, pkey, maybe_account_info) = if public_gw_base_url
                             .host()
                             .unwrap()
                             .to_string()
@@ -268,7 +268,7 @@ pub async fn server(
                                 Ok(Some(certs)) => (
                                     certs.certificate,
                                     certs.private_key,
-                                    Some(certs.account_unique_id),
+                                    Some((certs.account_unique_id, certs.project_unique_id)),
                                 ),
                                 Ok(None) => {
                                     let locked = tls_gw_common.read();
@@ -277,7 +277,10 @@ pub async fn server(
                                         Some(cert_data) if cfg!(debug_assertions) => (
                                             cert_data.common_gw_host_certificate.clone(),
                                             cert_data.common_gw_host_private_key.clone(),
-                                            Some(Ulid::nil().to_string().parse().unwrap()), // FIXME
+                                            Some((
+                                                Ulid::nil().to_string().parse().unwrap(),
+                                                Ulid::nil().to_string().parse().unwrap(),
+                                            )), // FIXME
                                         ),
                                         _ => {
                                             return Err(anyhow!("no certificate found"));
@@ -325,8 +328,13 @@ pub async fn server(
 
                         let acceptor = TlsAcceptor::from(Arc::new(config));
 
-                        let metered = if let Some(account_unique_id) = maybe_account_unique_id {
-                            let counters = TrafficCounters::new(account_unique_id.clone());
+                        let metered = if let Some((account_unique_id, project_unique_id)) =
+                            maybe_account_info
+                        {
+                            let counters = TrafficCounters::new(
+                                account_unique_id.clone(),
+                                project_unique_id.clone(),
+                            );
                             let counted_stream = TrafficCountedStream::new(
                                 conn,
                                 counters.clone(),

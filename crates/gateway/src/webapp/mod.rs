@@ -18,7 +18,8 @@ use exogress_common::{
     },
     entities::{
         url_prefix::MountPointBaseUrl, AccessKeyId, AccountName, AccountUniqueId, ConfigName,
-        InstanceId, MountPointName, ParameterName, ProfileName, ProjectName, Upstream,
+        InstanceId, MountPointName, ParameterName, ProfileName, ProjectName, ProjectUniqueId,
+        Upstream,
     },
 };
 use exogress_server_common::{logging::LogMessage, presence};
@@ -85,12 +86,14 @@ pub struct CertificateResponse {
     pub certificate: String,
     pub private_key: String,
     pub account_name: AccountName,
+    pub project_unique_id: ProjectUniqueId,
     pub account_unique_id: AccountUniqueId,
 }
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct AuthorizeTunnelResponse {
     pub account_unique_id: AccountUniqueId,
+    pub project_unique_id: ProjectUniqueId,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -205,6 +208,7 @@ pub struct ConfigsResponse {
     pub url_prefix: MountPointBaseUrl,
     pub account: AccountName,
     pub account_unique_id: AccountUniqueId,
+    pub project_unique_id: ProjectUniqueId,
     pub project: ProjectName,
     pub mount_point: MountPointName,
     pub project_config: ProjectConfig,

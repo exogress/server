@@ -1,7 +1,7 @@
 ///! Count traffic on AsyncRead/AsyncWrite channels
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
-use exogress_common::entities::AccountUniqueId;
+use exogress_common::entities::{AccountUniqueId, ProjectUniqueId};
 use futures::{
     channel::{mpsc, oneshot},
     ready, SinkExt,
@@ -26,6 +26,7 @@ use tokio::{
 
 pub struct TrafficCounters {
     account_unique_id: AccountUniqueId,
+    project_unique_id: ProjectUniqueId,
     bytes_read: AtomicU64,
     bytes_written: AtomicU64,
     is_closed: AtomicBool,
@@ -35,6 +36,7 @@ pub struct TrafficCounters {
 #[derive(Debug)]
 pub struct RecordedTrafficStatistics {
     pub account_unique_id: AccountUniqueId,
+    pub project_unique_id: ProjectUniqueId,
     pub bytes_read: u64,
     pub bytes_written: u64,
     pub from: DateTime<Utc>,
@@ -52,6 +54,12 @@ impl OneOfTrafficStatistics {
         match self {
             OneOfTrafficStatistics::Https(s) => &s.account_unique_id,
             OneOfTrafficStatistics::Tunnel(s) => &s.account_unique_id,
+        }
+    }
+    pub fn project_unique_id(&self) -> &ProjectUniqueId {
+        match self {
+            OneOfTrafficStatistics::Https(s) => &s.project_unique_id,
+            OneOfTrafficStatistics::Tunnel(s) => &s.project_unique_id,
         }
     }
     pub fn to(&self) -> &DateTime<Utc> {
@@ -102,6 +110,7 @@ impl TrafficCounters {
         let now = Utc::now();
         Ok(Some(RecordedTrafficStatistics {
             account_unique_id: self.account_unique_id.clone(),
+            project_unique_id: self.project_unique_id.clone(),
             bytes_read,
             bytes_written,
             from: mem::replace(&mut self.initiated_at.lock(), now),
@@ -109,9 +118,13 @@ impl TrafficCounters {
         }))
     }
 
-    pub fn new(account_unique_id: AccountUniqueId) -> Arc<Self> {
+    pub fn new(
+        account_unique_id: AccountUniqueId,
+        project_unique_id: ProjectUniqueId,
+    ) -> Arc<Self> {
         Arc::new(TrafficCounters {
             account_unique_id,
+            project_unique_id,
             bytes_read: Default::default(),
             bytes_written: Default::default(),
             is_closed: false.into(),
@@ -281,7 +294,10 @@ mod test {
         let mut buf = vec![0u8; 32768];
         let io = Cursor::new(&mut buf);
 
-        let counters = TrafficCounters::new(Ulid::new().to_string().parse().unwrap());
+        let counters = TrafficCounters::new(
+            Ulid::new().to_string().parse().unwrap(),
+            Ulid::new().to_string().parse().unwrap(),
+        );
 
         let mut counted_stream = TrafficCountedStream::new(
             io,

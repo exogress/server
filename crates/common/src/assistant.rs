@@ -1,6 +1,8 @@
 use crate::logging::LogMessage;
 use chrono::serde::ts_milliseconds;
-use exogress_common::entities::{url_prefix::MountPointBaseUrl, AccountUniqueId, ConfigId};
+use exogress_common::entities::{
+    url_prefix::MountPointBaseUrl, AccountUniqueId, ConfigId, ProjectUniqueId,
+};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 
@@ -63,6 +65,7 @@ pub enum WsFromGwMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficRecord {
     pub account_unique_id: AccountUniqueId,
+    pub project_unique_id: ProjectUniqueId,
     pub tunnel_bytes_gw_tx: u64,
     pub tunnel_bytes_gw_rx: u64,
     pub https_bytes_gw_tx: u64,
@@ -74,6 +77,7 @@ pub struct TrafficRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RulesRecord {
     pub account_unique_id: AccountUniqueId,
+    pub project_unique_id: ProjectUniqueId,
     pub rules_processed: u64,
     pub requests_processed: u64,
     #[serde(with = "ts_milliseconds")]

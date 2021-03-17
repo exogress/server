@@ -714,6 +714,7 @@ fn main() {
                                 .into_iter()
                                 .map(|statistics| TrafficRecord {
                                     account_unique_id: statistics.account_unique_id().clone(),
+                                    project_unique_id: statistics.project_unique_id().clone(),
                                     tunnel_bytes_gw_tx: if statistics.is_tunnel() {
                                         *statistics.bytes_written()
                                     } else {
@@ -764,6 +765,7 @@ fn main() {
                                     .into_iter()
                                     .map(|r| RulesRecord {
                                         account_unique_id: r.account_unique_id,
+                                        project_unique_id: r.project_unique_id,
                                         rules_processed: r.rules_processed,
                                         requests_processed: r.requests_processed,
                                         flushed_at: r.to,
