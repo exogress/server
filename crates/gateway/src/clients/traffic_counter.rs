@@ -47,6 +47,7 @@ pub struct RecordedTrafficStatistics {
 pub enum OneOfTrafficStatistics {
     Tunnel(RecordedTrafficStatistics),
     Https(RecordedTrafficStatistics),
+    Public(RecordedTrafficStatistics),
 }
 
 impl OneOfTrafficStatistics {
@@ -54,30 +55,35 @@ impl OneOfTrafficStatistics {
         match self {
             OneOfTrafficStatistics::Https(s) => &s.account_unique_id,
             OneOfTrafficStatistics::Tunnel(s) => &s.account_unique_id,
+            OneOfTrafficStatistics::Public(s) => &s.account_unique_id,
         }
     }
     pub fn project_unique_id(&self) -> &ProjectUniqueId {
         match self {
             OneOfTrafficStatistics::Https(s) => &s.project_unique_id,
             OneOfTrafficStatistics::Tunnel(s) => &s.project_unique_id,
+            OneOfTrafficStatistics::Public(s) => &s.project_unique_id,
         }
     }
     pub fn to(&self) -> &DateTime<Utc> {
         match self {
             OneOfTrafficStatistics::Https(s) => &s.to,
             OneOfTrafficStatistics::Tunnel(s) => &s.to,
+            OneOfTrafficStatistics::Public(s) => &s.to,
         }
     }
     pub fn bytes_read(&self) -> &u64 {
         match self {
             OneOfTrafficStatistics::Https(s) => &s.bytes_read,
             OneOfTrafficStatistics::Tunnel(s) => &s.bytes_read,
+            OneOfTrafficStatistics::Public(s) => &s.bytes_read,
         }
     }
     pub fn bytes_written(&self) -> &u64 {
         match self {
             OneOfTrafficStatistics::Https(s) => &s.bytes_written,
             OneOfTrafficStatistics::Tunnel(s) => &s.bytes_written,
+            OneOfTrafficStatistics::Public(s) => &s.bytes_written,
         }
     }
     pub fn is_https(&self) -> bool {
@@ -89,6 +95,13 @@ impl OneOfTrafficStatistics {
     pub fn is_tunnel(&self) -> bool {
         match self {
             OneOfTrafficStatistics::Tunnel(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_public(&self) -> bool {
+        match self {
+            OneOfTrafficStatistics::Public(_) => true,
             _ => false,
         }
     }

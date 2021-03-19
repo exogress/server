@@ -604,6 +604,7 @@ fn main() {
 
         let (log_messages_tx, log_messages_rx) = mpsc::channel(16536);
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
+        let (public_counters_tx, public_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
 
         let google_oauth2_client = GoogleOauth2Client::new(
@@ -636,6 +637,7 @@ fn main() {
             cache_ttl,
             account_rules_counters.clone(),
             tunnel_counters_tx.clone(),
+            public_counters_tx.clone(),
             webapp_base_url,
             google_oauth2_client.clone(),
             github_oauth2_client.clone(),
@@ -700,8 +702,11 @@ fn main() {
 
             const CHUNK: usize = 2048;
             let mut ready_chunks = futures::stream::select(
-                tunnel_counters_rx.map(OneOfTrafficStatistics::Tunnel),
-                https_counters_rx.map(OneOfTrafficStatistics::Https),
+                futures::stream::select(
+                    tunnel_counters_rx.map(OneOfTrafficStatistics::Tunnel),
+                    https_counters_rx.map(OneOfTrafficStatistics::Https),
+                ),
+                public_counters_rx.map(OneOfTrafficStatistics::Public),
             )
             .ready_chunks(CHUNK);
             async move {
@@ -715,6 +720,7 @@ fn main() {
                                 .map(|statistics| TrafficRecord {
                                     account_unique_id: statistics.account_unique_id().clone(),
                                     project_unique_id: statistics.project_unique_id().clone(),
+
                                     tunnel_bytes_gw_tx: if statistics.is_tunnel() {
                                         *statistics.bytes_written()
                                     } else {
@@ -725,6 +731,18 @@ fn main() {
                                     } else {
                                         0
                                     },
+
+                                    public_bytes_gw_tx: if statistics.is_public() {
+                                        *statistics.bytes_written()
+                                    } else {
+                                        0
+                                    },
+                                    public_bytes_gw_rx: if statistics.is_public() {
+                                        *statistics.bytes_read()
+                                    } else {
+                                        0
+                                    },
+
                                     https_bytes_gw_tx: if statistics.is_https() {
                                         *statistics.bytes_written()
                                     } else {
@@ -735,6 +753,7 @@ fn main() {
                                     } else {
                                         0
                                     },
+
                                     flushed_at: statistics.to().clone(),
                                 })
                                 .collect(),

@@ -66,7 +66,9 @@ pub struct Client {
 
     rules_counters: AccountCounters,
 
-    traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    tunnels_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+
     presence_client: presence::Client,
 
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
@@ -329,7 +331,8 @@ impl Client {
     pub fn new(
         ttl: Duration,
         rules_counters: AccountCounters,
-        traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        tunnels_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
         base_url: Url,
         google_oauth2_client: auth::google::GoogleOauth2Client,
         github_oauth2_client: auth::github::GithubOauth2Client,
@@ -374,7 +377,8 @@ impl Client {
             public_gw_base_url: public_gw_base_url.clone(),
             log_messages_tx,
             rules_counters,
-            traffic_counters_tx,
+            tunnels_counters_tx,
+            public_counters_tx,
             presence_client,
             cache,
             dbip,
@@ -432,7 +436,7 @@ impl Client {
     > {
         let cache = self.cache.clone();
         let resolver = self.resolver.clone();
-        let traffic_counters_tx = self.traffic_counters_tx.clone();
+        let public_counters_tx = self.public_counters_tx.clone();
 
         // Try to read from cache
         if let Some((cached, mount_point_base_path)) =
@@ -542,7 +546,7 @@ impl Client {
                                                         rules_counters.clone(),
                                                         individual_hostname,
                                                         maybe_identity,
-                                                        traffic_counters_tx.clone(),
+                                                        public_counters_tx.clone(),
                                                         log_messages_tx,
                                                         &gw_location,
                                                         cache,

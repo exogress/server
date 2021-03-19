@@ -66,10 +66,16 @@ pub enum WsFromGwMessage {
 pub struct TrafficRecord {
     pub account_unique_id: AccountUniqueId,
     pub project_unique_id: ProjectUniqueId,
+
+    pub public_bytes_gw_tx: u64,
+    pub public_bytes_gw_rx: u64,
+
     pub tunnel_bytes_gw_tx: u64,
     pub tunnel_bytes_gw_rx: u64,
+
     pub https_bytes_gw_tx: u64,
     pub https_bytes_gw_rx: u64,
+
     #[serde(with = "ts_milliseconds")]
     pub flushed_at: DateTime<Utc>,
 }

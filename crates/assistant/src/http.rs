@@ -169,10 +169,18 @@ pub async fn server(
                                                 info!("Start saving to mongodb");
                                                 let start_time = crate::statistics::STATISTICS_REPORT_SAVE_TIME.start_timer();
 
-                                                tokio::time::timeout(
+                                                match tokio::time::timeout(
                                                     Duration::from_secs(5),
                                                     db_client.register_statistics_report(report, &gw_hostname, &gw_location)
-                                                ).await??;
+                                                ).await {
+                                                    Ok(Err(e)) => {
+                                                        error!("Error saving statistics to mongo: {:?}", e);
+                                                    }
+                                                    Err(_) => {
+                                                        error!("Timeout saving report to mongo");
+                                                    },
+                                                    Ok(_) => {}
+                                                };
 
                                                 start_time.observe_duration();
                                             }

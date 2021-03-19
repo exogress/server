@@ -2088,7 +2088,7 @@ impl RequestsProcessor {
         rules_counter: AccountCounters,
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
-        traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
         log_messages_tx: mpsc::Sender<LogMessage>,
         gw_location: &str,
         cache: Cache,
@@ -2110,7 +2110,7 @@ impl RequestsProcessor {
         let (stop_public_counter_tx, stop_public_counter_rx) = oneshot::channel();
         tokio::spawn(TrafficCounters::spawn_flusher(
             traffic_counters.clone(),
-            traffic_counters_tx,
+            public_counters_tx,
             stop_public_counter_rx,
         ));
 
