@@ -350,6 +350,8 @@ pub async fn server(
                                 stop_flusher_rx,
                             );
 
+                            // we never forcefully stop flusher through the channel,
+                            // if will automatically stop when counter flush returns error
                             tokio::spawn(async move {
                                 let _stop_flusher_tx = stop_flusher_tx;
 

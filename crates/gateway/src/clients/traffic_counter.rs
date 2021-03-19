@@ -150,27 +150,43 @@ impl TrafficCounters {
         mut traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
         stop_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        let periodically_flush = async move {
-            loop {
-                sleep(Duration::from_secs(60)).await;
-                match counters.flush() {
-                    Ok(Some(stats)) => {
-                        traffic_counters_tx.send(stats).await?;
-                    }
-                    Err(()) => {
-                        break;
-                    }
-                    Ok(None) => {}
-                }
-            }
+        let periodically_flush = {
+            shadow_clone!(counters, mut traffic_counters_tx);
 
-            Ok::<_, anyhow::Error>(())
+            async move {
+                loop {
+                    sleep(Duration::from_secs(60)).await;
+                    match counters.flush() {
+                        Ok(Some(stats)) => {
+                            traffic_counters_tx.send(stats).await?;
+                        }
+                        Err(()) => {
+                            break;
+                        }
+                        Ok(None) => {}
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(())
+            }
         };
 
-        tokio::select! {
-            r = periodically_flush => r,
+        let r = tokio::select! {
+            r = periodically_flush => {
+                info!("Statistics public traffic dumper unexpectedly stopped with message: {:?}", r);
+                r
+            },
             _ = stop_rx => Ok(()),
+        };
+
+        info!("Statistics public traffic dumper stopped. Flushing outstanding data.");
+
+        // make sure data us dumped
+        if let Ok(Some(stats)) = counters.flush() {
+            traffic_counters_tx.send(stats).await?;
         }
+
+        r
     }
 }
 

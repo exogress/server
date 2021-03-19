@@ -37,7 +37,7 @@ pub struct LogMessage {
 
     pub steps: Vec<ProcessingStep>,
 
-    pub facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
+    pub facts: Arc<Mutex<serde_json::Value>>,
 
     pub str: Option<String>,
 }

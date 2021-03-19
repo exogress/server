@@ -146,28 +146,63 @@ impl RequestsProcessor {
         requested_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
-        facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
+        facts: Arc<Mutex<serde_json::Value>>,
         log_message: &mut LogMessage,
     ) {
         if let Some(db) = self.dbip.as_ref() {
             if let Ok(loc) = db.lookup::<LocationAndIsp>(remote_addr.ip()) {
-                let mut locked = facts.lock();
+                let mut location = json!({});
+
                 if let Some(isp) = loc.isp {
-                    locked.insert("isp".into(), isp);
+                    location
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("isp".into(), isp.to_string().into());
                 };
                 if let Some(organization) = loc.organization {
-                    locked.insert("organization".into(), organization);
+                    location
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("organization".into(), organization.to_string().into());
                 };
                 if let Some(city) = loc.city.and_then(|c| c.names.and_then(|c| c.en)) {
-                    locked.insert("city".into(), city);
+                    location
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("city".into(), city.to_string().into());
                 };
                 if let Some(country) = loc.country.map(|c| c.iso_code).flatten() {
-                    locked.insert("country".into(), country);
+                    location
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("country".into(), country.to_string().into());
                 };
+                if let Some(geoip_location) = loc.location {
+                    if let (Some(lat), Some(lon)) =
+                        (geoip_location.latitude, geoip_location.longitude)
+                    {
+                        location
+                            .as_object_mut()
+                            .unwrap()
+                            .insert("lat".into(), lat.into());
+                        location
+                            .as_object_mut()
+                            .unwrap()
+                            .insert("lon".into(), lon.into());
+                    }
+                };
+
+                facts
+                    .lock()
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("location".into(), location);
             }
         }
         facts
             .lock()
+            .as_object_mut()
+            .unwrap()
             .insert("mount_point_hostname".into(), self.url_prefix.host().into());
 
         self.rules_counter
@@ -338,7 +373,7 @@ impl RequestsProcessor {
     ) {
         if self.is_active {
             let started_at = Instant::now();
-            let facts = Arc::new(Mutex::new(HashMap::<SmolStr, SmolStr>::new()));
+            let facts = Arc::new(Mutex::new(json!({})));
 
             let mut log_message = LogMessage {
                 gw_location: self.gw_location.clone(),
@@ -2108,6 +2143,9 @@ impl RequestsProcessor {
             resp.project_unique_id.clone(),
         );
         let (stop_public_counter_tx, stop_public_counter_rx) = oneshot::channel();
+
+        // FIXME: this is wrong, because connects are opened and closed here. this implementation will break
+        // when first connection will be closed!
         tokio::spawn(TrafficCounters::spawn_flusher(
             traffic_counters.clone(),
             public_counters_tx,
@@ -2768,7 +2806,7 @@ impl ResolvedStaticResponse {
         additional_data: HashMap<SmolStr, SmolStr>,
         matches: Option<&HashMap<SmolStr, Matched>>,
         _handler_best_language: &Option<LanguageTagBuf>,
-        facts: Arc<Mutex<HashMap<SmolStr, SmolStr>>>,
+        facts: Arc<Mutex<serde_json::Value>>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
         *res = Response::new(Body::empty());
 
