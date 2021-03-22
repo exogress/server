@@ -33,10 +33,7 @@ use exogress_server_common::{
     logging::{LogMessage, ProcessingStep, StaticResponseProcessingStep},
     presence,
 };
-use futures::{
-    channel::{mpsc, oneshot},
-    SinkExt, StreamExt,
-};
+use futures::{channel::mpsc, SinkExt, StreamExt};
 use handlebars::Handlebars;
 use hashbrown::HashMap;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
@@ -126,7 +123,6 @@ pub struct RequestsProcessor {
     rules_counter: AccountCounters,
     pub account_unique_id: AccountUniqueId,
     pub project_unique_id: ProjectUniqueId,
-    _stop_public_counter_tx: oneshot::Sender<()>,
     cache: Cache,
     pub project_name: ProjectName,
     url_prefix: MountPointBaseUrl,
@@ -2142,15 +2138,6 @@ impl RequestsProcessor {
             resp.account_unique_id.clone(),
             resp.project_unique_id.clone(),
         );
-        let (stop_public_counter_tx, stop_public_counter_rx) = oneshot::channel();
-
-        // FIXME: this is wrong, because connects are opened and closed here. this implementation will break
-        // when first connection will be closed!
-        tokio::spawn(TrafficCounters::spawn_flusher(
-            traffic_counters.clone(),
-            public_counters_tx,
-            stop_public_counter_rx,
-        ));
 
         let refinable = Arc::new(resp.refinable());
 
@@ -2265,6 +2252,7 @@ impl RequestsProcessor {
             );
 
             let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
+                public_counters_tx: public_counters_tx.clone(),
                 resolver: resolver.clone(),
                 counters: traffic_counters.clone(),
                 sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
@@ -2672,7 +2660,6 @@ impl RequestsProcessor {
             strict_transport_security: resp.strict_transport_security,
             rules_counter,
             account_unique_id,
-            _stop_public_counter_tx: stop_public_counter_tx,
             cache,
             project_name,
             url_prefix: mount_point_base_url.clone(),

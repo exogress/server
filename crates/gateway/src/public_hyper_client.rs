@@ -1,5 +1,8 @@
-use crate::clients::traffic_counter::{TrafficCountedStream, TrafficCounters};
+use crate::clients::traffic_counter::{
+    RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
+};
 use futures::{
+    channel::{mpsc, oneshot},
     future::BoxFuture,
     task::{Context, Poll},
 };
@@ -21,12 +24,19 @@ use tokio_rustls::{
 use trust_dns_resolver::TokioAsyncResolver;
 
 pub struct HyperUsableConnection {
+    _stop_public_counter_tx: oneshot::Sender<()>,
     inner: TlsStream<TrafficCountedStream<TcpStream>>,
 }
 
 impl HyperUsableConnection {
-    pub fn new(conn: TlsStream<TrafficCountedStream<TcpStream>>) -> Self {
-        HyperUsableConnection { inner: conn }
+    pub fn new(
+        conn: TlsStream<TrafficCountedStream<TcpStream>>,
+        stop_public_counter_tx: oneshot::Sender<()>,
+    ) -> Self {
+        HyperUsableConnection {
+            _stop_public_counter_tx: stop_public_counter_tx,
+            inner: conn,
+        }
     }
 }
 
@@ -73,6 +83,7 @@ impl AsyncWrite for HyperUsableConnection {
 
 #[derive(Clone)]
 pub struct MeteredHttpsConnector {
+    pub public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
     pub resolver: TokioAsyncResolver,
     pub counters: Arc<TrafficCounters>,
     pub sent_counter: IntCounter,
@@ -117,6 +128,7 @@ impl hyper::service::Service<Uri> for MeteredHttpsConnector {
         let counters = self.counters.clone();
         let sent_counter = self.sent_counter.clone();
         let recv_counter = self.recv_counter.clone();
+        let public_counters_tx = self.public_counters_tx.clone();
 
         Box::pin(async move {
             if dst.scheme_str() != Some("https") {
@@ -134,7 +146,16 @@ impl hyper::service::Service<Uri> for MeteredHttpsConnector {
             let tcp = TcpStream::connect((ip, dst.port_u16().unwrap_or(443))).await?;
             tcp.set_nodelay(true)?;
 
-            let counted = TrafficCountedStream::new(tcp, counters, sent_counter, recv_counter);
+            let counted =
+                TrafficCountedStream::new(tcp, counters.clone(), sent_counter, recv_counter);
+
+            let (stop_public_counter_tx, stop_public_counter_rx) = oneshot::channel();
+
+            tokio::spawn(TrafficCounters::spawn_flusher(
+                counters,
+                public_counters_tx,
+                stop_public_counter_rx,
+            ));
 
             let mut tls_client_config = ClientConfig::new();
             tls_client_config.root_store =
@@ -144,7 +165,7 @@ impl hyper::service::Service<Uri> for MeteredHttpsConnector {
                 .connect(DNSNameRef::try_from_ascii_str(host)?, counted)
                 .await?;
 
-            Ok(HyperUsableConnection::new(c))
+            Ok(HyperUsableConnection::new(c, stop_public_counter_tx))
         })
     }
 }
