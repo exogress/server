@@ -177,17 +177,12 @@ impl GoogleOauth2Client {
         let status = user_resp.status();
 
         if !status.is_success() {
-            let text = user_resp.text().await;
-            info!("Error retrieving user data: {:?}", text);
-
             Err(Oauth2FlowError::RetrieveUserInfoBadStatus(status))
         } else {
             let user_info = user_resp
                 .json::<GoogleUserResponse>()
                 .await
                 .map_err(Oauth2FlowError::RetrieveUserInfoBadResponse)?;
-
-            info!("user_info = {:?}", user_info);
 
             Ok(CallbackResult {
                 identities: vec![user_info.email],

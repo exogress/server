@@ -178,8 +178,6 @@ impl GithubOauth2Client {
                 .await
                 .map_err(Oauth2FlowError::RetrieveUserInfoBadResponse)?;
 
-            info!("user_info = {:?}", user_info);
-
             let mut identities = vec![user_info.login];
             if let Some(email) = user_info.email {
                 identities.push(email);

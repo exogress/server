@@ -258,13 +258,10 @@ impl RequestsProcessor {
                 .iter()
                 .map(|qi| &qi.item)
                 .filter_map(|a| SupportedContentEncoding::try_from(a).ok())
-                .filter(|supported| {
-                    info!("supported encoding: {:?}", supported);
-                    match supported {
-                        SupportedContentEncoding::Brotli => encoding.brotli,
-                        SupportedContentEncoding::Deflate => encoding.deflate,
-                        SupportedContentEncoding::Gzip => encoding.gzip,
-                    }
+                .filter(|supported| match supported {
+                    SupportedContentEncoding::Brotli => encoding.brotli,
+                    SupportedContentEncoding::Deflate => encoding.deflate,
+                    SupportedContentEncoding::Gzip => encoding.gzip,
                 })
                 .sorted_by(|&a, &b| a.weight().cmp(&b.weight()).reverse())
                 .next()

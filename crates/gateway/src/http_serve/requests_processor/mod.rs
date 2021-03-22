@@ -217,7 +217,6 @@ impl RequestsProcessor {
 
             match cached_response {
                 Ok(Some(resp_from_cache)) => {
-                    info!("found data in cache");
                     if resp_from_cache.status().is_success()
                         || resp_from_cache.status() == StatusCode::NOT_MODIFIED
                     {
@@ -231,12 +230,6 @@ impl RequestsProcessor {
                             res.headers().typed_get::<typed_headers::ContentLength>()
                         {
                             log_message.content_len = Some(len.0);
-                            let byte = Byte::from(len.0);
-
-                            info!(
-                                "serve {} bytes from cache!",
-                                byte.get_appropriate_unit(true)
-                            );
                         }
 
                         log_message.steps.push(ProcessingStep::ServedFromCache);
@@ -293,7 +286,6 @@ impl RequestsProcessor {
 
                 match result {
                     ResolvedHandlerProcessingResult::Processed => {
-                        info!("handle successfully finished. exit from handlers loop");
                         processed_by = Some(handler);
                         break;
                     }
@@ -444,7 +436,6 @@ impl RequestsProcessor {
         }
 
         if req.headers().get(RANGE).is_some() {
-            info!("Range header presented. Skip caching.");
             return;
         }
 
@@ -473,10 +464,6 @@ impl RequestsProcessor {
             .flatten()
             .next();
 
-        info!(
-            "cache entries: {:?} {:?}. caching_allowed = {:?}",
-            cache_entries, max_age, caching_allowed
-        );
         if !caching_allowed || max_age.is_none() {
             return;
         }
@@ -544,8 +531,6 @@ impl RequestsProcessor {
                     .map_err(|_e| anyhow!("error sending to client"))?;
             }
 
-            info!("Body successfully sent. Saving temp file to cache storage");
-
             let cached_response = cache
                 .save_content(
                     &account_unique_id,
@@ -567,7 +552,6 @@ impl RequestsProcessor {
                 )
                 .await;
 
-            info!("cached save result = {:?}", cached_response);
             if let Err(_e) = cached_response {
                 crate::statistics::CACHE_ERRORS
                     .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
@@ -1656,19 +1640,12 @@ impl ResolvedHandler {
                 &language,
                 log_message,
             ),
-            RescueableHandleResult::NextHandler => {
-                info!("move on to next handler");
-                ResolvedHandlerProcessingResult::NextHandler
-            }
-            RescueableHandleResult::UnhandledException { exception_name, .. } => {
-                warn!("unhandled exception: {}", exception_name);
+            RescueableHandleResult::NextHandler => ResolvedHandlerProcessingResult::NextHandler,
+            RescueableHandleResult::UnhandledException { .. } => {
                 self.respond_server_error(res);
                 ResolvedHandlerProcessingResult::Processed
             }
-            RescueableHandleResult::FinishProcessing => {
-                info!("processing finished");
-                ResolvedHandlerProcessingResult::Processed
-            }
+            RescueableHandleResult::FinishProcessing => ResolvedHandlerProcessingResult::Processed,
         }
     }
 
@@ -2557,7 +2534,6 @@ impl RequestsProcessor {
                                         &handler_name,
                                         rule_num,
                                     );
-                                    let r1 = rule.clone();
 
                                     Some(ResolvedRule {
                                         filter: ResolvedFilter {
@@ -2596,8 +2572,6 @@ impl RequestsProcessor {
                                                         &refinable,
                                                         &rule_scope,
                                                     )?;
-
-                                                    info!("rescue in rule {:?}/{} = {:?}", r1, rule_num, rescue);
 
                                                     rescue
                                                 },
@@ -2880,7 +2854,6 @@ impl ResolvedStaticResponse {
                             })?
                     }
                 };
-                info!("body = {:?}", body);
                 *res.body_mut() = Body::from(body);
             }
             None => {

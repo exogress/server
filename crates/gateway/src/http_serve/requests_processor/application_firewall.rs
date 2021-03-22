@@ -31,8 +31,6 @@ impl ResolvedApplicationFirewall {
                 .decode_utf8()
                 .expect("FIXME");
 
-        info!("check {} for injection", decoded_path_and_query);
-
         let mut detected = vec![];
 
         if self.uri_sqli {

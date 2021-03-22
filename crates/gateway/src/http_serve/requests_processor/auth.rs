@@ -114,7 +114,6 @@ impl ResolvedAuth {
                             Err(_) => pass == identity,
                         };
                         if is_match {
-                            info!("Pass {} ", identity);
                             acl_allow_to = (Some(identity), Some(pass));
                             break 'acl;
                         }
@@ -125,7 +124,6 @@ impl ResolvedAuth {
                             Err(_) => deny == identity,
                         };
                         if is_match {
-                            info!("Deny {} ", identity);
                             acl_allow_to = (None, Some(deny));
                             break 'acl;
                         }
@@ -312,7 +310,6 @@ impl ResolvedAuth {
                                             }
                                         }
                                         None => {
-                                            info!("could not find provider");
                                             *res.status_mut() = StatusCode::BAD_REQUEST;
                                             *res.body_mut() = Body::from("bad request");
                                         }
@@ -379,11 +376,6 @@ impl ResolvedAuth {
                                 self.acl_allowed_to(&identities, &acl.0);
 
                             if let Some(allow_to) = acl_allowed_to {
-                                info!(
-                                    "jwt-token parse and verified. go ahead. provider = {:?}, identity = {}, acl_entry = {:?}",
-                                    granted_provider, granted_identity, acl_entry
-                                );
-
                                 log_message.steps.push(ProcessingStep::Invoked(
                                     HandlerProcessingStep::Auth(AuthHandlerLogMessage {
                                         provider: Some(granted_provider.to_string().into()),
@@ -426,13 +418,7 @@ impl ResolvedAuth {
                         }
                     }
                 }
-                Err(e) => {
-                    if let jsonwebtoken::errors::ErrorKind::InvalidSignature = e.kind() {
-                        info!("jwt-token parsed but not verified");
-                    } else {
-                        info!("JWT token error: {:?}. Token: {}", e, token.value());
-                    };
-
+                Err(_e) => {
                     self.respond_not_authorized(req, res);
 
                     log_message
@@ -451,8 +437,6 @@ impl ResolvedAuth {
                 }
             }
         } else {
-            info!("jwt-token not found");
-
             log_message
                 .steps
                 .push(ProcessingStep::Invoked(HandlerProcessingStep::Auth(
