@@ -14,35 +14,48 @@
         .block {
             text-align: center;
         }
+
+        body {
+            display: flex;
+            min-height: 100vh;
+            flex-direction: column;
+        }
+
+        #wrapper {
+            flex: 1;
+        }
+
     </style>
 </head>
 
 <body>
-<section class="section is-large">
-    <div class="columns is-mobile is-centered">
-        <div class="column is-half">
-            <div class="block">
-                <h1 class="title">This site requires authorization</h1>
-            </div>
+<div id="wrapper">
+    <section class="section is-large">
+        <div class="columns is-mobile is-centered">
+            <div class="column is-half">
+                <div class="block">
+                    <h1 class="title">This site requires authorization</h1>
+                </div>
 
-            <div class="block">
-                <aside class="menu">
-                    <ul class="menu-list">
-                        {{#each providers}}
-                            <li>
-                                <a href="{{ this.link }}">
-                                    <img style="height: 32px; margin-right: 10px;"
-                                         src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg">
-                                    <span class="subtitle">{{ this.display_name }}</span>
-                                </a>
-                            </li>
-                        {{/each}}
-                    </ul>
-                </aside>
+                <div class="block">
+                    <aside class="menu">
+                        <ul class="menu-list">
+                            {{#each providers}}
+                                <li>
+                                    <a href="{{ this.link }}">
+                                        <img style="height: 32px; margin-right: 10px;"
+                                             src="https://cdn.jsdelivr.net/npm/simple-icons@v3/icons/{{ this.name }}.svg">
+                                        <span class="subtitle">{{ this.display_name }}</span>
+                                    </a>
+                                </li>
+                            {{/each}}
+                        </ul>
+                    </aside>
+                </div>
             </div>
         </div>
-    </div>
-</section>
+    </section>
+</div>
 <footer class="footer">
     <div class="content has-text-centered">
         <p>
