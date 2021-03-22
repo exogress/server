@@ -131,25 +131,30 @@ impl RequestsProcessor {
             Some(image_post_processing_config) => image_post_processing_config,
         };
 
-        let is_webp_supported = req
-            .headers()
-            .typed_get::<typed_headers::Accept>()?
-            .ok_or_else(|| anyhow!("no accept header"))?
-            .iter()
-            .find(|&item| item.item == mime::Mime::from_str("image/webp").unwrap())
-            .is_some();
-        if !is_webp_supported {
-            return Ok(());
-        }
         let content_type: mime::Mime = res
             .headers()
             .get(CONTENT_TYPE)
             .ok_or_else(|| anyhow!("no content-type"))?
             .to_str()?
             .parse()?;
+
         if (content_type == mime::IMAGE_JPEG && image_post_processing_config.is_jpeg)
             || (content_type == mime::IMAGE_PNG && image_post_processing_config.is_png)
         {
+            res.headers_mut()
+                .insert("vary", HeaderValue::from_str("Accept").unwrap());
+
+            let is_webp_supported = req
+                .headers()
+                .typed_get::<typed_headers::Accept>()?
+                .ok_or_else(|| anyhow!("no accept header"))?
+                .iter()
+                .find(|&item| item.item == mime::Mime::from_str("image/webp").unwrap())
+                .is_some();
+            if !is_webp_supported {
+                return Ok(());
+            }
+
             IMAGE_MAGIC.call_once(|| {
                 magick_wand_genesis();
             });
@@ -192,8 +197,6 @@ impl RequestsProcessor {
                             to_content_type: WEBP_MIME.into(),
                             compression_ratio: ratio,
                         }));
-                    res.headers_mut()
-                        .insert("vary", HeaderValue::from_str("Accept").unwrap());
                     *res.body_mut() = Body::from(buf);
                     res.headers_mut().typed_insert::<ContentType>(&ContentType(
                         mime::Mime::from_str(WEBP_MIME.into()).unwrap(),
