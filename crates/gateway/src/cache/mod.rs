@@ -17,7 +17,7 @@ use sqlx::{
     sqlite::{SqlitePoolOptions, SqliteRow},
     Row, SqlitePool,
 };
-use std::{io, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, io, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tokio_util::codec::LengthDelimitedCodec;
 use typed_headers::HeaderMapExt;
@@ -352,12 +352,13 @@ impl Cache {
         Ok(bytes_used)
     }
 
-    fn vary_hash(vary_headers_ordered_list: &Vec<String>, req_headers: &HeaderMap) -> String {
+    fn vary_hash(vary_headers_ordered_list: &BTreeSet<String>, req_headers: &HeaderMap) -> String {
         let mut content_sha = sha2::Sha224::default();
 
         for vary_by_header_name in vary_headers_ordered_list {
             let header_value = req_headers
-                .get(vary_by_header_name)
+                // TODO: make sure we can remove to_lowercase!
+                .get(vary_by_header_name.to_lowercase())
                 .map(|h| h.to_str().unwrap())
                 .unwrap_or_default();
             content_sha.update(header_value);
@@ -394,16 +395,13 @@ impl Cache {
         vary_header_names_set.insert(ACCEPT_ENCODING);
         vary_header_names_set.insert(ACCEPT);
 
-        let mut vary_headers_ordered_list: Vec<_> = vary_header_names_set
+        let vary_headers_ordered_list: BTreeSet<_> = vary_header_names_set
             .into_iter()
             .map(|h| h.to_string())
             .collect();
-        vary_headers_ordered_list.sort();
 
         let vary_json = serde_json::to_string(&vary_headers_ordered_list).unwrap();
         let vary_hash = Self::vary_hash(&vary_headers_ordered_list, req_headers);
-
-        info!("vary_json = {} hash = {}", vary_json, vary_hash);
 
         let meta = Meta {
             headers: res_headers.clone(),
@@ -662,7 +660,7 @@ impl Cache {
             let vary_json = row.try_get::<String, _>("vary")?;
             let stored_vary_hash = row.try_get::<String, _>("vary_hash")?;
 
-            let vary_headers_ordered_list: Vec<String> =
+            let vary_headers_ordered_list: BTreeSet<String> =
                 if let Ok(r) = serde_json::from_str(&vary_json) {
                     r
                 } else {

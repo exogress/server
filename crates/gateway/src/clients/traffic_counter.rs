@@ -173,13 +173,10 @@ impl TrafficCounters {
 
         let r = tokio::select! {
             r = periodically_flush => {
-                info!("Statistics public traffic dumper unexpectedly stopped with message: {:?}", r);
                 r
             },
             _ = stop_rx => Ok(()),
         };
-
-        info!("Statistics public traffic dumper stopped. Flushing outstanding data.");
 
         // make sure data us dumped
         if let Ok(Some(stats)) = counters.flush() {

@@ -130,6 +130,7 @@ impl RequestsProcessor {
             None => return Ok(()),
             Some(image_post_processing_config) => image_post_processing_config,
         };
+
         let is_webp_supported = req
             .headers()
             .typed_get::<typed_headers::Accept>()?
@@ -191,6 +192,8 @@ impl RequestsProcessor {
                             to_content_type: WEBP_MIME.into(),
                             compression_ratio: ratio,
                         }));
+                    res.headers_mut()
+                        .insert("vary", HeaderValue::from_str("Accept").unwrap());
                     *res.body_mut() = Body::from(buf);
                     res.headers_mut().typed_insert::<ContentType>(&ContentType(
                         mime::Mime::from_str(WEBP_MIME.into()).unwrap(),
