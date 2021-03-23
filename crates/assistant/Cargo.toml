@@ -37,7 +37,7 @@ mongodb = "2.0.0-alpha"
 
 trust-dns-resolver = "0.20"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
-warp = { version = "0.3" }
+warp = { version = "0.3", features = ["tls"] }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "entities"], default-features = false }

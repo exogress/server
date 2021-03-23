@@ -33,6 +33,12 @@ mod statistics;
 mod termination;
 mod webapp;
 
+pub struct HttpsConfig {
+    int_tls_cert: Vec<u8>,
+    int_tls_key: Vec<u8>,
+    int_tls_auth_ca: Vec<u8>,
+}
+
 fn main() {
     let spawn_args = App::new("spawn")
         .arg(
@@ -57,6 +63,32 @@ fn main() {
                 .value_name("PATH")
                 .required(true)
                 .help("Set GW common TLS key path")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("int_tls_cert_path")
+                .long("int-tls-cert-path")
+                .value_name("PATH")
+                .required(false)
+                .requires_all(&["int_tls_auth_ca_path", "int_tls_key_path"])
+                .help("Set int TLS cert path for protecting gateways access (will switch to HTTPS mode)")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("int_tls_key_path")
+                .long("int-tls-key-path")
+                .value_name("PATH")
+                .required(false)
+                .requires_all(&["int_tls_auth_ca_path", "int_tls_cert_path"])
+                .help("Set int TLS key path for protecting gateways access (will switch to HTTPS mode)")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("int_tls_auth_ca_path")
+                .long("int-tls-auth-ca-path")
+                .requires_all(&["int_tls_cert_path", "int_tls_key_path"])
+                .value_name("PATH")
+                .help("Set int TLS authentication CA ")
                 .takes_value(true),
         )
         .arg(
@@ -197,6 +229,22 @@ fn main() {
         .expect("no --mongodb-database provided")
         .to_string();
 
+    let tls_config =
+        if let (Some(int_tls_cert_path), Some(int_tls_key_path), Some(int_tls_auth_ca_path)) = (
+            matches.value_of("int_tls_cert_path"),
+            matches.value_of("int_tls_key_path"),
+            matches.value_of("int_tls_auth_ca_path"),
+        ) {
+            Some(HttpsConfig {
+                int_tls_cert: std::fs::read(int_tls_cert_path).expect("int TLS cert not found"),
+                int_tls_key: std::fs::read(int_tls_key_path).expect("int TLS key not found"),
+                int_tls_auth_ca: std::fs::read(int_tls_auth_ca_path)
+                    .expect("int TLS CA for authentication not found"),
+            })
+        } else {
+            None
+        };
+
     let gw_tls_key_path: String = matches
         .value_of("gw_tls_key_path")
         .expect("no --gw-tls-key-path provided")
@@ -205,6 +253,7 @@ fn main() {
         .value_of("gw_tls_cert_path")
         .expect("no --gw-tls-cert-path provided")
         .into();
+
     let gw_hostname: String = matches
         .value_of("gw_hostname")
         .expect("no --gw-hostname provided")
@@ -281,6 +330,7 @@ fn main() {
                     tls_cert_path: gw_tls_cert_path.parse().unwrap(),
                     tls_key_path: gw_tls_key_path.parse().unwrap(),
                 },
+                tls_config,
                 redis_client,
                 webapp_client,
                 presence_client,

@@ -1,5 +1,6 @@
 use crate::{
     elasticsearch::ElasticsearchClient, reporting::MongoDbClient, termination::StopReason,
+    HttpsConfig,
 };
 use exogress_common::common_utils::backoff::Backoff;
 use exogress_server_common::{
@@ -53,6 +54,7 @@ impl GatewayCommonTlsConfig {
 pub async fn server(
     listen_addr: SocketAddr,
     common_gw_tls_config: GatewayCommonTlsConfig,
+    https_config: Option<HttpsConfig>,
     redis: redis::Client,
     webapp_client: crate::webapp::Client,
     presence_client: crate::presence::Client,
@@ -521,22 +523,44 @@ pub async fn server(
     let metrics = warp::path!("metrics").map(|| crate::statistics::dump_prometheus());
 
     info!("Spawning...");
-    let (_, server) = warp::serve(
+
+    let combined = warp::serve(
         notifications
             .or(save_kv)
             .or(get_kv)
             .or(metrics)
             .or(health)
             .with(warp::trace::request()),
-    )
-    .bind_with_graceful_shutdown(
-        listen_addr,
-        stop_wait.map(move |r| info!("private HTTP server stop request received: {}", r)),
     );
 
-    server.await;
+    match https_config {
+        Some(https_config) => {
+            combined
+                .tls()
+                .key(https_config.int_tls_key)
+                .cert(https_config.int_tls_cert)
+                .client_auth_required(https_config.int_tls_auth_ca)
+                .bind_with_graceful_shutdown(
+                    listen_addr,
+                    stop_wait
+                        .map(move |r| info!("private HTTP server stop request received: {}", r)),
+                )
+                .1
+                .await;
+        }
+        None => {
+            combined
+                .bind_with_graceful_shutdown(
+                    listen_addr,
+                    stop_wait
+                        .map(move |r| info!("private HTTP server stop request received: {}", r)),
+                )
+                .1
+                .await;
+        }
+    }
 
-    info!("private HTTP server stopped");
+    info!("HTTP server stopped");
 }
 
 #[derive(Debug)]
