@@ -189,6 +189,14 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("assistants_connections")
+                .long("assistants-connections")
+                .value_name("NUMERIC")
+                .help("Number of connections to assistant servers")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("external_https_port")
                 .long("external-https-port")
                 .value_name("PORT")
@@ -590,8 +598,12 @@ fn main() {
 
         let external_https_port = matches
             .value_of("external_https_port")
-            .map(|r| r.parse().expect("Could not parse external_https_port"))
+            .map(|r| r.parse().expect("Could not parse external-https-port"))
             .unwrap_or_else(|| listen_https_addr.port());
+        let assistants_connections: u8 = matches
+            .value_of("assistants_connections")
+            .map(|r| r.parse().expect("Could not parse assistants-connections"))
+            .expect("assistants_connections not set");
 
         info!("Listening ACME HTTP on {}", listen_http_acme_challenge_addr);
         info!("Listening HTTP on {}", listen_http_addr);
@@ -808,7 +820,7 @@ fn main() {
 
         let consumer = AssistantClient::new(
             assistant_base_url.clone(),
-            3,
+            assistants_connections,
             &individual_hostname,
             gw_location.clone(),
             &api_client.mappings(),
