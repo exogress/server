@@ -205,7 +205,7 @@ impl AssistantClient {
                                         // no IP available
                                         warn!("no assistant IP address is available for exclusive connection");
                                         mem::drop(established_ips);
-                                        sleep(Duration::from_secs(5)).await;
+                                        sleep(Duration::from_secs(1)).await;
                                     }
                                 };
                             }
@@ -372,7 +372,7 @@ impl AssistantClient {
                             }
                             Err(e) => {
                                 error!("Error connecting: {}", e);
-                                sleep(Duration::from_secs(5)).await;
+                                sleep(Duration::from_secs(1)).await;
                             }
                         }
 
