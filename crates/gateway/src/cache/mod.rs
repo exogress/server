@@ -461,11 +461,11 @@ impl Cache {
                             last_used_at=?6,
                             meta=?7,
                             used_times=0,
-                            body_encryption_header=?8,
-                            meta_encryption_header=?9,
-                            etag=?10,
-                            is_weak_etag=?11,
-                            last_modified=?12;",
+                            body_encryption_header=?9,
+                            meta_encryption_header=?10,
+                            etag=?11,
+                            is_weak_etag=?12,
+                            last_modified=?13;",
         )
         .bind(account_unique_id.to_string())
         .bind(file_name)

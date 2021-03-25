@@ -18,6 +18,7 @@ use std::{
     io, mem,
     str::FromStr,
     sync::{Arc, Once},
+    time::Instant,
 };
 use tokio::task;
 use tokio_util::either::Either;
@@ -131,6 +132,8 @@ impl RequestsProcessor {
             Some(image_post_processing_config) => image_post_processing_config,
         };
 
+        let url = req.uri().to_string();
+
         let content_type: mime::Mime = res
             .headers()
             .get(CONTENT_TYPE)
@@ -159,6 +162,10 @@ impl RequestsProcessor {
                 magick_wand_genesis();
             });
 
+            info!("Waiting for permit...");
+            let _permit = self.webp_semaphore.acquire().await.unwrap();
+            info!("Move on with webp!");
+
             let image_body = Arc::new(
                 mem::replace(res.body_mut(), Body::empty())
                     .try_fold(Vec::new(), |mut data, chunk| async move {
@@ -174,12 +181,18 @@ impl RequestsProcessor {
                 shadow_clone!(image_body);
 
                 move || {
+                    let start_converion = Instant::now();
                     let wand = MagickWand::new();
                     wand.read_image_blob(image_body.as_ref())
                         .map_err(|e| anyhow!("imagemagick read error: {}", e))?;
                     let converted_image = wand
                         .write_image_blob("webp")
                         .map_err(|e| anyhow!("imagemagick write error: {}", e))?;
+
+                    let elapsed = start_converion.elapsed();
+
+                    info!("webp conversion of {} took {:?}", url, elapsed);
+
                     Ok::<_, anyhow::Error>(converted_image)
                 }
             })

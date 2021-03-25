@@ -110,6 +110,7 @@ use serde::{
     Serialize,
 };
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 pub struct RequestsProcessor {
     pub is_active: bool,
@@ -132,6 +133,7 @@ pub struct RequestsProcessor {
     gw_location: SmolStr,
     log_messages_tx: mpsc::Sender<LogMessage>,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
+    webp_semaphore: Semaphore,
 }
 
 impl RequestsProcessor {
@@ -423,19 +425,24 @@ impl RequestsProcessor {
         res: &mut Response<Body>,
         handler: &ResolvedHandler,
     ) {
+        info!("will try to save to cache");
         if handler.resolved_variant.is_cache_enabled() != Some(true) {
+            info!("cache is not enabled");
             return;
         }
 
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
+            info!("bad method");
             return;
         };
 
         if !res.status().is_success() {
+            info!("unsuccessful status");
             return;
         }
 
         if req.headers().get(RANGE).is_some() {
+            info!("range set!");
             return;
         }
 
@@ -457,6 +464,8 @@ impl RequestsProcessor {
                 .iter()
                 .any(|&c| c == "no-cache" || c == "private" || c == "no-store");
 
+        info!("caching_allowed = {:?}", caching_allowed);
+
         let max_age = cache_entries
             .iter()
             .filter_map(|header| header.strip_prefix("max-age="))
@@ -464,7 +473,10 @@ impl RequestsProcessor {
             .flatten()
             .next();
 
+        info!("max_age = {:?}", max_age);
+
         if !caching_allowed || max_age.is_none() {
+            info!("exit from cache");
             return;
         }
 
@@ -530,6 +542,8 @@ impl RequestsProcessor {
                     .await
                     .map_err(|_e| anyhow!("error sending to client"))?;
             }
+
+            info!("save content to cache!");
 
             let cached_response = cache
                 .save_content(
@@ -2643,6 +2657,7 @@ impl RequestsProcessor {
             gw_location: gw_location.into(),
             log_messages_tx,
             dbip,
+            webp_semaphore: tokio::sync::Semaphore::new(4),
         })
     }
 }
