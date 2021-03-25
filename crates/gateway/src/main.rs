@@ -808,6 +808,7 @@ fn main() {
 
         let consumer = AssistantClient::new(
             assistant_base_url.clone(),
+            3,
             &individual_hostname,
             gw_location.clone(),
             &api_client.mappings(),

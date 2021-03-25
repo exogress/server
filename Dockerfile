@@ -1,4 +1,4 @@
-FROM rust:1.50-alpine3.12 as dirs
+FROM rust:1.51-alpine3.12 as dirs
 
 RUN rustup component add clippy rustfmt
 RUN apk --update add build-base imagemagick imagemagick-dev \
