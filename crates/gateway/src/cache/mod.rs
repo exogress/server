@@ -24,7 +24,8 @@ use typed_headers::HeaderMapExt;
 
 #[derive(Clone)]
 pub struct Cache {
-    sqlite: SqlitePool,
+    // RwLock is expected to prevent multiple writes "databases is locked" error
+    sqlite: Arc<tokio::sync::RwLock<SqlitePool>>,
     cache_files_dir: Arc<PathBuf>,
     in_flights: Arc<DashSet<(AccountUniqueId, String)>>,
 }
@@ -80,7 +81,7 @@ impl Cache {
         }
 
         let sqlite = SqlitePoolOptions::new()
-            .max_connections(64)
+            .max_connections(16)
             .connect(sqlite_db_path.to_str().unwrap())
             .await?;
 
@@ -133,7 +134,7 @@ impl Cache {
         .await?;
 
         let cache = Cache {
-            sqlite,
+            sqlite: Arc::new(tokio::sync::RwLock::new(sqlite)),
             cache_files_dir: Arc::new(cache_files_dir),
             in_flights: Arc::new(Default::default()),
         };
@@ -203,10 +204,12 @@ impl Cache {
         for (evicted_file, vary, account_unique_id) in evicted_files {
             info!("evict file {} from cache", evicted_file);
 
+            let sqlite = self.sqlite.write().await;
+
             sqlx::query("DELETE FROM files WHERE account_unique_id = ? AND request_hash = ?")
                 .bind(account_unique_id.to_string().as_str())
                 .bind(evicted_file.as_str())
-                .execute(&self.sqlite)
+                .execute(&*sqlite)
                 .await?;
 
             let mut storage_path =
@@ -228,24 +231,28 @@ impl Cache {
     async fn delete_some_expired(&self, limit: isize) -> anyhow::Result<usize> {
         let now = Utc::now().timestamp();
 
-        let evicted_files: Vec<(String, String, AccountUniqueId)> = sqlx::query(
-            "SELECT account_unique_id, request_hash, vary_hash
+        let evicted_files: Vec<(String, String, AccountUniqueId)> = {
+            let sqlite = self.sqlite.read().await;
+
+            sqlx::query(
+                "SELECT account_unique_id, request_hash, vary_hash
                  FROM files 
                  WHERE expires_at < ?1 
                  LIMIT ?2;",
-        )
-        .bind(now)
-        .bind(limit as i64)
-        .fetch(&self.sqlite)
-        .err_into::<anyhow::Error>()
-        .and_then(|row: SqliteRow| async move {
-            let account_unique_id: String = row.try_get("account_unique_id")?;
-            let request_hash: String = row.try_get("request_hash")?;
-            let vary_hash: String = row.try_get("vary_hash")?;
-            Ok::<_, anyhow::Error>((request_hash, vary_hash, account_unique_id.parse()?))
-        })
-        .try_collect()
-        .await?;
+            )
+            .bind(now)
+            .bind(limit as i64)
+            .fetch(&*sqlite)
+            .err_into::<anyhow::Error>()
+            .and_then(|row: SqliteRow| async move {
+                let account_unique_id: String = row.try_get("account_unique_id")?;
+                let request_hash: String = row.try_get("request_hash")?;
+                let vary_hash: String = row.try_get("vary_hash")?;
+                Ok::<_, anyhow::Error>((request_hash, vary_hash, account_unique_id.parse()?))
+            })
+            .try_collect()
+            .await?
+        };
 
         let num_evicted_files = evicted_files.len();
 
@@ -265,23 +272,27 @@ impl Cache {
     ) -> anyhow::Result<usize> {
         let now = Utc::now().timestamp();
 
-        let evicted_files: Vec<(String, String, AccountUniqueId)> = sqlx::query(
-            "SELECT request_hash, vary_hash
+        let evicted_files: Vec<(String, String, AccountUniqueId)> = {
+            let sqlite = self.sqlite.read().await;
+
+            sqlx::query(
+                "SELECT request_hash, vary_hash
                   FROM files 
                   WHERE expires_at < ? AND account_unique_id = ?
                   LIMIT ?",
-        )
-        .bind(now)
-        .bind(account_unique_id.to_string().as_str())
-        .bind(limit as i64)
-        .fetch(&self.sqlite)
-        .and_then(|row: SqliteRow| async move {
-            let request_hash: String = row.try_get("request_hash")?;
-            let vary_hash: String = row.try_get("vary_hash")?;
-            Ok((request_hash, vary_hash, account_unique_id.clone()))
-        })
-        .try_collect()
-        .await?;
+            )
+            .bind(now)
+            .bind(account_unique_id.to_string().as_str())
+            .bind(limit as i64)
+            .fetch(&*sqlite)
+            .and_then(|row: SqliteRow| async move {
+                let request_hash: String = row.try_get("request_hash")?;
+                let vary_hash: String = row.try_get("vary_hash")?;
+                Ok((request_hash, vary_hash, account_unique_id.clone()))
+            })
+            .try_collect()
+            .await?
+        };
 
         let num_evicted_files = evicted_files.len();
 
@@ -297,22 +308,26 @@ impl Cache {
         &self,
         account_unique_id: &AccountUniqueId,
     ) -> anyhow::Result<usize> {
-        let evicted_files: Vec<(String, String, AccountUniqueId)> = sqlx::query(
-            "SELECT request_hash, vary_hash
+        let evicted_files: Vec<(String, String, AccountUniqueId)> = {
+            let sqlite = self.sqlite.read().await;
+
+            sqlx::query(
+                "SELECT request_hash, vary_hash
                  FROM files 
                  WHERE account_unique_id = ?
                  ORDER BY last_used_at
                  LIMIT 1;",
-        )
-        .bind(account_unique_id.to_string().as_str())
-        .fetch(&self.sqlite)
-        .and_then(|row: SqliteRow| async move {
-            let request_hash: String = row.try_get("request_hash")?;
-            let vary_hash: String = row.try_get("vary_hash")?;
-            Ok((request_hash, vary_hash, account_unique_id.clone()))
-        })
-        .try_collect()
-        .await?;
+            )
+            .bind(account_unique_id.to_string().as_str())
+            .fetch(&*sqlite)
+            .and_then(|row: SqliteRow| async move {
+                let request_hash: String = row.try_get("request_hash")?;
+                let vary_hash: String = row.try_get("vary_hash")?;
+                Ok((request_hash, vary_hash, account_unique_id.clone()))
+            })
+            .try_collect()
+            .await?
+        };
 
         let num_evicted_files = evicted_files.len();
 
@@ -324,16 +339,20 @@ impl Cache {
     }
 
     async fn get_account_used(&self, account_unique_id: &AccountUniqueId) -> anyhow::Result<Byte> {
-        let maybe_row = sqlx::query(
-            "SELECT sum(original_file_size) as space_used
+        let maybe_row = {
+            let sqlite = self.sqlite.read().await;
+
+            sqlx::query(
+                "SELECT sum(original_file_size) as space_used
                     FROM files
                     WHERE account_unique_id = ?1
                     GROUP BY account_unique_id
                     LIMIT 1",
-        )
-        .bind(account_unique_id.to_string())
-        .fetch_optional(&self.sqlite)
-        .await?;
+            )
+            .bind(account_unique_id.to_string())
+            .fetch_optional(&*sqlite)
+            .await?
+        };
 
         let space_used = match maybe_row {
             None => 0,
@@ -434,9 +453,11 @@ impl Cache {
                     .timestamp(),
             )
         });
+        {
+            let sqlite = self.sqlite.write().await;
 
-        sqlx::query(
-            "INSERT INTO files (
+            sqlx::query(
+                "INSERT INTO files (
                       account_unique_id,
                       request_hash,
                       file_size,
@@ -466,24 +487,25 @@ impl Cache {
                             etag=?11,
                             is_weak_etag=?12,
                             last_modified=?13;",
-        )
-        .bind(account_unique_id.to_string())
-        .bind(file_name)
-        .bind(file_size as u32)
-        .bind(original_file_size)
-        .bind(valid_till.timestamp())
-        .bind(Utc::now().timestamp())
-        .bind(base64::encode(encrypted_meta_json))
-        .bind(0)
-        .bind(base64::encode(body_encryption_header.as_ref()))
-        .bind(base64::encode(meta_encryption_header.as_ref()))
-        .bind(etag.as_ref().map(|e| e.tag().to_string()))
-        .bind(etag.as_ref().map(|e| e.weak))
-        .bind(last_modified)
-        .bind(vary_json)
-        .bind(&vary_hash)
-        .execute(&self.sqlite)
-        .await?;
+            )
+            .bind(account_unique_id.to_string())
+            .bind(file_name)
+            .bind(file_size as u32)
+            .bind(original_file_size)
+            .bind(valid_till.timestamp())
+            .bind(Utc::now().timestamp())
+            .bind(base64::encode(encrypted_meta_json))
+            .bind(0)
+            .bind(base64::encode(body_encryption_header.as_ref()))
+            .bind(base64::encode(meta_encryption_header.as_ref()))
+            .bind(etag.as_ref().map(|e| e.tag().to_string()))
+            .bind(etag.as_ref().map(|e| e.weak))
+            .bind(last_modified)
+            .bind(vary_json)
+            .bind(&vary_hash)
+            .execute(&*sqlite)
+            .await?;
+        }
 
         let storage_path = self.storage_path(account_unique_id, file_name, vary_hash.as_ref());
         let mut parent_dir = storage_path.clone();
@@ -499,6 +521,8 @@ impl Cache {
     }
 
     async fn mark_lru_used(&self, file_id: i64) -> anyhow::Result<()> {
+        let sqlite = self.sqlite.write().await;
+
         sqlx::query(
             "UPDATE files 
                  SET used_times=used_times+1, last_used_at=?1
@@ -506,7 +530,7 @@ impl Cache {
         )
         .bind(Utc::now().timestamp())
         .bind(file_id)
-        .execute(&self.sqlite)
+        .execute(&*sqlite)
         .await?;
 
         Ok(())
@@ -634,6 +658,8 @@ impl Cache {
             path_and_query,
         );
 
+        let sqlite = self.sqlite.read().await;
+
         let mut variations = sqlx::query(
             "SELECT
                     id,
@@ -652,9 +678,11 @@ impl Cache {
         )
         .bind(file_name.as_str())
         .bind(account_unique_id.to_string())
-        .fetch_all(&self.sqlite)
+        .fetch_all(&*sqlite)
         .await?
         .into_iter();
+
+        // TODO: try_collect to free-up rw-lock
 
         while let Some(row) = variations.next() {
             let vary_json = row.try_get::<String, _>("vary")?;
@@ -675,7 +703,7 @@ impl Cache {
             }
 
             // at this point we are sure that vary header math
-            info!("found matched vary header");
+            info!("found matched vary header. will serve from cache");
 
             let id = row.try_get::<i64, _>("id")?;
             let original_file_size = row.try_get::<u32, _>("original_file_size")?;
@@ -756,6 +784,7 @@ impl Cache {
 
             if conditional_response_matches {
                 let mut resp = Response::new(hyper::Body::empty());
+                info!("respond not-modified from cache o nconditional response");
                 *resp.status_mut() = StatusCode::NOT_MODIFIED;
                 return Ok(Some(resp));
             }
@@ -798,6 +827,8 @@ impl Cache {
             let mut resp = Response::new(hyper::Body::wrap_stream(body));
             *resp.status_mut() = meta.status;
             *resp.headers_mut() = meta.headers;
+
+            info!("served from cache!");
 
             crate::statistics::CACHE_SERVED.inc_by(original_file_size.into());
 
