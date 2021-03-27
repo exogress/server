@@ -68,7 +68,7 @@ simd-json = "0.3.23"
 smallvec = { version = "1.6", features = ["serde"] }
 smol_str = { version = "0.1.17", features = ["serde"] }
 sodiumoxide = "0.2.6"
-sqlx = { version = "0.5.1", features = ["runtime-tokio-rustls", "sqlite"] }
+#sqlx = { version = "0.5.1", features = ["runtime-tokio-rustls", "sqlite"] }
 stop-handle = "0.1"
 tame-gcs = "0.9"
 tame-oauth = "0.4.5"
@@ -89,7 +89,9 @@ warp = { version = "0.3", features = ["websocket", "tls", "compression"] }
 weighted-rs = "0.1.2"
 langtag = { git = "https://github.com/glebpom/langtag.git", branch = "master" }
 linked-hash-map = "0.5.4"
+ledb = "0.4.0"
+ledb-types = "0.4.0"
 
 exogress-server-common = { path = "../common", version = "0.1" }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client", "ledb"], default-features = false }
 
