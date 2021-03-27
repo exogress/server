@@ -727,7 +727,9 @@ impl Cache {
 
             let reader = tokio::fs::File::open(&storage_path).await?;
 
-            let framed_reader = LengthDelimitedCodec::builder().new_read(reader);
+            let framed_reader = LengthDelimitedCodec::builder()
+                .max_frame_length(u32::MAX as usize)
+                .new_read(reader);
 
             let body = framed_reader
                 .map_ok(move |encrypted_frame| {
