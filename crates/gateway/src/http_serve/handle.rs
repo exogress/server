@@ -743,6 +743,8 @@ pub async fn server(
                                 .unwrap_or("unknown panic error");
 
                             error!("server error, panic: {}", cause);
+                            sentry::capture_message(&cause, sentry::Level::Error);
+
                             let mut res = Response::new(Body::from("Error processing request"));
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
                             Ok(res)
