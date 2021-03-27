@@ -73,12 +73,6 @@ pub struct CacheItem {
     used_times: u32,
 }
 
-// (account_unique_id, last_used_at)
-// (account_unique_id, expires_at)
-// (expires_at)
-// (account_unique_id, request_hash, vary, vary_hash)
-// (account_unique_id, request_hash)
-
 impl Cache {
     pub async fn new(cache_dir: PathBuf) -> Result<Cache, anyhow::Error> {
         let cache_dir = tokio::fs::canonicalize(&cache_dir).await?;
