@@ -109,7 +109,7 @@ use serde::{
     ser::{SerializeMap, SerializeSeq},
     Serialize,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
 pub struct RequestsProcessor {
@@ -215,10 +215,14 @@ impl RequestsProcessor {
             // create new response for each handler, avoid using dirty data from the previous handler
             *res = Response::new(Body::empty());
 
-            let cached_response = self.cache.serve_from_cache(&self, &handler, &req).await;
+            let cached_response = tokio::time::timeout(
+                Duration::from_millis(2000000),
+                self.cache.serve_from_cache(&self, &handler, &req),
+            )
+            .await;
 
             match cached_response {
-                Ok(Some(resp_from_cache)) => {
+                Ok(Ok(Some(resp_from_cache))) => {
                     if resp_from_cache.status().is_success()
                         || resp_from_cache.status() == StatusCode::NOT_MODIFIED
                     {
@@ -239,12 +243,18 @@ impl RequestsProcessor {
                         return;
                     }
                 }
-                Ok(None) => {}
-                Err(e) => {
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
                     crate::statistics::CACHE_ERRORS
                         .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
                         .inc();
                     warn!("Error reading data from cache: {}", e);
+                }
+                Err(_) => {
+                    crate::statistics::CACHE_ERRORS
+                        .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
+                        .inc();
+                    warn!("Timeout trying to read from cache");
                 }
             }
 
@@ -566,10 +576,11 @@ impl RequestsProcessor {
                 )
                 .await;
 
-            if let Err(_e) = cached_response {
+            if let Err(e) = cached_response {
                 crate::statistics::CACHE_ERRORS
                     .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
                     .inc();
+                error!("error saving to cache: {}", e);
             }
 
             Ok::<_, anyhow::Error>(())

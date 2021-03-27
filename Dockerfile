@@ -1,10 +1,10 @@
-FROM rust:1.50-alpine3.12 as dirs
+FROM rust:1.51-alpine3.13 as dirs
 
 RUN rustup component add clippy rustfmt
 RUN apk --update add build-base imagemagick imagemagick-dev \
     libffi-dev openssl-dev libsasl clang cmake \
     ca-certificates pkgconfig llvm-dev libgcc clang-libs \
-    sqlite-dev sqlite-libs python2
+    lmdb-dev lmdb lmdb-tools python2
 
 COPY . /code
 WORKDIR /code/crates
@@ -27,7 +27,7 @@ RUN cargo build --release
 
 FROM alpine:3.12 as base
 
-RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc clang-libs sqlite-dev sqlite-libs
+RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc clang-libs lmdb-dev lmdb lmdb-tools
 
 FROM base as signaler
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
@@ -50,7 +50,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-director"]
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
-RUN apk --update add imagemagick imagemagick-dev pkgconfig sqlite-dev sqlite-libs
+RUN apk --update add imagemagick imagemagick-dev pkgconfig lmdb-dev lmdb lmdb-tools
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
