@@ -12,7 +12,10 @@ use exogress_common::ws_client::{connect_ws_resolved, Error};
 use exogress_server_common::assistant::{
     Action, GatewayConfigMessage, WsFromGwMessage, WsToGwMessage,
 };
-use futures::{channel::mpsc, pin_mut};
+use futures::{
+    channel::{mpsc, oneshot},
+    pin_mut,
+};
 use hashbrown::HashSet;
 use parking_lot::{Mutex, RwLock};
 use rand::{prelude::IteratorRandom, thread_rng, SeedableRng};
@@ -52,6 +55,7 @@ pub struct AssistantClient {
     gw_location: SmolStr,
     maybe_identity: Option<Vec<u8>>,
     resolver: TokioAsyncResolver,
+    first_connection_established_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 impl AssistantClient {
@@ -66,6 +70,7 @@ impl AssistantClient {
         gw_to_assistant_messages_rx: mpsc::Receiver<WsFromGwMessage>,
         maybe_identity: Option<Vec<u8>>,
         webapp_client: &webapp::Client,
+        first_connection_established_tx: oneshot::Sender<()>,
         resolver: TokioAsyncResolver,
         app_stop_handle: &AppStopHandle,
     ) -> Result<AssistantClient, Error> {
@@ -85,6 +90,9 @@ impl AssistantClient {
             gw_location,
             maybe_identity,
             resolver,
+            first_connection_established_tx: Arc::new(Mutex::new(Some(
+                first_connection_established_tx,
+            ))),
         })
     }
 
@@ -148,6 +156,7 @@ impl AssistantClient {
             .to_string();
 
         let established_ips = self.established_ips.clone();
+        let first_connection_established_tx = self.first_connection_established_tx.clone();
 
         let mut to_assistant_streams = Vec::new();
         let mut from_assistant_streams = Vec::new();
@@ -165,7 +174,8 @@ impl AssistantClient {
                 maybe_identity,
                 stop_handle,
                 num_connections,
-                latest_msg_time
+                latest_msg_time,
+                first_connection_established_tx
             );
 
             let (from_assistant_tx, from_assistant_rx) = mpsc::channel(16);
@@ -236,7 +246,7 @@ impl AssistantClient {
 
                                 #[allow(unreachable_code)]
                                     let consume = {
-                                    shadow_clone!(stop_handle, mut ch_ws_tx, mut from_assistant_tx, num_connections, latest_msg_time);
+                                    shadow_clone!(stop_handle, mut ch_ws_tx, mut from_assistant_tx, num_connections, latest_msg_time, first_connection_established_tx);
 
                                     async move {
                                         let mut is_first_received = false;
@@ -250,6 +260,9 @@ impl AssistantClient {
                                                     if !is_first_received {
                                                         is_first_received = true;
                                                         num_connections.fetch_add(1, Ordering::Relaxed);
+                                                        if let Some(first_connection_established_tx) = first_connection_established_tx.lock().take() {
+                                                            first_connection_established_tx.send(()).unwrap();
+                                                        }
                                                     }
 
                                                     let text = msg.into_text().unwrap();

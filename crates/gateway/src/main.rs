@@ -46,7 +46,10 @@ use exogress_server_common::{
     assistant::{RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage},
     clap::int_api::IntApiBaseUrls,
 };
-use futures::{channel::mpsc, SinkExt, StreamExt};
+use futures::{
+    channel::{mpsc, oneshot},
+    SinkExt, StreamExt,
+};
 use parking_lot::RwLock;
 use tokio::{runtime::Builder, time::sleep};
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
@@ -818,6 +821,8 @@ fn main() {
 
         let tls_gw_common = Arc::new(RwLock::new(None));
 
+        let (first_connection_established_tx, first_connection_established_rx) = oneshot::channel();
+
         let consumer = AssistantClient::new(
             assistant_base_url.clone(),
             assistants_connections,
@@ -829,6 +834,7 @@ fn main() {
             gw_to_assistant_messages_rx,
             int_client_cert.clone(),
             &api_client,
+            first_connection_established_tx,
             resolver.clone(),
             &app_stop_handle,
         )
@@ -841,6 +847,22 @@ fn main() {
             error!("assistant consumer unexpectedly closed");
             app_stop_handle.stop(StopReason::NotificationChannelClosed);
         });
+
+        let acme_server = acme_server(webroot, listen_http_acme_challenge_addr);
+        tokio::spawn(async move {
+            let res = acme_server.await;
+            error!("ACME server stopped with result: {:?}", res);
+            sentry::capture_message(
+                format!("ACME server stopped with result: {:?}", res).as_str(),
+                sentry::Level::Fatal,
+            );
+        });
+
+        info!("Waiting for the first assistant connection...");
+        first_connection_established_rx
+            .await
+            .expect("Error waiting for the first assistant connection");
+        info!("Assistant connection established. Starting the server");
 
         let server = http_serve::handle::server(
             client_tunnels,
@@ -859,8 +881,6 @@ fn main() {
             https_counters_tx,
         );
 
-        let acme_server = acme_server(webroot, listen_http_acme_challenge_addr);
-
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::spawn(dump_log_messages) => {},
@@ -869,10 +889,7 @@ fn main() {
             }
         });
 
-        tokio::select! {
-            _r = server => {},
-            r = acme_server => r?,
-        }
+        server.await;
 
         Ok::<(), anyhow::Error>(())
     })
