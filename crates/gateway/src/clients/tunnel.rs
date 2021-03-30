@@ -1,16 +1,16 @@
+use hashbrown::{hash_map::Entry, HashMap};
+use hyper::{
+    header::{HeaderValue, UPGRADE},
+    service::{make_service_fn, service_fn},
+    Body, Request, Response, Server, StatusCode, Version,
+};
+use pin_utils::pin_mut;
 use std::{
     fs::File,
     io::{self, BufReader},
     net::SocketAddr,
     sync::Arc,
     time::Duration,
-};
-
-use hashbrown::{hash_map::Entry, HashMap};
-use hyper::{
-    header::{HeaderValue, UPGRADE},
-    service::{make_service_fn, service_fn},
-    Body, Request, Response, Server, StatusCode, Version,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -27,7 +27,7 @@ use tokio_rustls::{
 };
 
 use exogress_common::tunnel::{
-    server_connection, server_framed, TunnelHello, TunnelHelloResponse, ALPN_PROTOCOL,
+    server_connection, server_framed, ServerPacket, TunnelHello, TunnelHelloResponse, ALPN_PROTOCOL,
 };
 
 use crate::{
@@ -279,7 +279,7 @@ pub async fn tunnels_acceptor(
                             );
 
                             let (stop_tx, stop_rx) = oneshot::channel();
-                            let (bg, connector) = server_connection(server_framed(metered));
+                            let framed = server_framed(metered);
 
                             let instance_id = tunnel_hello.instance_id;
 
@@ -292,19 +292,25 @@ pub async fn tunnels_acceptor(
 
                             // info!("new instance connected");
 
-                            {
-                                let new_connected_tunnel = ConnectedTunnel {
-                                    connector: connector.clone(),
-                                    config_id: config_id.clone(),
-                                    instance_id,
-                                };
-
-                                let locked = &mut *tunnels.inner.lock();
+                            let bg = {
+                                let mut locked = tunnels.inner.lock().await;
 
                                 match locked.by_config.entry(config_id.clone()) {
                                     Entry::Occupied(mut rec) => {
+                                        let (bg, connector) = server_connection(framed);
+
+                                        let new_connected_tunnel = ConnectedTunnel {
+                                            connector: connector.clone(),
+                                            config_id: config_id.clone(),
+                                            instance_id,
+                                        };
+
                                         match rec.get_mut() {
                                             TunnelConnectionState::Requested(requested) => {
+                                                // tunnels connections for config_name were requested
+                                                // and the first instance is connected
+                                                // Save and switch to Connected state
+
                                                 let mut c = HashMap::new();
                                                 let mut tunnels = HashMap::new();
                                                 tunnels.insert(
@@ -331,8 +337,13 @@ pub async fn tunnels_acceptor(
                                                 rec.insert(TunnelConnectionState::Connected(c));
                                             }
                                             TunnelConnectionState::Connected(c) => {
+                                                // new tunnel is established, and some other tunnels were already connected
+
                                                 match c.entry(instance_id) {
                                                     Entry::Occupied(mut e) => {
+                                                        // tunnels from this instance_id is already exist
+                                                        // add tunnel to the list
+
                                                         let entry = e.get_mut();
                                                         if entry.storage.len()
                                                             >= MAX_ALLOWED_TUNNELS
@@ -352,6 +363,8 @@ pub async fn tunnels_acceptor(
                                                         entry.instance_connector.sync(storage);
                                                     }
                                                     Entry::Vacant(e) => {
+                                                        // this is the first connection from instance
+
                                                         let mut tunnels = HashMap::new();
                                                         tunnels.insert(
                                                             tunnel_id,
@@ -380,32 +393,30 @@ pub async fn tunnels_acceptor(
                                                 }
                                             }
                                         };
+
+                                        bg
                                     }
-                                    Entry::Vacant(rec) => {
-                                        let mut c = HashMap::new();
-                                        let mut tunnels = HashMap::new();
-                                        tunnels.insert(
-                                            tunnel_id,
-                                            (new_connected_tunnel, Some(stop_tx)),
-                                        );
+                                    Entry::Vacant(_) => {
+                                        // no instances with the config_name.
+                                        // Tunnel established, but was not requested
+                                        // This happens when new instance is connected, and the older
+                                        // one immediately re-connects. If we accept the tunnel and
+                                        // switch to the "Connected" state, new instance will never get request
+                                        // for connection. In order to prevent that, we don't accept the tunnel
+                                        // and ask to stop re-connection attempts, until the new HTTP request arrives
 
-                                        let instance_connector = InstanceConnector::new();
-                                        instance_connector.sync(&tunnels);
+                                        pin_mut!(framed);
 
-                                        let instance_connections = InstanceConnections {
-                                            storage: tunnels,
-                                            http_client: hyper::Client::builder()
-                                                .set_host(false)
-                                                .http2_only(false)
-                                                .build::<_, Body>(instance_connector.clone()),
-                                            instance_connector,
-                                        };
+                                        // ask client to disconnect and close the tunnel
 
-                                        c.insert(instance_id, instance_connections);
-                                        rec.insert(TunnelConnectionState::Connected(c));
+                                        framed
+                                            .send((ServerPacket::close_no_reconnect(), vec![]))
+                                            .await?;
+
+                                        return Ok::<_, anyhow::Error>(());
                                     }
                                 }
-                            }
+                            };
 
                             crate::statistics::TUNNELS_GAUGE.inc();
 
@@ -444,10 +455,17 @@ pub async fn tunnels_acceptor(
                                     info!("tunnel terminated by request");
                                 },
                             }
+
+                            // at this point the tunnel is closed
+
                             crate::statistics::TUNNELS_GAUGE.dec();
 
-                            if let Entry::Occupied(mut client) =
-                                tunnels.inner.lock().by_config.entry(config_id.clone())
+                            if let Entry::Occupied(mut client) = tunnels
+                                .inner
+                                .lock()
+                                .await
+                                .by_config
+                                .entry(config_id.clone())
                             {
                                 let should_delete_client = match client.get_mut() {
                                     TunnelConnectionState::Connected(conns) => {
@@ -475,8 +493,6 @@ pub async fn tunnels_acceptor(
                                 if should_delete_client {
                                     client.remove_entry();
                                 }
-                            } else {
-                                error!("should never happen. could not find client config")
                             }
 
                             Ok::<_, anyhow::Error>(())

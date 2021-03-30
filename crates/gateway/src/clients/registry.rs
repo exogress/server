@@ -128,7 +128,7 @@ pub struct ClientTunnelsInner {
 
 #[derive(Clone)]
 pub struct ClientTunnels {
-    pub inner: Arc<Mutex<ClientTunnelsInner>>,
+    pub inner: Arc<tokio::sync::Mutex<ClientTunnelsInner>>,
     pub signaler_base_url: Url,
     pub maybe_identity: Option<Vec<u8>>,
 }
@@ -164,7 +164,7 @@ impl RetrieveConnector for TcpConnector {
 impl ClientTunnels {
     pub fn new(signaler_base_url: Url, maybe_identity: Option<Vec<u8>>) -> Self {
         ClientTunnels {
-            inner: Arc::new(Mutex::new(ClientTunnelsInner {
+            inner: Arc::new(tokio::sync::Mutex::new(ClientTunnelsInner {
                 by_config: Default::default(),
             })),
             signaler_base_url,
@@ -172,16 +172,23 @@ impl ClientTunnels {
         }
     }
 
-    pub fn close_all_config_tunnels(&self, config_id: &ConfigId) {
-        let mut locked = self.inner.lock();
+    pub async fn close_all_config_tunnels(&self, config_id: &ConfigId) {
+        let mut locked = self.inner.lock().await;
         let tunnel_entry = locked.by_config.entry(config_id.clone());
         if let Entry::Occupied(mut tunnel) = tunnel_entry {
             // not sure why do we need to explicitly send stop signal. just removing the whole entry should dbe enough
-            if let TunnelConnectionState::Connected(s) = tunnel.get_mut() {
-                for inner in s.values_mut() {
-                    for (_, stop_tx) in inner.storage.values_mut() {
-                        if let Some(stop) = stop_tx.take() {
-                            let _ = stop.send(());
+            match tunnel.get_mut() {
+                TunnelConnectionState::Requested(requested) => {
+                    // We make the request move on to the next stage
+                    // The whole record will be deleted after the reset event
+                    requested.reset_event.reset();
+                }
+                TunnelConnectionState::Connected(s) => {
+                    for inner in s.values_mut() {
+                        for (_, stop_tx) in inner.storage.values_mut() {
+                            if let Some(stop) = stop_tx.take() {
+                                let _ = stop.send(());
+                            }
                         }
                     }
                 }
@@ -208,7 +215,7 @@ impl ClientTunnels {
         info!("retrieve connection");
 
         let (maybe_reset_event, maybe_requestor_stop_rx) = {
-            let mut locked = self.inner.lock();
+            let mut locked = self.inner.lock().await;
             let maybe_clients = locked.by_config.get(&config_id);
 
             match maybe_clients {
@@ -292,7 +299,7 @@ impl ClientTunnels {
         if let Some(reset_event) = maybe_reset_event {
             if let Err(_e) = timeout(WAIT_TIME, reset_event.wait()).await {
                 error!("Timeout waiting for tunnel");
-                self.inner.lock().by_config.remove(&config_id);
+                self.inner.lock().await.by_config.remove(&config_id);
                 return None;
             }
         }
@@ -301,7 +308,7 @@ impl ClientTunnels {
 
         // at this point we probably have connection accepted
         {
-            let locked = &mut *self.inner.lock();
+            let locked = self.inner.lock().await;
 
             let by_config_name = &locked.by_config;
 
