@@ -1,0 +1,90 @@
+name: Build and publish release
+
+on:
+  release:
+    types:
+      - created
+
+env:
+  IMAGE: servers
+  IMAGE_SIGNALER: quay.io/exogress/signaler
+  IMAGE_GATEWAY: quay.io/exogress/gateway
+  IMAGE_ASSISTANT: quay.io/exogress/assistant
+  IMAGE_DIRECTOR: quay.io/exogress/director
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - name: Build tests
+        run: |
+          docker build --pull --target=dirs -t server-tests . &&
+          docker run -i server-tests /bin/sh -c "cargo test"
+
+  build-images:
+    name: Build Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - name: Login to quay.io
+        uses: docker/login-action@v1
+        with:
+          registry: quay.io
+          username: exogress+publisher
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-toml
+
+      - name: Build base
+        run:
+          docker build --pull --target=builder -t ${IMAGE}:${{ github.event.release.tag_name }} .
+
+      - name: Build signaler
+        run:
+          docker build --pull --target=signaler -t ${IMAGE_SIGNALER}:${{ github.event.release.tag_name }} .
+
+      - name: Build director
+        run:
+          docker build --pull --target=director -t ${IMAGE_DIRECTOR}:${{ github.event.release.tag_name }} .
+
+      - name: Build gateway
+        run:
+          docker build --pull --target=gateway -t ${IMAGE_GATEWAY}:${{ github.event.release.tag_name }} .
+
+      - name: Build assistant
+        run:
+          docker build --pull --target=assistant -t ${IMAGE_ASSISTANT}:${{ github.event.release.tag_name }} .
+
+      - name: Tag and push signaler
+        run: |
+          docker push ${IMAGE_SIGNALER}:${{ github.event.release.tag_name }}
+
+      - name: Tag and push  director
+        run: |
+          docker push ${IMAGE_DIRECTOR}:${{ github.event.release.tag_name }}
+
+      - name: Tag and push  gateway
+        run: |
+          docker push ${IMAGE_GATEWAY}:${{ github.event.release.tag_name }}
+
+      - name: Tag and push  assistant
+        run: |
+          docker push ${IMAGE_ASSISTANT}:${{ github.event.release.tag_name }}
