@@ -327,7 +327,7 @@ impl RequestsProcessor {
                     )
                     .await;
                 if let Err(e) = optimize_result {
-                    warn!("Skipped image optimization due to the error: {}", e);
+                    info!("Skipped image optimization due to the error: {}", e);
                 }
 
                 if let Err(e) = self.compress(
