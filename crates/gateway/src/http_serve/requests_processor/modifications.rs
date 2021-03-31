@@ -40,6 +40,7 @@ pub enum MatchPathModificationError {
 pub enum Replaced {
     Multiple(Vec<SmolStr>),
     Single(SmolStr),
+    Empty,
 }
 
 impl Replaced {
@@ -53,6 +54,9 @@ impl Replaced {
             Replaced::Single(single) => {
                 url.push_segment(single.as_ref());
             }
+            Replaced::Empty => {
+                //push nothing
+            }
         }
     }
 }
@@ -62,6 +66,7 @@ impl ToString for Replaced {
         match self {
             Replaced::Multiple(multiple) => multiple.join("/").into(),
             Replaced::Single(single) => single.as_str().into(),
+            Replaced::Empty => "".into(),
         }
     }
 }
@@ -115,7 +120,7 @@ fn replace_single_substitution(
                 return Ok(Replaced::Single(single.clone()));
             }
             Matched::None => {
-                return Err(MatchPathModificationError::NothingMatched);
+                return Ok(Replaced::Empty);
             }
             Matched::Segments(segments) => {
                 return Ok(Replaced::Multiple(segments.clone()));
@@ -177,6 +182,9 @@ pub fn substitute_str_with_filter_matches(
                 }
                 Replaced::Single(single) => {
                     return Cow::Owned(single.to_string());
+                }
+                Replaced::Empty => {
+                    return Cow::Borrowed("");
                 }
             },
             Err(e) => {

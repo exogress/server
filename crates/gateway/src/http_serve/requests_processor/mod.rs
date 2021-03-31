@@ -109,7 +109,7 @@ use serde::{
     ser::{SerializeMap, SerializeSeq},
     Serialize,
 };
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 pub struct RequestsProcessor {
@@ -215,14 +215,10 @@ impl RequestsProcessor {
             // create new response for each handler, avoid using dirty data from the previous handler
             *res = Response::new(Body::empty());
 
-            let cached_response = tokio::time::timeout(
-                Duration::from_millis(2000000),
-                self.cache.serve_from_cache(&self, &handler, &req),
-            )
-            .await;
+            let cached_response = self.cache.serve_from_cache(&self, &handler, &req).await;
 
             match cached_response {
-                Ok(Ok(Some(resp_from_cache))) => {
+                Ok(Some(resp_from_cache)) => {
                     if resp_from_cache.status().is_success()
                         || resp_from_cache.status() == StatusCode::NOT_MODIFIED
                     {
@@ -243,18 +239,12 @@ impl RequestsProcessor {
                         return;
                     }
                 }
-                Ok(Ok(None)) => {}
-                Ok(Err(e)) => {
+                Ok(None) => {}
+                Err(e) => {
                     crate::statistics::CACHE_ERRORS
                         .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
                         .inc();
                     warn!("Error reading data from cache: {}", e);
-                }
-                Err(_) => {
-                    crate::statistics::CACHE_ERRORS
-                        .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
-                        .inc();
-                    warn!("Timeout trying to read from cache");
                 }
             }
 
@@ -1166,7 +1156,24 @@ impl ResolvedFilter {
                         return None;
                     }
                 },
-                None => {}
+                None => match query_pairs.get(expected_key) {
+                    Some(provided_val) => {
+                        let mut values = provided_val
+                            .split('/')
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.into())
+                            .collect::<Vec<_>>();
+
+                        if values.len() == 1 {
+                            h.insert(expected_key.clone(), Matched::Single(values.pop().unwrap()));
+                        } else {
+                            h.insert(expected_key.clone(), Matched::Segments(values));
+                        }
+                    }
+                    None => {
+                        h.insert(expected_key.clone(), Matched::None);
+                    }
+                },
             }
         }
 
@@ -1185,6 +1192,7 @@ impl ResolvedFilter {
             return None;
         }
 
+        // We should preserve the order of query parameters
         let req_query_pairs: LinkedHashMap<SmolStr, SmolStr> = url
             .to_url()
             .query_pairs()
@@ -1741,6 +1749,9 @@ impl ResolvedHandler {
                     Replaced::Single(single) => {
                         modified_url.push_segment(&single);
                     }
+                    Replaced::Empty => {
+                        // Push nothing
+                    }
                 }
             }
         }
@@ -1791,6 +1802,7 @@ impl ResolvedHandler {
                     exception: &*MODIFICATION_ERROR,
                     data: &data,
                 };
+
                 return self.handle_rescueable(
                     req,
                     res,
