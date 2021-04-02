@@ -145,14 +145,14 @@ impl ResolvedAuth {
         }
     }
 
-    pub async fn invoke(
+    pub async fn try_handle_service_paths(
         &self,
-        req: &Request<Body>,
+        _req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
-        language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
-    ) -> HandlerInvocationResult {
+        _language: &Option<LanguageTagBuf>,
+        _log_message: &mut LogMessage,
+    ) -> Option<HandlerInvocationResult> {
         let path_segments: Vec<_> = requested_url.path_segments();
         let query = requested_url.query_pairs();
 
@@ -180,7 +180,7 @@ impl ResolvedAuth {
                     match result {
                         Some((requested_url, handler_name, provided_oauth2_provider)) => {
                             if handler_name != self.handler_name {
-                                return HandlerInvocationResult::ToNextHandler;
+                                return Some(HandlerInvocationResult::ToNextHandler);
                             }
 
                             respond_with_login(
@@ -196,12 +196,12 @@ impl ResolvedAuth {
                             )
                             .await;
 
-                            return HandlerInvocationResult::Responded;
+                            return Some(HandlerInvocationResult::Responded);
                         }
                         None => {
                             *res.status_mut() = StatusCode::NOT_FOUND;
 
-                            return HandlerInvocationResult::Responded;
+                            return Some(HandlerInvocationResult::Responded);
                         }
                     }
                 } else if path_segments[path_segments_len - 1] == "check_auth" {
@@ -221,7 +221,7 @@ impl ResolvedAuth {
                                         retrieved_flow_data.oauth2_flow_data.provider.clone();
 
                                     if handler_name != self.handler_name {
-                                        return HandlerInvocationResult::ToNextHandler;
+                                        return Some(HandlerInvocationResult::ToNextHandler);
                                     }
 
                                     let maybe_auth_definition =
@@ -229,7 +229,18 @@ impl ResolvedAuth {
 
                                     match maybe_auth_definition {
                                         Some(acl_result) => {
-                                            let acl = try_or_to_exception!(acl_result.as_ref());
+                                            let acl = match &acl_result {
+                                                Ok(val) => val,
+                                                Err(err) => {
+                                                    let (exception, data) = err.to_exception();
+                                                    return Some(
+                                                        HandlerInvocationResult::Exception {
+                                                            name: exception,
+                                                            data,
+                                                        },
+                                                    );
+                                                }
+                                            };
 
                                             let acl_allow_to = self.acl_allowed_to(
                                                 &retrieved_flow_data.identities,
@@ -327,13 +338,22 @@ impl ResolvedAuth {
                         }
                     };
 
-                    return HandlerInvocationResult::Responded;
+                    return Some(HandlerInvocationResult::Responded);
                 }
             }
         }
 
-        // otherwise, check authorization cookie
+        None
+    }
 
+    pub async fn invoke(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        _requested_url: &http::uri::Uri,
+        language: &Option<LanguageTagBuf>,
+        log_message: &mut LogMessage,
+    ) -> HandlerInvocationResult {
         let auth_cookie_name = self.cookie_name();
 
         let jwt_token = req

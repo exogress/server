@@ -677,6 +677,24 @@ pub enum HandlerInvocationResult {
 }
 
 impl ResolvedHandlerVariant {
+    pub async fn try_handle_service_paths(
+        &self,
+        req: &Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &http::uri::Uri,
+        language: &Option<LanguageTagBuf>,
+        log_message: &mut LogMessage,
+    ) -> Option<HandlerInvocationResult> {
+        match self {
+            ResolvedHandlerVariant::Auth(handler) => {
+                handler
+                    .try_handle_service_paths(req, res, requested_url, language, log_message)
+                    .await
+            }
+            _ => None,
+        }
+    }
+
     async fn invoke(
         &self,
         req: &mut Request<Body>,
@@ -1704,6 +1722,82 @@ impl ResolvedHandler {
         *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     }
 
+    fn resolve_handler_invocation_result(
+        &self,
+        invocation_result: HandlerInvocationResult,
+        req: &mut Request<Body>,
+        res: &mut Response<Body>,
+        requested_url: &http::uri::Uri,
+        language: &Option<LanguageTagBuf>,
+        log_message: &mut LogMessage,
+        filter_matches: HashMap<SmolStr, Matched>,
+        rescues: &Vec<ResolvedRescueItem>,
+        on_response: &Vec<OnResponse>,
+    ) -> ResolvedHandlerProcessingResult {
+        match invocation_result {
+            HandlerInvocationResult::Responded => {
+                for modification in on_response {
+                    if modification.when.status_code.is_belongs(&res.status()) {
+                        match apply_headers(
+                            res.headers_mut(),
+                            &modification.modifications.headers,
+                            &filter_matches,
+                        ) {
+                            Ok(_) => {}
+                            Err(ex) => {
+                                let rescueable = Rescueable::Exception {
+                                    exception: &ex,
+                                    data: &Default::default(),
+                                };
+
+                                return self.handle_rescueable(
+                                    req,
+                                    res,
+                                    requested_url,
+                                    &rescueable,
+                                    false,
+                                    rescues,
+                                    &language,
+                                    log_message,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let rescueable = Rescueable::StatusCode(res.status());
+
+                self.handle_rescueable(
+                    req,
+                    res,
+                    requested_url,
+                    &rescueable,
+                    false,
+                    rescues,
+                    &language,
+                    log_message,
+                )
+            }
+            HandlerInvocationResult::ToNextHandler => ResolvedHandlerProcessingResult::NextHandler,
+            HandlerInvocationResult::Exception { name, data } => {
+                let rescueable = Rescueable::Exception {
+                    exception: &name,
+                    data: &data,
+                };
+                self.handle_rescueable(
+                    req,
+                    res,
+                    requested_url,
+                    &rescueable,
+                    false,
+                    rescues,
+                    &language,
+                    log_message,
+                )
+            }
+        }
+    }
+
     // Handle whole request
     async fn handle_request(
         &self,
@@ -1716,6 +1810,24 @@ impl ResolvedHandler {
         language: &Option<LanguageTagBuf>,
         log_message: &mut LogMessage,
     ) -> ResolvedHandlerProcessingResult {
+        if let Some(invocation_result) = self
+            .resolved_variant
+            .try_handle_service_paths(req, res, requested_url, language, log_message)
+            .await
+        {
+            return self.resolve_handler_invocation_result(
+                invocation_result,
+                req,
+                res,
+                requested_url,
+                language,
+                log_message,
+                Default::default(),
+                &self.catches,
+                &Default::default(),
+            );
+        }
+
         let (filter_matches, skip_segments, action, request_modification, response_modification) =
             match self.find_action(rebased_url, req.method()) {
                 None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
@@ -1850,70 +1962,17 @@ impl ResolvedHandler {
                     )
                     .await;
 
-                match invocation_result {
-                    HandlerInvocationResult::Responded => {
-                        for modification in response_modification {
-                            if modification.when.status_code.is_belongs(&res.status()) {
-                                match apply_headers(
-                                    res.headers_mut(),
-                                    &modification.modifications.headers,
-                                    &filter_matches,
-                                ) {
-                                    Ok(_) => {}
-                                    Err(ex) => {
-                                        let rescueable = Rescueable::Exception {
-                                            exception: &ex,
-                                            data: &Default::default(),
-                                        };
-
-                                        return self.handle_rescueable(
-                                            req,
-                                            res,
-                                            requested_url,
-                                            &rescueable,
-                                            false,
-                                            rescue,
-                                            &language,
-                                            log_message,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        let rescueable = Rescueable::StatusCode(res.status());
-
-                        self.handle_rescueable(
-                            req,
-                            res,
-                            requested_url,
-                            &rescueable,
-                            false,
-                            rescue,
-                            &language,
-                            log_message,
-                        )
-                    }
-                    HandlerInvocationResult::ToNextHandler => {
-                        ResolvedHandlerProcessingResult::NextHandler
-                    }
-                    HandlerInvocationResult::Exception { name, data } => {
-                        let rescueable = Rescueable::Exception {
-                            exception: &name,
-                            data: &data,
-                        };
-                        self.handle_rescueable(
-                            req,
-                            res,
-                            requested_url,
-                            &rescueable,
-                            false,
-                            &rescue,
-                            &language,
-                            log_message,
-                        )
-                    }
-                }
+                self.resolve_handler_invocation_result(
+                    invocation_result,
+                    req,
+                    res,
+                    requested_url,
+                    language,
+                    log_message,
+                    filter_matches,
+                    rescue,
+                    response_modification,
+                )
             }
             ResolvedRuleAction::NextHandler => {
                 return ResolvedHandlerProcessingResult::NextHandler;
