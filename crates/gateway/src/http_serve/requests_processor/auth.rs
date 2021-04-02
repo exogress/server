@@ -14,7 +14,7 @@ use exogress_common::{
         referenced,
         referenced::acl::{Acl, AclEntry},
     },
-    entities::{url_prefix::MountPointBaseUrl, HandlerName},
+    entities::{exceptions, url_prefix::MountPointBaseUrl, HandlerName},
 };
 use exogress_server_common::logging::{
     AclAction, AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
@@ -165,7 +165,7 @@ impl ResolvedAuth {
                         let requested_url: Url =
                             percent_encoding::percent_decode_str(query.get("url")?)
                                 .decode_utf8()
-                                .expect("FIXME")
+                                .ok()?
                                 .parse()
                                 .ok()?;
                         let handler_name: HandlerName =
@@ -352,9 +352,13 @@ impl ResolvedAuth {
             .find(|cookie| cookie.name() == auth_cookie_name);
 
         if let Some(token) = jwt_token {
+            let decoding_key = try_or_exception!(
+                DecodingKey::from_ec_pem(&self.jwt_ecdsa.public_key),
+                exceptions::AUTH_INTERNAL_ERROR
+            );
             match jsonwebtoken::decode::<Claims>(
                 &token.value(),
-                &DecodingKey::from_ec_pem(&self.jwt_ecdsa.public_key).expect("FIXME"),
+                &decoding_key,
                 &Validation {
                     algorithms: vec![jsonwebtoken::Algorithm::ES256],
                     ..Default::default()
@@ -362,7 +366,10 @@ impl ResolvedAuth {
             ) {
                 Ok(token) => {
                     let granted_identity = token.claims.sub;
-                    let granted_provider = token.claims.idp.parse().expect("FIXME");
+                    let granted_provider: Oauth2Provider = try_or_exception!(
+                        token.claims.idp.parse(),
+                        exceptions::AUTH_UNKNOWN_PROVIDER
+                    );
 
                     let maybe_auth_definition = self.auth_definition(&granted_provider);
 

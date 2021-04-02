@@ -42,14 +42,20 @@ impl ToString for Oauth2Provider {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum Oauth2ProviderParseError {
+    #[error("unsupported provider: `{0}`")]
+    UnsupportedProvider(String),
+}
+
 impl FromStr for Oauth2Provider {
-    type Err = ();
+    type Err = Oauth2ProviderParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "google" => Ok(Oauth2Provider::Google),
             "github" => Ok(Oauth2Provider::Github),
-            _ => Err(()),
+            s => Err(Oauth2ProviderParseError::UnsupportedProvider(s.to_string())),
         }
     }
 }
