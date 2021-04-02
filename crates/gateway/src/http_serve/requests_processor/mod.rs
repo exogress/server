@@ -482,7 +482,7 @@ impl RequestsProcessor {
 
         let max_age = max_age.unwrap();
 
-        let path_and_query = req.uri().path_and_query().expect("FIXME").to_string();
+        let path_and_query = req.uri().path_and_query().unwrap().to_string();
 
         let cache = self.cache.clone();
         let account_unique_id = self.account_unique_id.clone();
@@ -503,16 +503,11 @@ impl RequestsProcessor {
         let mut original_body_stream = mem::replace(res.body_mut(), Body::empty());
 
         tokio::spawn(async move {
-            let tempdir = tokio::task::spawn_blocking(|| tempfile::tempdir())
-                .await
-                .expect("FIXME")
-                .expect("FIXME");
+            let tempdir = tokio::task::spawn_blocking(|| tempfile::tempdir()).await??;
 
             let tempfile_path = tempdir.path().to_owned().join("req");
             let mut original_file_size = 0;
-            let mut tempfile = tokio::fs::File::create(&tempfile_path)
-                .await
-                .expect("FIXME");
+            let mut tempfile = tokio::fs::File::create(&tempfile_path).await?;
 
             let (mut enc_stream, header) =
                 sodiumoxide::crypto::secretstream::Stream::init_push(&xchacha20poly1305_secret_key)
@@ -1739,7 +1734,30 @@ impl ResolvedHandler {
             }
 
             for segment in path_modify.iter() {
-                let replaced = segment.substitute(&filter_matches).expect("FIXME");
+                let replaced = match segment.substitute(&filter_matches) {
+                    Err(e) => {
+                        let mut data = HashMap::new();
+                        data.insert("error".into(), e.to_string().into());
+
+                        let rescueable = Rescueable::Exception {
+                            exception: &*MODIFICATION_ERROR,
+                            data: &data,
+                        };
+
+                        return self.handle_rescueable(
+                            req,
+                            res,
+                            requested_url,
+                            &rescueable,
+                            false,
+                            &action.rescues(),
+                            &language,
+                            log_message,
+                        );
+                    }
+                    Ok(replaced) => replaced,
+                };
+
                 match replaced {
                     Replaced::Multiple(multiple) => {
                         for s in multiple {
@@ -2468,6 +2486,25 @@ impl RequestsProcessor {
                                             }
                                         },
                                         client: public_client.clone(),
+                                        bucket: {
+                                            shadow_clone!(params, s3_bucket);
+
+                                            (move || {
+                                                let s3_bucket_cfg = s3_bucket.bucket
+                                                    .resolve_non_referenced(
+                                                        &params,
+                                                    )?;
+
+                                                let bucket = rusty_s3::Bucket::new(
+                                                    s3_bucket_cfg.region.endpoint(),
+                                                    false,
+                                                    s3_bucket_cfg.name.into(),
+                                                    s3_bucket_cfg.region.to_string(),
+                                                ).ok_or(s3_bucket::BucketError::BadConfig)?;
+
+                                                Ok::<_, s3_bucket::BucketError>(bucket)
+                                            })()
+                                        },
                                         credentials:  s3_bucket
                                             .credentials
                                             .map(|container|
@@ -2479,24 +2516,11 @@ impl RequestsProcessor {
                                                         rusty_s3::Credentials::new(creds.access_key_id.into(), creds.secret_access_key.into())
                                                     })
                                             ),
-                                        bucket:
-                                        s3_bucket.bucket
-                                            .resolve_non_referenced(
-                                                &params,
-                                            )
-                                            .map(|s3_bucket_cfg| {
-                                                rusty_s3::Bucket::new(
-                                                    s3_bucket_cfg.region.endpoint(),
-                                                    false,
-                                                    s3_bucket_cfg.name.into(),
-                                                    s3_bucket_cfg.region.to_string(),
-                                                ).expect("FIXME")
-                                            }),
                                         is_cache_enabled: s3_bucket.cache.enabled,
                                     })
                                 }
                                 ClientHandlerVariant::GcsBucket(gcs_bucket) => {
-                                    ResolvedHandlerVariant::GcsBucket(gcs_bucket::ResolvedGcsBucket {
+                                    let bucket = gcs_bucket::ResolvedGcsBucket {
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: gcs_bucket
@@ -2518,23 +2542,30 @@ impl RequestsProcessor {
                                             }
                                         },
                                         client: public_client.clone(),
+                                        auth: {
+                                            shadow_clone!(params, gcs_bucket);
+
+                                            (move || {
+                                                let creds = gcs_bucket.credentials.resolve_non_referenced(
+                                                    &params,
+                                                )?;
+                                                let service_account = tame_oauth::gcp::ServiceAccountInfo::deserialize(
+                                                    creds.json.as_str()
+                                                )?;
+                                                let service_account_access = tame_oauth::gcp::ServiceAccountAccess::new(service_account)?;
+
+                                                Ok::<_, gcs_bucket::AuthError>(service_account_access)
+                                            })()
+                                        },
                                         bucket_name: gcs_bucket.bucket
                                             .resolve_non_referenced(
                                                 &params,
-                                            )
-                                        ,
-                                        auth: gcs_bucket.credentials.resolve_non_referenced(
-                                            &params,
-                                        ).map(|creds| {
-                                            tame_oauth::gcp::ServiceAccountAccess::new(
-                                                tame_oauth::gcp::ServiceAccountInfo::deserialize(
-                                                    creds.json.as_str()
-                                                ).expect("FIXME")
-                                            ).expect("FIXME")
-                                        }),
+                                            ),
                                         token: Default::default(),
                                         is_cache_enabled: gcs_bucket.cache.enabled,
-                                    })
+                                    };
+
+                                    ResolvedHandlerVariant::GcsBucket(bucket)
                                 }
                                 // ClientHandlerVariant::ApplicationFirewall(app_firewall) => {
                                 //     ResolvedHandlerVariant::ApplicationFirewall(application_firewall::ResolvedApplicationFirewall {

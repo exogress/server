@@ -27,7 +27,8 @@ macro_rules! try_or_exception {
         match $expr {
             core::result::Result::Ok(val) => val,
             core::result::Result::Err(err) => {
-                let mut data: hashbrown::HashMap<SmolStr, SmolStr> = hashbrown::HashMap::new();
+                let mut data: hashbrown::HashMap<smol_str::SmolStr, smol_str::SmolStr> =
+                    hashbrown::HashMap::new();
                 data.insert("error".into(), err.to_string().into());
                 return HandlerInvocationResult::Exception {
                     name: $exception.clone(),

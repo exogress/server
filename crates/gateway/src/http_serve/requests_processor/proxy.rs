@@ -316,7 +316,7 @@ impl ResolvedProxy {
                 }
                 None => {
                     return HandlerInvocationResult::Exception {
-                        name: exceptions::PROXY_BAD_GATEWAY.clone(),
+                        name: exceptions::PROXY_BAD_GATEWAY_NO_HEALTHY_UPSTREAMS.clone(),
                         data: Default::default(),
                     }
                 }
