@@ -233,7 +233,7 @@ mod test {
 
         let mut data = HashMap::new();
         data.insert("3".into(), Matched::None);
-        assert!(modify.substitute(&data).is_err());
+        assert!(modify.substitute(&data).is_ok());
 
         let mut data = HashMap::new();
         let mut map = BTreeMap::new();
@@ -274,7 +274,7 @@ mod test {
 
         let mut data = HashMap::new();
         data.insert("1".into(), Matched::None);
-        assert!(modify.substitute(&data).is_err());
+        assert!(modify.substitute(&data).is_ok());
 
         let data = HashMap::new();
         assert!(modify.substitute(&data).is_err());
