@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-assistant"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bson",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-director"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-server-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-signaler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "byteorder",
