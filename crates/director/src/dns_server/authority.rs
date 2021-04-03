@@ -27,7 +27,8 @@ use trust_dns_server::client::{
 
 use crate::int_api_client::IntApiClient;
 use anyhow::Error;
-use futures::FutureExt;
+use futures::{channel::oneshot, FutureExt};
+use tokio::time::{sleep, Duration};
 use trust_dns_server::{
     authority::{
         AnyRecords, AuthLookup, Authority, LookupError, LookupRecords, LookupResult,
@@ -54,6 +55,9 @@ pub struct ShortZoneAuthority {
     //   for this, in some form, perhaps alternate root zones...
     // secure_keys: Vec<Signer>,
     int_api_client: IntApiClient,
+
+    acme_resp_cache:
+        Arc<tokio::sync::Mutex<lru_time_cache::LruCache<(String, String), Option<String>>>>,
 }
 
 impl ShortZoneAuthority {
@@ -134,6 +138,9 @@ impl ShortZoneAuthority {
             cname_record,
             // secure_keys: Vec::new(),
             int_api_client,
+            acme_resp_cache: Arc::new(tokio::sync::Mutex::new(
+                lru_time_cache::LruCache::with_expiry_duration(Duration::from_secs(30)),
+            )),
         }
     }
 
@@ -209,16 +216,57 @@ impl ShortZoneAuthority {
         supported_algorithms: SupportedAlgorithms,
     ) -> Option<Arc<RecordSet>> {
         if name.to_string().starts_with("_acme-challenge.") {
-            match self
-                .int_api_client
-                .acme_dns_challenge_verification(
-                    "_acme-challenge",
-                    record_type.to_string().as_str(),
-                    name.base_name().to_string().as_str(),
-                )
-                .await
-            {
-                Ok(res) => {
+            let (result_tx, result_rx) = oneshot::channel();
+
+            let int_api_client = self.int_api_client.clone();
+            let mut acme_resp_cache = self.acme_resp_cache.clone();
+
+            let record_type_string = record_type.to_string();
+            let record_base_name = name.base_name().to_string();
+
+            tokio::spawn(async move {
+                let result = tokio::time::timeout(Duration::from_millis(500), async move {
+                    let res = acme_resp_cache
+                        .lock()
+                        .await
+                        .get_mut(&(record_type_string.clone(), record_base_name.clone()))
+                        .cloned();
+                    if let Some(cached) = res {
+                        result_tx.send(cached).unwrap();
+                    } else {
+                        loop {
+                            match int_api_client
+                                .acme_dns_challenge_verification(
+                                    "_acme-challenge",
+                                    record_type_string.as_str(),
+                                    record_base_name.as_str(),
+                                )
+                                .await
+                            {
+                                Ok(maybe_res) => {
+                                    info!("acme resp retrieved from cloud: {:?}", maybe_res);
+                                    acme_resp_cache.lock().await.insert(
+                                        (record_type_string, record_base_name),
+                                        maybe_res.clone(),
+                                    );
+                                    result_tx.send(maybe_res).unwrap();
+                                    break;
+                                }
+                                Err(err) => {
+                                    error!("acme resp error: {:?}", err);
+                                    sleep(Duration::from_millis(10)).await;
+                                }
+                            }
+                        }
+                    }
+                })
+                .await;
+
+                info!("Result of ACME request loop: {:?}", result);
+            });
+
+            match result_rx.await {
+                Ok(Some(res)) => {
                     // TODO: properly track erroneous DNS requests
                     let mut rs = RecordSet::new(&name.clone().into(), record_type, 1);
 
@@ -251,12 +299,16 @@ impl ShortZoneAuthority {
 
                     return Some(Arc::new(rs));
                 }
-                Err(e) => {
+                Ok(None) => {
+                    return None;
+                }
+                Err(_e) => {
                     crate::statistics::NUM_DNS_REQUESTS
                         .with_label_values(&["0"])
                         .inc();
 
-                    info!("Error resolving {} addr: {}", name, e);
+                    info!("Error resolving {} addr", name);
+
                     return None;
                 }
             }
