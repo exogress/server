@@ -38,7 +38,7 @@ impl IntApiClient {
         record_name: &str,
         record_type: &str,
         domain: &str,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<Option<String>> {
         let mut url = self.webapp_base_url.clone();
         url.path_segments_mut()
             .unwrap()
@@ -54,9 +54,9 @@ impl IntApiClient {
         let res = self.reqwest.get(url).send().await?;
 
         if res.status().is_success() {
-            Ok(res.json::<Response>().await?.record_content)
+            Ok(Some(res.json::<Response>().await?.record_content))
         } else if res.status() == http::StatusCode::NOT_FOUND {
-            bail!("not found");
+            Ok(None)
         } else {
             bail!("bad response: {}", res.status());
         }
