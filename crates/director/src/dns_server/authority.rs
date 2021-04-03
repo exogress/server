@@ -259,7 +259,8 @@ impl ShortZoneAuthority {
                             }
                         }
                     }
-                });
+                })
+                .await;
 
                 info!("Result of ACME request loop: {:?}", result);
             });
