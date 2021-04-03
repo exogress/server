@@ -139,7 +139,7 @@ impl ShortZoneAuthority {
             // secure_keys: Vec::new(),
             int_api_client,
             acme_resp_cache: Arc::new(tokio::sync::Mutex::new(
-                lru_time_cache::LruCache::with_expiry_duration(Duration::from_secs(60)),
+                lru_time_cache::LruCache::with_expiry_duration(Duration::from_secs(30)),
             )),
         }
     }
@@ -224,9 +224,8 @@ impl ShortZoneAuthority {
             let record_type_string = record_type.to_string();
             let record_base_name = name.base_name().to_string();
 
-            tokio::spawn(tokio::time::timeout(
-                Duration::from_millis(500),
-                async move {
+            tokio::spawn(async move {
+                let result = tokio::time::timeout(Duration::from_millis(500), async move {
                     let res = acme_resp_cache
                         .lock()
                         .await
@@ -260,8 +259,10 @@ impl ShortZoneAuthority {
                             }
                         }
                     }
-                },
-            ));
+                });
+
+                info!("Result of ACME request loop: {:?}", result);
+            });
 
             match result_rx.await {
                 Ok(Some(res)) => {
