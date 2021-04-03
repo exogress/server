@@ -227,12 +227,13 @@ impl ShortZoneAuthority {
             tokio::spawn(tokio::time::timeout(
                 Duration::from_millis(500),
                 async move {
-                    if let Some(cached) = acme_resp_cache
+                    let res = acme_resp_cache
                         .lock()
                         .await
                         .get_mut(&(record_type_string.clone(), record_base_name.clone()))
-                    {
-                        result_tx.send(cached.clone()).unwrap();
+                        .cloned();
+                    if let Some(cached) = res {
+                        result_tx.send(cached).unwrap();
                     } else {
                         loop {
                             match int_api_client
@@ -244,6 +245,7 @@ impl ShortZoneAuthority {
                                 .await
                             {
                                 Ok(maybe_res) => {
+                                    info!("acme resp retrieved from cloud: {:?}", maybe_res);
                                     acme_resp_cache.lock().await.insert(
                                         (record_type_string, record_base_name),
                                         maybe_res.clone(),
@@ -252,6 +254,7 @@ impl ShortZoneAuthority {
                                     break;
                                 }
                                 Err(err) => {
+                                    error!("acme resp error: {:?}", err);
                                     sleep(Duration::from_millis(10)).await;
                                 }
                             }
