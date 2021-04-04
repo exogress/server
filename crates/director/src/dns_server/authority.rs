@@ -139,7 +139,7 @@ impl ShortZoneAuthority {
             // secure_keys: Vec::new(),
             int_api_client,
             acme_resp_cache: Arc::new(tokio::sync::Mutex::new(
-                lru_time_cache::LruCache::with_expiry_duration(Duration::from_secs(60)),
+                lru_time_cache::LruCache::with_expiry_duration(Duration::from_secs(30)),
             )),
         }
     }
@@ -224,15 +224,15 @@ impl ShortZoneAuthority {
             let record_type_string = record_type.to_string();
             let record_base_name = name.base_name().to_string();
 
-            tokio::spawn(tokio::time::timeout(
-                Duration::from_millis(500),
-                async move {
-                    if let Some(cached) = acme_resp_cache
+            tokio::spawn(async move {
+                let result = tokio::time::timeout(Duration::from_millis(500), async move {
+                    let res = acme_resp_cache
                         .lock()
                         .await
                         .get_mut(&(record_type_string.clone(), record_base_name.clone()))
-                    {
-                        result_tx.send(cached.clone()).unwrap();
+                        .cloned();
+                    if let Some(cached) = res {
+                        result_tx.send(cached).unwrap();
                     } else {
                         loop {
                             match int_api_client
@@ -244,6 +244,7 @@ impl ShortZoneAuthority {
                                 .await
                             {
                                 Ok(maybe_res) => {
+                                    info!("acme resp retrieved from cloud: {:?}", maybe_res);
                                     acme_resp_cache.lock().await.insert(
                                         (record_type_string, record_base_name),
                                         maybe_res.clone(),
@@ -252,13 +253,17 @@ impl ShortZoneAuthority {
                                     break;
                                 }
                                 Err(err) => {
+                                    error!("acme resp error: {:?}", err);
                                     sleep(Duration::from_millis(10)).await;
                                 }
                             }
                         }
                     }
-                },
-            ));
+                })
+                .await;
+
+                info!("Result of ACME request loop: {:?}", result);
+            });
 
             match result_rx.await {
                 Ok(Some(res)) => {

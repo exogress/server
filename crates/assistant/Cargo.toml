@@ -1,6 +1,6 @@
 [package]
 name = "exogress-assistant"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
