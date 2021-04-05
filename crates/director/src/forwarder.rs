@@ -1,12 +1,7 @@
-use crate::{
-    balancer::{GwSelectionPolicy, ShardedGateways},
-    tls::extract_sni_hostname,
-};
+use crate::{balancer::ShardedGateways, tls::extract_sni_hostname};
 use anyhow::Context;
 use exogress_server_common::director::SourceInfo;
-use lru_time_cache::LruCache;
 use object_pool::Pool;
-use parking_lot::Mutex;
 use std::{convert::TryInto, net::SocketAddr, sync::Arc, time::Duration};
 use sys_info::mem_info;
 use tokio::{
@@ -22,14 +17,6 @@ pub struct Forwarder {
     forward_to_http_port: u16,
     forward_to_https_port: u16,
     sharded_gateways: Arc<ShardedGateways>,
-    #[builder(default = "default_balancers()")]
-    balancers: Arc<Mutex<LruCache<u64, Arc<Mutex<GwSelectionPolicy>>>>>,
-}
-
-fn default_balancers() -> Arc<Mutex<LruCache<u64, Arc<Mutex<GwSelectionPolicy>>>>> {
-    Arc::new(Mutex::new(LruCache::with_expiry_duration(
-        Duration::from_secs(300),
-    )))
 }
 
 async fn forward(
@@ -85,7 +72,6 @@ async fn forwarder(
     addr: SocketAddr,
     forward_to_port: u16,
     sharded_gateways: Arc<ShardedGateways>,
-    balancers: Arc<Mutex<LruCache<u64, Arc<Mutex<GwSelectionPolicy>>>>>,
     is_tls: bool,
     max_retries: usize,
     initial_buf_pool_size: usize,
@@ -95,7 +81,7 @@ async fn forwarder(
 
     let tcp = TcpListener::bind(addr).await?;
     loop {
-        shadow_clone!(buf_pool, sharded_gateways, balancers);
+        shadow_clone!(buf_pool, sharded_gateways);
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {
@@ -104,7 +90,7 @@ async fn forwarder(
 
                 info!("accepted connection from {}", incoming_addr);
                 tokio::spawn({
-                    shadow_clone!(sharded_gateways, balancers);
+                    shadow_clone!(sharded_gateways);
 
                     async move {
                         let mut consumed_bytes = None;
@@ -153,33 +139,22 @@ async fn forwarder(
                             consumed_bytes = Some(header);
                         };
 
-                        let balancer_seed = sni_hostname
-                            .as_ref()
-                            .map(|s| seahash::hash(s.as_ref()))
-                            .unwrap_or(1);
-
-                        let policy = match balancers.lock().entry(balancer_seed) {
-                            lru_time_cache::Entry::Occupied(occupied) => {
-                                occupied.into_mut().clone()
-                            }
-                            lru_time_cache::Entry::Vacant(vacant) => {
-                                let policy = Arc::new(Mutex::new(sharded_gateways.policy(
-                                    balancer_seed,
-                                    2,
-                                    2,
-                                    Duration::from_secs(10),
-                                )?));
-                                vacant.insert(policy.clone());
-                                policy
-                            }
-                        };
+                        let mut policy = sharded_gateways.policy(
+                            sni_hostname
+                                .as_ref()
+                                .map(|s| seahash::hash(s.as_ref()))
+                                .unwrap_or(1),
+                            2,
+                            2,
+                            Duration::from_secs(10),
+                        )?;
 
                         let mut is_any_gw_connected = false;
                         let mut retry = 0;
 
                         while retry < max_retries {
                             retry += 1;
-                            let maybe_dst_addr = policy.lock().next();
+                            let maybe_dst_addr = policy.next();
                             if let Some(dst_addr) = maybe_dst_addr {
                                 info!("try proxy to {}", dst_addr);
                                 let try_connect = async {
@@ -262,7 +237,7 @@ async fn forwarder(
                                         }
                                         Err(e) => {
                                             warn!("could not connect to gateway: {}", e);
-                                            policy.lock().mark_unhealthy(&dst_addr);
+                                            policy.mark_unhealthy(&dst_addr);
                                         }
                                     }
 
@@ -275,7 +250,7 @@ async fn forwarder(
                                         break;
                                     }
                                     Err(e) => {
-                                        error!("could not serve connection to gateway: {}", e);
+                                        error!("could not connect to gateway: {}", e);
                                     }
                                 };
                             }
@@ -308,7 +283,6 @@ impl Forwarder {
             self.listen_http,
             self.forward_to_http_port,
             self.sharded_gateways.clone(),
-            self.balancers.clone(),
             false,
             3,
             1024,
@@ -318,7 +292,6 @@ impl Forwarder {
             self.listen_https,
             self.forward_to_https_port,
             self.sharded_gateways.clone(),
-            self.balancers.clone(),
             true,
             3,
             1024,
