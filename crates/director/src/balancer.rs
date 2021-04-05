@@ -256,6 +256,7 @@ impl GwSelectionPolicy {
 #[cfg(test)]
 mod test {
     use super::*;
+    use hashbrown::HashSet;
     use quickcheck::TestResult;
 
     #[quickcheck]
@@ -341,5 +342,24 @@ mod test {
         }
 
         TestResult::passed()
+    }
+
+    #[test]
+    fn simple_check_two_active_gateways() {
+        let gws = vec![
+            ("127.0.0.1".parse().unwrap(), 100),
+            ("127.0.0.2".parse().unwrap(), 100),
+        ];
+        let sharded = ShardedGateways::new(gws.clone(), 4096).unwrap();
+
+        let mut policy_result = sharded.policy(1, 2, 2, Duration::from_secs(60)).unwrap();
+
+        let first = policy_result.next().unwrap();
+        let second = policy_result.next().unwrap();
+
+        let expected: HashSet<_> = gws.iter().map(|(addr, _)| addr.clone()).collect();
+        let selected: HashSet<_> = [first, second].iter().copied().collect();
+
+        assert_eq!(expected, selected);
     }
 }
