@@ -47,48 +47,6 @@ pub struct ResolvedImage {
     pub is_jpeg: bool,
 }
 
-// lazy_static! {
-//     pub static ref COMPRESSABLE_MIME_TYPES: HashSet<&'static str> = vec![
-//         mime::TEXT_CSS.essence_str(),
-//         mime::TEXT_CSV.essence_str(),
-//         mime::TEXT_HTML.essence_str(),
-//         mime::TEXT_JAVASCRIPT.essence_str(),
-//         mime::TEXT_PLAIN.essence_str(),
-//         mime::TEXT_STAR.essence_str(),
-//         mime::TEXT_TAB_SEPARATED_VALUES.essence_str(),
-//         mime::TEXT_VCARD.essence_str(),
-//         mime::TEXT_XML.essence_str(),
-//         mime::IMAGE_BMP.essence_str(),
-//         mime::IMAGE_SVG.essence_str(),
-//         mime::APPLICATION_JAVASCRIPT.essence_str(),
-//         mime::APPLICATION_JSON.essence_str(),
-//         "application/atom+xml",
-//         "application/geo+json",
-//         "application/x-javascript",
-//         "application/ld+json",
-//         "application/manifest+json",
-//         "application/rdf+xml",
-//         "application/rss+xml",
-//         "application/vnd.ms-fontobject",
-//         "application/wasm",
-//         "application/x-web-app-manifest+json",
-//         "application/xhtml+xml",
-//         "application/xml",
-//         "font/eot",
-//         "font/otf",
-//         "font/ttf",
-//         "text/cache-manifest",
-//         "text/calendar",
-//         "text/markdown",
-//         "text/vnd.rim.location.xloc",
-//         "text/vtt",
-//         "text/x-component",
-//         "text/x-cross-domain-policy",
-//     ]
-//     .into_iter()
-//     .collect();
-// }
-
 #[derive(Debug, Clone, Copy)]
 pub enum SupportedContentEncoding {
     Brotli,

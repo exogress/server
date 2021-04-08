@@ -91,7 +91,8 @@ impl ResolvedGcsBucket {
             exceptions::GCS_AUTH_ERROR_BUILD_REQUEST_EROR
         );
 
-        let token = match self.token.lock().await.clone() {
+        let current_token = self.token.lock().await.clone();
+        let token = match current_token {
             Some(token) if !token.has_expired() => token,
             _ => {
                 let new_token = match token_or_req {

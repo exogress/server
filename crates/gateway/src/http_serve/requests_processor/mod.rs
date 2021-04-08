@@ -30,6 +30,7 @@ use exogress_common::{
     },
 };
 use exogress_server_common::{
+    crypto,
     logging::{LogMessage, ProcessingStep, StaticResponseProcessingStep},
     presence,
 };
@@ -40,6 +41,7 @@ use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::Body;
 use itertools::Itertools;
 use parking_lot::Mutex;
+use pin_utils::pin_mut;
 use serde_json::json;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
@@ -509,29 +511,16 @@ impl RequestsProcessor {
             let mut original_file_size = 0;
             let mut tempfile = tokio::fs::File::create(&tempfile_path).await?;
 
-            let (mut enc_stream, header) =
-                sodiumoxide::crypto::secretstream::Stream::init_push(&xchacha20poly1305_secret_key)
-                    .map_err(|_| anyhow!("could not init encryption"))?;
+            let (mut encrypted, header) =
+                crypto::encrypt_stream(original_body_stream, &xchacha20poly1305_secret_key)?;
 
-            while let Some(item_result) = original_body_stream.next().await {
-                let item = item_result?;
-                original_file_size += item.len();
+            pin_mut!(encrypted);
 
-                let mut result_vec = enc_stream
-                    .push(
-                        item.as_ref(),
-                        None,
-                        sodiumoxide::crypto::secretstream::Tag::Message,
-                    )
-                    .unwrap();
+            while let Some(item_result) = encrypted.next().await {
+                let (item, original_cuhnk_size) = item_result?;
+                original_file_size += original_cuhnk_size;
 
-                let mut v = u32::try_from(result_vec.len())
-                    .unwrap()
-                    .to_be_bytes()
-                    .to_vec();
-                v.append(&mut result_vec);
-                tempfile.write_all(&v).await.unwrap();
-
+                tempfile.write_all(&item).await.unwrap();
                 resp_tx
                     .send(item)
                     .await

@@ -4,6 +4,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashSet;
 use etag::EntityTag;
 use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
+use exogress_server_common::crypto;
 use futures::{StreamExt, TryStreamExt};
 use hashbrown::HashSet;
 use http::{
@@ -12,11 +13,12 @@ use http::{
 };
 use hyper::Body;
 use ledb::Primary;
+use pin_utils::pin_mut;
 use sha2::Digest;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
 use std::{
-    collections::BTreeSet, convert::TryInto, io, path::PathBuf, str::FromStr, sync::Arc,
-    time::Duration,
+    collections::BTreeSet, convert::TryInto, io, io::Cursor, path::PathBuf, str::FromStr,
+    sync::Arc, time::Duration,
 };
 use tokio::time::sleep;
 use tokio_util::codec::LengthDelimitedCodec;
@@ -377,17 +379,19 @@ impl Cache {
 
         let meta_json = serde_json::to_vec(&meta).expect("Serialization should never fail");
 
-        let (mut enc_stream, meta_encryption_header) =
-            sodiumoxide::crypto::secretstream::Stream::init_push(xchacha20poly1305_secret_key)
-                .map_err(|_| anyhow!("could not init encryption"))?;
+        let meta_json_stream = futures::stream::once(async { Ok::<_, io::Error>(meta_json) });
 
-        let encrypted_meta_json = enc_stream
-            .push(
-                meta_json.as_ref(),
-                None,
-                sodiumoxide::crypto::secretstream::Tag::Message,
-            )
-            .unwrap();
+        pin_mut!(meta_json_stream);
+
+        let (encrypted_stream, meta_encryption_header) =
+            crypto::encrypt_stream(meta_json_stream, xchacha20poly1305_secret_key)?;
+
+        let encrypted_meta_json = encrypted_stream
+            .try_fold(Vec::new(), |mut acc, (item, _)| {
+                acc.extend_from_slice(&item);
+                futures::future::ok(acc)
+            })
+            .await?;
 
         let etag: Option<EntityTag> = res_headers
             .get(ETAG)
@@ -648,16 +652,18 @@ impl Cache {
             )
             .ok_or_else(|| anyhow!("failed to read encryption header"))?;
 
-            let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
-                &meta_encryption_header,
+            let mut dec_stream = crypto::decrypt_stream(
+                Cursor::new(base64::decode(variation.meta)?),
                 &xchacha20poly1305_secret_key,
-            )
-            .map_err(|_| anyhow!("could not init decryption"))?;
+                &meta_encryption_header,
+            )?;
 
             let decrypted = dec_stream
-                .pull(base64::decode(variation.meta)?.as_ref(), None)
-                .map_err(|_| anyhow!("could not decrypt meta data"))?
-                .0;
+                .try_fold(Vec::new(), |mut acc, item| {
+                    acc.extend_from_slice(item.as_ref());
+                    futures::future::ok(acc)
+                })
+                .await?;
 
             let meta = serde_json::from_slice::<Meta>(decrypted.as_ref())?;
 
@@ -719,39 +725,13 @@ impl Cache {
                 variation.vary_hash.as_str(),
             );
 
-            let mut dec_stream = sodiumoxide::crypto::secretstream::Stream::init_pull(
-                &body_encryption_header,
-                xchacha20poly1305_secret_key,
-            )
-            .map_err(|_| anyhow!("could not init decryption"))?;
-
             let reader = tokio::fs::File::open(&storage_path).await?;
 
-            let framed_reader = LengthDelimitedCodec::builder()
-                .max_frame_length(u32::MAX as usize)
-                .new_read(reader);
-
-            let body = framed_reader
-                .map_ok(move |encrypted_frame| {
-                    Ok::<Vec<u8>, io::Error>(
-                        dec_stream
-                            .pull(&encrypted_frame, None)
-                            .map_err(|_| {
-                                io::Error::new(
-                                    io::ErrorKind::Other,
-                                    "failed to decoded encrypted frame",
-                                )
-                            })?
-                            .0,
-                    )
-                })
-                .take_while(|r| {
-                    if let Err(e) = r {
-                        error!("Could not decode encrypted frame from storage: {}", e);
-                    }
-                    futures::future::ready(r.is_ok())
-                })
-                .map(|r| r.unwrap());
+            let body = crypto::decrypt_stream(
+                reader,
+                xchacha20poly1305_secret_key,
+                &body_encryption_header,
+            )?;
 
             let mut resp = Response::new(hyper::Body::wrap_stream(body));
             *resp.status_mut() = meta.status;

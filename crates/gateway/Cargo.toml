@@ -91,6 +91,6 @@ linked-hash-map = "0.5.4"
 ledb = "0.4.0"
 ledb-types = "0.4.0"
 
-exogress-server-common = { path = "../common" }
+exogress-server-common = { path = "../common", features = ["crypto"] }
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client", "ledb"], default-features = false }
 

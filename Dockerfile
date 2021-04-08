@@ -47,6 +47,13 @@ RUN exogress-director autocompletion bash > /etc/profile.d/exogress-director.sh 
     echo "source /etc/profile.d/exogress-director.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-director"]
 
+FROM base as transformer
+COPY --from=builder /code/crates/target/release/exogress-transformer /usr/local/bin/
+ENV MAGICK_THREAD_LIMIT=1
+RUN exogress-transformer autocompletion bash > /etc/profile.d/exogress-transformer.sh && \
+    echo "source /etc/profile.d/exogress-transformer.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-transformer"]
+
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
