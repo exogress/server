@@ -53,6 +53,7 @@ sodiumoxide = "0.2.6"
 url = "2.2.1"
 base64 = "0.13.0"
 parse-display = "0.4.1"
+async-stream = "0.3.0"
 
 exogress-server-common = { path = "../common", features = ["crypto"] }
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "common-utils"], default-features = false }

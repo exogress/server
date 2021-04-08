@@ -1,50 +1,67 @@
 use crate::{
     bucket::GcsBucketClient,
-    db::{MongoDbClient, QueuedRequest},
+    db::{listen_queue, MongoDbClient},
     helpers::to_vec_body,
 };
 use bytes::{BufMut, BytesMut};
 use core::mem;
 use exogress_server_common::crypto::{decrypt_stream, encrypt_stream};
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use pin_utils::pin_mut;
-use std::{io, sync::Arc};
-use tokio::{sync::mpsc, task::spawn_blocking};
+use std::{
+    io,
+    sync::{atomic::AtomicBool, Arc},
+};
+use tokio::task::spawn_blocking;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 pub struct Processor {
-    rx: mpsc::Receiver<QueuedRequest>,
     semaphore: tokio::sync::Semaphore,
+    max_concurrency: usize,
     webapp: crate::webapp::Client,
     db: MongoDbClient,
     gcs_bucket: GcsBucketClient,
+    should_stop: Arc<AtomicBool>,
 }
 
 impl Processor {
     pub fn new(
-        num_threads: usize,
+        max_concurrency: usize,
         webapp: crate::webapp::Client,
         db: MongoDbClient,
         gcs_bucket: GcsBucketClient,
-        rx: mpsc::Receiver<QueuedRequest>,
+        should_stop: Arc<AtomicBool>,
     ) -> Self {
         Processor {
             db,
-            rx,
-            semaphore: tokio::sync::Semaphore::new(num_threads),
+            semaphore: tokio::sync::Semaphore::new(max_concurrency),
             gcs_bucket,
             webapp,
+            should_stop,
+            max_concurrency,
         }
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let db = self.db;
         let semaphore = Arc::new(self.semaphore);
         let gcs_bucket = self.gcs_bucket.clone();
         let webapp = self.webapp.clone();
 
-        while let Some(request) = self.rx.recv().await {
+        let queued_stream = listen_queue(db.clone(), self.should_stop);
+
+        pin_mut!(queued_stream);
+
+        while let Some(request_result) = queued_stream.next().await {
             let permit = semaphore.clone().acquire_owned().await?;
+
+            let request = match request_result {
+                Err(e) => {
+                    error!("Error accepting new request: {:?}", e);
+                    break;
+                }
+                Ok(r) => r,
+            };
 
             tokio::spawn({
                 shadow_clone!(db, gcs_bucket, webapp);
@@ -86,16 +103,21 @@ impl Processor {
                     .await?
                     .freeze();
 
+                    info!("decrypted body len = {}", decrypted.len());
+
                     let result = spawn_blocking(move || {
+                        info!("start conversion");
+
                         // convert the body
                         let webp = crate::magick::convert(&decrypted, "webp", "image/webp");
                         let avif = crate::magick::convert(&decrypted, "avif", "image/avif");
 
+                        info!("finish conversion");
                         (webp, avif)
                     })
                     .await;
 
-                    mem::drop(permit);
+                    info!("blocking conversion finished. save result");
 
                     let identifier = request.identifier.clone();
 
@@ -197,6 +219,8 @@ impl Processor {
                             db.save_processed(uploads, request).await?;
                         }
 
+                        mem::drop(permit);
+
                         Ok::<_, anyhow::Error>(())
                     };
 
@@ -206,6 +230,11 @@ impl Processor {
                 }
             });
         }
+
+        // wait until all permits are returned
+        info!("Wait for all outstanding conversions to finish");
+        let _ = semaphore.acquire_many(self.max_concurrency as u32).await?;
+        info!("no more processing tasks left. Exiting");
 
         Ok(())
     }

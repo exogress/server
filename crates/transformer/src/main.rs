@@ -20,7 +20,7 @@ mod webapp;
 use crate::{
     api::api_handler,
     bucket::{GcsBucketClient, ALL_LOCATIONS},
-    db::{listen_queue, MongoDbClient},
+    db::MongoDbClient,
     processor::Processor,
     statistics::dump_prometheus,
     termination::StopReason,
@@ -31,9 +31,15 @@ use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use http::StatusCode;
 use mimalloc::MiMalloc;
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use stop_handle::stop_handle;
-use tokio::{runtime::Builder, sync::mpsc};
+use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 use warp::Filter;
 
@@ -202,8 +208,17 @@ fn main() {
 
     let webapp_base_url = webapp_base_url.unwrap();
 
+    let should_stop = Arc::new(AtomicBool::new(false));
+
     rt.block_on(async move {
-        tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
+        tokio::spawn({
+            shadow_clone!(should_stop, app_stop_handle);
+
+            async move {
+                stop_signal_listener(app_stop_handle).await;
+                should_stop.store(true, Ordering::Relaxed);
+            }
+        });
 
         info!("Use MongoDB at {}. DB: {}", mongodb_url, mongodb_db);
 
@@ -211,24 +226,12 @@ fn main() {
             .await
             .expect("mongo db connection error");
 
-        let (for_processing_tx, for_processing_rx) = mpsc::channel(1);
-        let queue_reader = tokio::spawn({
-            shadow_clone!(mongodb_client);
-
-            async move {
-                let r = listen_queue(mongodb_client, for_processing_tx)
-                    .await
-                    .expect("Asd");
-                error!("queue res = {:?}", r);
-            }
-        });
-
         info!("Use Webapp url at {}", webapp_base_url);
         let webapp_client =
             crate::webapp::Client::new(webapp_base_url.clone(), int_client_cert.clone());
 
         let prometheus = warp::path!("metrics").map(dump_prometheus);
-        let helathcheck = warp::path!("healthcheck").and_then({
+        let healthcheck = warp::path!("healthcheck").and_then({
             shadow_clone!(mongodb_client);
 
             move || {
@@ -256,7 +259,7 @@ fn main() {
                 mongodb_client.clone(),
                 gcs_bucket.clone(),
             )
-            .or(helathcheck)
+            .or(healthcheck)
             .or(prometheus),
         )
         .bind_with_graceful_shutdown(
@@ -264,25 +267,38 @@ fn main() {
             app_stop_wait.map(move |r| info!("HTTP server stop request received: {}", r)),
         );
 
-        let processor = tokio::spawn(
-            Processor::new(
-                4,
-                webapp_client,
-                mongodb_client,
-                gcs_bucket,
-                for_processing_rx,
-            )
-            .run(),
-        );
+        let processor_handle = tokio::spawn({
+            shadow_clone!(app_stop_handle);
 
-        tokio::select! {
-            _ = processor => {
-                info!("Processor exited");
-            },
-            _ = queue_reader => {
-                info!("Queue Reader exited");
-            },
-            _ = server => {},
-        }
+            async move {
+                let res = Processor::new(4, webapp_client, mongodb_client, gcs_bucket, should_stop)
+                    .run()
+                    .await;
+
+                // make sure other parts will stop if processor unexpectedly stopped
+                app_stop_handle.stop(StopReason::ProcessorStopped);
+
+                res
+            }
+        });
+
+        let server_handle = tokio::spawn({
+            shadow_clone!(app_stop_handle);
+
+            async move {
+                server.await;
+
+                // make sure other parts will stop if processor unexpectedly stopped
+                app_stop_handle.stop(StopReason::WebServerStopped);
+            }
+        });
+
+        let server_res = server_handle.await;
+        info!("web server stopped: {:?}", server_res);
+
+        let processor_res = processor_handle.await;
+        info!("processor stopped: {:?}", processor_res);
+
+        info!("exiting...");
     });
 }

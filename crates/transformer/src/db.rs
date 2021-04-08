@@ -3,6 +3,7 @@ use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{AccountUniqueId, Ulid};
 use exogress_server_common::transformer::ProcessResponse;
+use futures::Stream;
 use lazy_static::lazy_static;
 use mongodb::{
     options::{FindOneAndReplaceOptions, FindOneAndUpdateOptions, FindOneOptions, ReturnDocument},
@@ -10,8 +11,14 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use sodiumoxide::crypto::secretstream::Header;
-use std::time::Duration;
-use tokio::{sync::mpsc, time::sleep};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::time::sleep;
 
 const QUEUE_COLLECTION: &str = "queue";
 const PROCESSED_COLLECTION: &str = "processed";
@@ -104,34 +111,41 @@ pub struct Processed {
     pub formats: Vec<ProcessedFormat>,
 }
 
-pub async fn listen_queue(
+pub fn listen_queue(
     client: MongoDbClient,
-    tx: mpsc::Sender<QueuedRequest>,
-) -> anyhow::Result<()> {
+    should_stop: Arc<AtomicBool>,
+) -> impl Stream<Item = Result<QueuedRequest, mongodb::error::Error>> {
     let collection: Collection<QueuedRequest> = client.db.collection_with_type(QUEUE_COLLECTION);
-    loop {
-        let options = FindOneAndUpdateOptions::builder()
-            .sort(doc! { "num_requests": -1, "last_requested_at": -1 })
-            .return_document(ReturnDocument::After)
-            .build();
-        let cursor = collection
-            .find_one_and_update(
-                doc! {
-                    "start_processing_at": {"$exists":false},
-                    "upload_id": {"$exists":false},
-                },
-                doc! {
-                    "$set": {
-                        "start_processing_at": Utc::now(),
-                    }
-                },
-                options,
-            )
-            .await?;
-        if let Some(request) = cursor {
-            tx.send(request).await?;
-        } else {
-            sleep(Duration::from_millis(500)).await;
+    async_stream::stream! {
+        loop {
+            if should_stop.load(Ordering::Relaxed) {
+                info!("Processing queue will not longer accept new tasks beacuse stop request received");
+                return;
+            }
+
+            let options = FindOneAndUpdateOptions::builder()
+                .sort(doc! { "num_requests": -1, "last_requested_at": -1 })
+                .return_document(ReturnDocument::After)
+                .build();
+            let found = collection
+                .find_one_and_update(
+                    doc! {
+                        "start_processing_at": {"$exists":false},
+                        "upload_id": {"$exists":false},
+                    },
+                    doc! {
+                        "$set": {
+                            "start_processing_at": Utc::now(),
+                        }
+                    },
+                    options,
+                )
+                .await?;
+            if let Some(request) = found {
+                yield Ok(request);
+            } else {
+                sleep(Duration::from_millis(500)).await;
+            }
         }
     }
 }
