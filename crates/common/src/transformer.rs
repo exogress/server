@@ -24,21 +24,20 @@ pub struct ProcessingReady {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ProcessResponseStatus {
+#[serde(tag = "status")]
+pub enum ProcessResponse {
     #[serde(rename = "pending_upload")]
     PendingUpload { upload_id: String, ttl_secs: u16 },
 
     #[serde(rename = "accepted")]
     Accepted,
 
+    #[serde(rename = "processing")]
+    Processing,
+
     #[serde(rename = "ready")]
     Ready {
         formats: Vec<ProcessingReady>,
         original_content_len: u64,
     },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessResponse {
-    pub status: ProcessResponseStatus,
 }

@@ -209,17 +209,18 @@ fn main() {
 
         info!("Use MongoDB at {}. DB: {}", mongodb_url, mongodb_db);
 
-        let (for_processing_tx, for_processing_rx) = mpsc::channel(1);
-
         let mongodb_client = MongoDbClient::new(mongodb_url.as_ref(), mongodb_db.as_ref())
             .await
             .expect("mongo db connection error");
 
+        let (for_processing_tx, for_processing_rx) = mpsc::channel(1);
         let queue_reader = tokio::spawn({
             shadow_clone!(mongodb_client);
 
             async move {
-                let r = listen_queue(mongodb_client, for_processing_tx).await;
+                let r = listen_queue(mongodb_client, for_processing_tx)
+                    .await
+                    .expect("Asd");
                 error!("queue res = {:?}", r);
             }
         });

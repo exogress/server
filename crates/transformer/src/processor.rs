@@ -68,6 +68,8 @@ impl Processor {
                     );
                     let uploaded_body = gcs_bucket.download(path.clone()).await.expect("FIXME");
 
+                    info!("encryption heaer = {:?}", request);
+
                     let header = sodiumoxide::crypto::secretstream::Header::from_slice(
                         &base64::decode(request.encryption_header.clone().expect("FIXME"))
                             .expect("FIXME"),

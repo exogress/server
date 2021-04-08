@@ -2,10 +2,7 @@ use crate::{bucket::GcsBucketClient, db::MongoDbClient, helpers::to_vec_body};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use exogress_server_common::{
     crypto::encrypt_stream,
-    transformer::{
-        BucketProcessedStored, ProcessRequest, ProcessResponse, ProcessResponseStatus,
-        ProcessingReady,
-    },
+    transformer::{BucketProcessedStored, ProcessRequest, ProcessResponse, ProcessingReady},
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
@@ -54,7 +51,7 @@ pub fn api_handler(
                                 )
                                 .await?
                             {
-                                Some(processed) => Ok(ProcessResponseStatus::Ready {
+                                Some(processed) => Ok(ProcessResponse::Ready {
                                     formats: processed
                                         .formats
                                         .into_iter()
@@ -92,7 +89,7 @@ pub fn api_handler(
                         .await;
 
                     match result {
-                        Ok(r) => Ok(warp::reply::json(&ProcessResponse { status: r })),
+                        Ok(r) => Ok(warp::reply::json(&r)),
                         Err(e) => {
                             error!("error accepting object for processing: {:?}", e);
                             Err(warp::reject::custom(ErrorAccepting(e)))

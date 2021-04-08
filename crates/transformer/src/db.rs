@@ -5,14 +5,15 @@ use core::cmp;
 use exogress_common::entities::{AccountUniqueId, Ulid};
 use exogress_server_common::{
     assistant::StatisticsReport,
-    transformer::{ProcessRequest, ProcessResponseStatus},
+    transformer::{ProcessRequest, ProcessResponse},
 };
 use futures::StreamExt;
 use itertools::Itertools;
+use lazy_static::lazy_static;
 use mongodb::{
     options::{
         CursorType, FindOneAndDeleteOptions, FindOneAndReplaceOptions, FindOneAndUpdateOptions,
-        FindOneOptions, FindOptions, UpdateOptions,
+        FindOneOptions, FindOptions, ReturnDocument, UpdateOptions,
     },
     Collection,
 };
@@ -23,6 +24,11 @@ use tokio::{sync::mpsc, time::sleep};
 
 const QUEUE_COLLECTION: &str = "queue";
 const PROCESSED_COLLECTION: &str = "processed";
+
+lazy_static! {
+    static ref UPLOAD_TTL: chrono::Duration = chrono::Duration::seconds(30);
+    static ref PROCESSING_MAX_TIME: chrono::Duration = chrono::Duration::minutes(1);
+}
 
 #[derive(Clone)]
 pub struct MongoDbClient {
@@ -38,9 +44,34 @@ pub enum QueueState {
     UploadReceived,
 }
 
+pub mod optionally_chrono_datetime_as_bson_datetime {
+    use chrono::Utc;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::result::Result;
+
+    /// Deserializes a chrono::DateTime from a bson::DateTime.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<chrono::DateTime<Utc>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let datetime = Option::<bson::DateTime>::deserialize(deserializer)?;
+        Ok(datetime.map(|dt| dt.into()))
+    }
+
+    /// Serializes a chrono::DateTime as a bson::DateTime.
+    pub fn serialize<S: Serializer>(
+        val: &Option<chrono::DateTime<Utc>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let datetime = val.map(|datetime| bson::DateTime::from(datetime.to_owned()));
+        datetime.serialize(serializer)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueuedRequest {
     pub identifier: String,
+    #[serde(default)]
     pub encryption_header: Option<String>,
     pub account_unique_id: AccountUniqueId,
     pub content_hash: String,
@@ -49,7 +80,17 @@ pub struct QueuedRequest {
     pub num_requests: i64,
     #[serde(with = "chrono_datetime_as_bson_datetime")]
     pub upload_requested_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
     pub upload_id: Option<Ulid>,
+
+    #[serde(default, with = "optionally_chrono_datetime_as_bson_datetime")]
+    pub start_processing_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl QueuedRequest {
+    fn is_processing(&self) -> bool {
+        self.start_processing_at.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,13 +119,20 @@ pub async fn listen_queue(
 ) -> anyhow::Result<()> {
     let collection: Collection<QueuedRequest> = client.db.collection_with_type(QUEUE_COLLECTION);
     loop {
-        let options = FindOneAndDeleteOptions::builder()
+        let options = FindOneAndUpdateOptions::builder()
             .sort(doc! { "num_requests": -1, "last_requested_at": -1 })
+            .return_document(ReturnDocument::After)
             .build();
         let mut cursor = collection
-            .find_one_and_delete(
+            .find_one_and_update(
                 doc! {
-                    "upload_id": bson::Bson::Null,
+                    "start_processing_at": {"$exists":false},
+                    "upload_id": {"$exists":false},
+                },
+                doc! {
+                    "$set": {
+                        "start_processing_at": Utc::now(),
+                    }
                 },
                 options,
             )
@@ -197,10 +245,6 @@ impl MongoDbClient {
         )
         .await?;
 
-        // "upload_requested_at": { "$lt": now - chrono::Duration::seconds(30) },
-        // "upload_id": bson::Bson::Null,
-        // doc! { "num_requests": -1, "last_requested_at": -1 }
-
         let client = MongoDbClient { db };
 
         Ok(client)
@@ -213,7 +257,10 @@ impl MongoDbClient {
         collection
             .delete_many(
                 doc! {
-                  "upload_requested_at": { "$lt": now - chrono::Duration::seconds(30) },
+                    "$or": [
+                        {"upload_requested_at": { "$lt": now - *UPLOAD_TTL } },
+                        {"start_processing_at": { "$lt": now - *PROCESSING_MAX_TIME } },
+                    ]
                 },
                 None,
             )
@@ -289,9 +336,11 @@ impl MongoDbClient {
         account_unique_id: AccountUniqueId,
         identifier: String,
         content_hash: String,
-    ) -> anyhow::Result<ProcessResponseStatus> {
+    ) -> anyhow::Result<ProcessResponse> {
         let now = Utc::now();
-        let queue_collection = self.db.collection(QUEUE_COLLECTION);
+        let queue_collection = self
+            .db
+            .collection_with_type::<QueuedRequest>(QUEUE_COLLECTION);
 
         self.cleanup_outdated_uploads(now).await?;
 
@@ -301,7 +350,6 @@ impl MongoDbClient {
                 { "identifier": identifier.clone() },
                 { "content_hash": content_hash.clone() }
             ],
-            "upload_requested_at": { "$gte": now - chrono::Duration::seconds(30) },
         };
         let find_options = FindOneAndUpdateOptions::builder().upsert(true).build();
         let upload_id = Ulid::new().to_string();
@@ -322,14 +370,13 @@ impl MongoDbClient {
             )
             .await?;
 
-        if previous_document.is_none() {
-            // This is a new document
-            Ok(ProcessResponseStatus::PendingUpload {
+        match previous_document {
+            None => Ok(ProcessResponse::PendingUpload {
                 upload_id,
-                ttl_secs: 30,
-            })
-        } else {
-            Ok(ProcessResponseStatus::Accepted)
+                ttl_secs: (*UPLOAD_TTL).num_seconds() as u16,
+            }),
+            Some(queued) if queued.is_processing() => Ok(ProcessResponse::Processing),
+            Some(_) => Ok(ProcessResponse::Accepted),
         }
     }
 
@@ -364,7 +411,9 @@ impl MongoDbClient {
             bail!("no processed entries specified");
         }
 
-        let collection: Collection<Processed> = self.db.collection_with_type(PROCESSED_COLLECTION);
+        let processed_collection: Collection<Processed> =
+            self.db.collection_with_type(PROCESSED_COLLECTION);
+        let queued_collection = self.db.collection(QUEUE_COLLECTION);
 
         let processed = Processed {
             identifier: queued.identifier.clone(),
@@ -386,15 +435,26 @@ impl MongoDbClient {
 
         let options = FindOneAndReplaceOptions::builder().upsert(true).build();
 
-        collection
+        processed_collection
             .find_one_and_replace(
+                doc! {
+                    "identifier": queued.identifier.clone(),
+                    "account_unique_id": queued.account_unique_id.to_string(),
+                    "content_hash": queued.content_hash.clone(),
+                },
+                processed,
+                Some(options),
+            )
+            .await?;
+
+        queued_collection
+            .delete_many(
                 doc! {
                     "identifier": queued.identifier,
                     "account_unique_id": queued.account_unique_id.to_string(),
                     "content_hash": queued.content_hash,
                 },
-                processed,
-                Some(options),
+                None,
             )
             .await?;
 
