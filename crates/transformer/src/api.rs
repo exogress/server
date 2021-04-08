@@ -31,7 +31,7 @@ pub fn api_handler(
 ) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
     let client = reqwest::Client::builder().trust_dns(true).build().unwrap();
 
-    let process_request = warp::path!("api" / "v1" / "process")
+    let process_request = warp::path!("int_api" / "v1" / "process")
         .and(warp::post())
         .and(warp::body::json())
         .and_then({
@@ -102,7 +102,7 @@ pub fn api_handler(
             }
         });
 
-    let upload_request = warp::path!("api" / "v1" / "uploads" / String)
+    let upload_request = warp::path!("int_api" / "v1" / "uploads" / String)
         .and(warp::post())
         .and(warp::header::<u64>("content-length"))
         .and(warp::body::stream())
