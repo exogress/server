@@ -49,6 +49,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-director"]
 
 FROM base as transformer
 COPY --from=builder /code/crates/target/release/exogress-transformer /usr/local/bin/
+RUN apk --update add imagemagick imagemagick-dev pkgconfig
 ENV MAGICK_THREAD_LIMIT=1
 RUN exogress-transformer autocompletion bash > /etc/profile.d/exogress-transformer.sh && \
     echo "source /etc/profile.d/exogress-transformer.sh" >> ~/.bashrc
