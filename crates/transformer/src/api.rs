@@ -1,21 +1,12 @@
 use crate::{bucket::GcsBucketClient, db::MongoDbClient, helpers::to_vec_body};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use exogress_server_common::{
     crypto::encrypt_stream,
     transformer::{BucketProcessedStored, ProcessRequest, ProcessResponse, ProcessingReady},
 };
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Stream, TryStreamExt};
 use itertools::Itertools;
-use pin_utils::pin_mut;
-use std::{
-    convert::{TryFrom, TryInto},
-    io,
-    io::Read,
-    mem,
-    sync::Arc,
-};
-use tame_oauth::gcp::ServiceAccountAccess;
-use warp::{body::json, http::StatusCode, post, reject::Reject, reply::Json, Filter, Rejection};
+use warp::{http::StatusCode, reject::Reject, Filter, Rejection};
 
 #[derive(Debug)]
 struct ErrorAccepting(anyhow::Error);
@@ -23,24 +14,24 @@ struct ErrorAccepting(anyhow::Error);
 impl Reject for ErrorAccepting {}
 
 #[derive(thiserror::Error, Debug)]
-enum Error {
-    #[error("save upload to bucket error")]
-    SaveUploadError(anyhow::Error),
+enum UploadError {
+    #[error("save upload to bucket error: {_0}")]
+    SaveUpload(anyhow::Error),
 
-    #[error("encryption error")]
-    EncryptionError(anyhow::Error),
+    #[error("encryption error: {_0}")]
+    Encryption(anyhow::Error),
 
-    #[error("accepting upload error")]
-    ReadBodyError(warp::Error),
+    #[error("accepting upload error: {_0}")]
+    ReadBody(warp::Error),
 
     #[error("upload_id not found")]
     UploadIdNotFound,
 
-    #[error("account error")]
-    AccountError(anyhow::Error),
+    #[error("account error: {_0}")]
+    Account(anyhow::Error),
 
-    #[error("mongo error")]
-    MongoError(anyhow::Error),
+    #[error("mongo error: {_0}")]
+    Mongo(anyhow::Error),
 }
 
 async fn handle_upload_request(
@@ -49,30 +40,30 @@ async fn handle_upload_request(
     mongodb_client: &MongoDbClient,
     gcs_bucket: &GcsBucketClient,
     webapp_client: &crate::webapp::Client,
-) -> Result<(), Error> {
+) -> Result<(), UploadError> {
     let maybe_queued_info = mongodb_client
         .get_queued_info_by_upload_id(upload_id)
         .await
-        .map_err(Error::MongoError)?;
+        .map_err(UploadError::Mongo)?;
     let queued_info = match maybe_queued_info {
         Some(queued_info) => queued_info,
         None => {
-            return Err(Error::UploadIdNotFound);
+            return Err(UploadError::UploadIdNotFound);
         }
     };
 
     let secret_key = webapp_client
         .get_secret_key(&queued_info.account_unique_id)
         .await
-        .map_err(Error::AccountError)?;
+        .map_err(UploadError::Account)?;
 
     let path = format!(
         "{}/uploads/{}",
         queued_info.account_unique_id, queued_info.identifier
     );
 
-    let (mut encrypted_stream, header) =
-        encrypt_stream(to_vec_body(body_stream), &secret_key).map_err(Error::EncryptionError)?;
+    let (encrypted_stream, header) =
+        encrypt_stream(to_vec_body(body_stream), &secret_key).map_err(UploadError::Encryption)?;
 
     let mut encrypted_len = 0;
 
@@ -83,7 +74,7 @@ async fn handle_upload_request(
             futures::future::ok(acc)
         })
         .await
-        .map_err(|e| Error::ReadBodyError(e))?;
+        .map_err(UploadError::ReadBody)?;
 
     gcs_bucket
         .upload(
@@ -92,12 +83,12 @@ async fn handle_upload_request(
             futures::stream::once(async { Ok(encrypted_bytes) }),
         )
         .await
-        .map_err(Error::SaveUploadError)?;
+        .map_err(UploadError::SaveUpload)?;
 
     mongodb_client
         .was_uploaded(upload_id, header)
         .await
-        .map_err(Error::MongoError)?;
+        .map_err(UploadError::Mongo)?;
 
     Ok(())
 }
@@ -107,8 +98,6 @@ pub fn api_handler(
     mongodb_client: MongoDbClient,
     gcs_bucket: GcsBucketClient,
 ) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
-    let client = reqwest::Client::builder().trust_dns(true).build().unwrap();
-
     let process_request = warp::path!("int_api" / "v1" / "transformations" / "process")
         .and(warp::post())
         .and(warp::body::json())
@@ -121,53 +110,44 @@ pub fn api_handler(
                 async move {
                     let account_unique_id = body.account_unique_id;
 
-                    let result = webapp_client
-                        .get_secret_key(&account_unique_id)
-                        .and_then(|resp| async {
-                            match mongodb_client
-                                .find_processed(
-                                    &account_unique_id,
-                                    &body.identifier,
-                                    &body.content_hash,
-                                )
-                                .await?
-                            {
-                                Some(processed) => Ok(ProcessResponse::Ready {
-                                    formats: processed
-                                        .formats
-                                        .into_iter()
-                                        .map(|processed_format| {
-                                            let bucket_info = gcs_bucket.bucket_info();
+                    let result: anyhow::Result<_> = async {
+                        let res = mongodb_client
+                            .find_processed(
+                                &account_unique_id,
+                                &body.identifier,
+                                &body.content_hash,
+                            )
+                            .await?;
+                        match res {
+                            Some(processed) => Ok(ProcessResponse::Ready {
+                                formats: processed
+                                    .formats
+                                    .into_iter()
+                                    .map(|processed_format| {
+                                        let bucket_info = gcs_bucket.bucket_info();
 
-                                            ProcessingReady {
-                                                content_type: processed_format.content_type,
-                                                encryption_header: processed_format
-                                                    .encryption_header,
-                                                compression_ratio: processed_format
-                                                    .compression_ratio,
-                                                content_len: processed_format.compressed_size
-                                                    as u64,
-                                                buckets: vec![BucketProcessedStored {
-                                                    provider: "gcs".to_string(),
-                                                    name: bucket_info.name.into(),
-                                                    location: bucket_info.location.to_string(),
-                                                }],
-                                            }
-                                        })
-                                        .sorted_by(|l, r| l.content_len.cmp(&r.content_len))
-                                        .collect(),
-                                    original_content_len: processed.source_size as u64,
-                                }),
-                                None => Ok(mongodb_client
-                                    .find_queued(
-                                        account_unique_id,
-                                        body.identifier,
-                                        body.content_hash,
-                                    )
-                                    .await?),
-                            }
-                        })
-                        .await;
+                                        ProcessingReady {
+                                            content_type: processed_format.content_type,
+                                            encryption_header: processed_format.encryption_header,
+                                            compression_ratio: processed_format.compression_ratio,
+                                            content_len: processed_format.compressed_size as u64,
+                                            buckets: vec![BucketProcessedStored {
+                                                provider: "gcs".to_string(),
+                                                name: bucket_info.name.into(),
+                                                location: bucket_info.location.to_string(),
+                                            }],
+                                        }
+                                    })
+                                    .sorted_by(|l, r| l.content_len.cmp(&r.content_len))
+                                    .collect(),
+                                original_content_len: processed.source_size as u64,
+                            }),
+                            None => Ok(mongodb_client
+                                .find_queued(account_unique_id, body.identifier, body.content_hash)
+                                .await?),
+                        }
+                    }
+                    .await;
 
                     match result {
                         Ok(r) => Ok(warp::reply::json(&r)),
@@ -201,7 +181,7 @@ pub fn api_handler(
 
                 match res {
                     Ok(()) => Ok::<_, Rejection>(warp::reply::with_status("ok", StatusCode::OK)),
-                    Err(Error::UploadIdNotFound) => Ok(warp::reply::with_status(
+                    Err(UploadError::UploadIdNotFound) => Ok(warp::reply::with_status(
                         "upload_id not found",
                         StatusCode::NOT_FOUND,
                     )),

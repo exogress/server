@@ -1,4 +1,4 @@
-use exogress_common::entities::{AccountName, AccountUniqueId};
+use exogress_common::entities::AccountUniqueId;
 use lru_time_cache::LruCache;
 use parking_lot::Mutex;
 use reqwest::{Identity, Method};
@@ -98,7 +98,7 @@ impl Client {
 
         self.secret_keys
             .lock()
-            .insert(account_id.clone(), secret_key.clone());
+            .insert(*account_id, secret_key.clone());
 
         Ok(secret_key)
     }

@@ -1,20 +1,11 @@
 use crate::magick::ImageConversionMeta;
 use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
-use core::cmp;
 use exogress_common::entities::{AccountUniqueId, Ulid};
-use exogress_server_common::{
-    assistant::StatisticsReport,
-    transformer::{ProcessRequest, ProcessResponse},
-};
-use futures::StreamExt;
-use itertools::Itertools;
+use exogress_server_common::transformer::ProcessResponse;
 use lazy_static::lazy_static;
 use mongodb::{
-    options::{
-        CursorType, FindOneAndDeleteOptions, FindOneAndReplaceOptions, FindOneAndUpdateOptions,
-        FindOneOptions, FindOptions, ReturnDocument, UpdateOptions,
-    },
+    options::{FindOneAndReplaceOptions, FindOneAndUpdateOptions, FindOneOptions, ReturnDocument},
     Collection,
 };
 use serde::{Deserialize, Serialize};
@@ -123,7 +114,7 @@ pub async fn listen_queue(
             .sort(doc! { "num_requests": -1, "last_requested_at": -1 })
             .return_document(ReturnDocument::After)
             .build();
-        let mut cursor = collection
+        let cursor = collection
             .find_one_and_update(
                 doc! {
                     "start_processing_at": {"$exists":false},
@@ -393,8 +384,8 @@ impl MongoDbClient {
         let filter = doc! {
             "account_unique_id": account_unique_id.to_string(),
             "$or": [
-                { "identifier": identifier.clone() },
-                { "content_hash": content_hash.clone() }
+                { "identifier": identifier },
+                { "content_hash": content_hash }
             ],
         };
         let find_options = FindOneOptions::builder().build();

@@ -1,12 +1,4 @@
-use lazy_static::lazy_static;
-use prometheus::{
-    linear_buckets, register_histogram, register_int_counter_vec, Encoder, Histogram,
-    IntCounterVec, TextEncoder,
-};
-use std::net::SocketAddr;
-use warp::Filter;
-
-lazy_static! {}
+use prometheus::{Encoder, TextEncoder};
 
 pub fn dump_prometheus() -> String {
     let encoder = TextEncoder::new();

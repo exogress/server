@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use exogress_common::entities::serde::__private::Formatter;
 use magick_rust::{magick_wand_genesis, MagickWand};
 use std::{
     sync::Once,

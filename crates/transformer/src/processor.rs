@@ -1,19 +1,15 @@
-//! Worker pool for processing
-
 use crate::{
     bucket::GcsBucketClient,
     db::{MongoDbClient, QueuedRequest},
     helpers::to_vec_body,
 };
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, BytesMut};
 use core::mem;
 use exogress_server_common::crypto::{decrypt_stream, encrypt_stream};
 use futures::TryStreamExt;
-use itertools::Itertools;
 use pin_utils::pin_mut;
-use std::{io, sync::Arc, time::Duration};
+use std::{io, sync::Arc};
 use tokio::{sync::mpsc, task::spawn_blocking};
-use tokio_stream::StreamExt;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 pub struct Processor {
@@ -56,7 +52,7 @@ impl Processor {
                 async move {
                     // read upload from GCS
 
-                    let account_unique_id = request.account_unique_id.clone();
+                    let account_unique_id = request.account_unique_id;
 
                     let secret_key = webapp.get_secret_key(&account_unique_id).await?;
 

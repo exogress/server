@@ -100,9 +100,7 @@ impl Client {
             StatusCode::NOT_FOUND => Err(Error::NotFound),
             StatusCode::FORBIDDEN => Err(Error::Forbidden),
             StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
-            StatusCode::BAD_REQUEST => {
-                Err(Error::BadRequest(res.text().await.ok().map(|s| s.into())))
-            }
+            StatusCode::BAD_REQUEST => Err(Error::BadRequest(res.text().await.ok())),
             code => Err(Error::BadResponse(code)),
         }
     }
@@ -163,7 +161,7 @@ impl Client {
         authorization: &str,
         project: &ProjectName,
         account: &AccountName,
-        labels_json: &String,
+        labels_json: &str,
         config: &ClientConfig,
         active_profile: &Option<ProfileName>,
     ) -> Result<InstanceRegistered, Error> {

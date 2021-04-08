@@ -28,12 +28,10 @@ use crate::{
 use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
-use futures_util::future::FutureExt;
+use futures::FutureExt;
+use http::StatusCode;
 use mimalloc::MiMalloc;
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-};
+use std::net::SocketAddr;
 use stop_handle::stop_handle;
 use tokio::{runtime::Builder, sync::mpsc};
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
@@ -229,7 +227,25 @@ fn main() {
         let webapp_client =
             crate::webapp::Client::new(webapp_base_url.clone(), int_client_cert.clone());
 
-        let prometheus = warp::path!("metrics").map(|| dump_prometheus());
+        let prometheus = warp::path!("metrics").map(dump_prometheus);
+        let helathcheck = warp::path!("healthcheck").and_then({
+            shadow_clone!(mongodb_client);
+
+            move || {
+                shadow_clone!(mongodb_client);
+
+                async move {
+                    if mongodb_client.clone().health().await {
+                        Ok::<_, warp::Rejection>(warp::reply::with_status("ok", StatusCode::OK))
+                    } else {
+                        Ok(warp::reply::with_status(
+                            "unhealthy",
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                        ))
+                    }
+                }
+            }
+        });
         let gcs_bucket =
             GcsBucketClient::new(gcs_bucket, gcs_bucket_location, gcs_credentials_file)
                 .expect("GCS bucket config error");
@@ -240,6 +256,7 @@ fn main() {
                 mongodb_client.clone(),
                 gcs_bucket.clone(),
             )
+            .or(helathcheck)
             .or(prometheus),
         )
         .bind_with_graceful_shutdown(

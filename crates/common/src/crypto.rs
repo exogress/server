@@ -1,11 +1,8 @@
 use anyhow::anyhow;
-use exogress_common::entities::bytes::Buf;
-use futures::{AsyncRead, Stream, StreamExt, TryStreamExt};
-use http::Response;
+use futures::{Stream, StreamExt};
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
 use std::{convert::TryFrom, io};
 use tokio_util::codec::LengthDelimitedCodec;
-use tracing::error;
 
 pub fn decrypt_stream(
     reader: impl tokio::io::AsyncRead,

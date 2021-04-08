@@ -25,7 +25,7 @@ pub fn extract_matches(matches: &ArgMatches) -> Option<(ScopeGuard, ClientInitGu
         .add_integration(panic_integration);
 
         println!("Enabling sentry...");
-        let sentry = sentry::init((&sentry_dsn[..], options));
+        let sentry = sentry::init((sentry_dsn, options));
 
         let sentry_guard = sentry::Hub::current().push_scope();
 

@@ -1,12 +1,11 @@
 use bytes::Buf;
 use futures::{Stream, StreamExt};
-use reqwest::Body;
 use smol_str::SmolStr;
 use std::{
     convert::{TryFrom, TryInto},
     sync::Arc,
 };
-use tame_gcs::{common::PredefinedAcl, objects::InsertObjectOptional, BucketName};
+use tame_gcs::objects::InsertObjectOptional;
 use tame_oauth::{gcp::ServiceAccountAccess, Token};
 #[derive(Clone)]
 pub struct GcsBucketClient {
@@ -94,7 +93,7 @@ impl GcsBucketClient {
                         // passed to you, without modifying them.
                         let request = builder.headers(parts.headers).body(body).build().unwrap();
 
-                        let mut response = self.client.execute(request).await?;
+                        let response = self.client.execute(request).await?;
 
                         let mut builder = http::Response::builder()
                             .status(response.status())
@@ -139,7 +138,7 @@ impl GcsBucketClient {
         let gcs_bucket = tame_gcs::BucketName::try_from(self.gcs_bucket.to_string())?;
         let object_name = tame_gcs::ObjectName::try_from(path.as_str())?;
 
-        let mut opts = InsertObjectOptional::default();
+        let opts = InsertObjectOptional::default();
 
         let upload_req = tame_gcs::objects::Object::insert_simple(
             &(&gcs_bucket, &object_name),
