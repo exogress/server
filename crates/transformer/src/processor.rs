@@ -48,33 +48,31 @@ impl Processor {
         let webapp = self.webapp.clone();
 
         while let Some(request) = self.rx.recv().await {
+            let permit = semaphore.clone().acquire_owned().await?;
+
             tokio::spawn({
-                shadow_clone!(db, gcs_bucket, semaphore, webapp);
+                shadow_clone!(db, gcs_bucket, webapp);
 
                 async move {
                     // read upload from GCS
 
                     let account_unique_id = request.account_unique_id.clone();
 
-                    let secret_key = webapp
-                        .get_secret_key(&account_unique_id)
-                        .await
-                        .expect("FIXME");
+                    let secret_key = webapp.get_secret_key(&account_unique_id).await?;
 
                     let path = format!(
                         "{}/uploads/{}",
                         account_unique_id,
                         request.identifier.clone()
                     );
-                    let uploaded_body = gcs_bucket.download(path.clone()).await.expect("FIXME");
-
-                    info!("encryption heaer = {:?}", request);
+                    let uploaded_body = gcs_bucket.download(path.clone()).await?;
 
                     let header = sodiumoxide::crypto::secretstream::Header::from_slice(
-                        &base64::decode(request.encryption_header.clone().expect("FIXME"))
-                            .expect("FIXME"),
+                        &base64::decode(request.encryption_header.clone().ok_or_else(|| {
+                            anyhow!("no encryption header while processing request")
+                        })?)?,
                     )
-                    .expect("FIXME");
+                    .ok_or_else(|| anyhow!("malformed encryption header"))?;
 
                     let decrypted = decrypt_stream(
                         FuturesAsyncReadCompatExt::compat(
@@ -84,19 +82,14 @@ impl Processor {
                         ),
                         &secret_key,
                         &header,
-                    )
-                    .expect("FIXME")
+                    )?
                     .try_fold(BytesMut::new(), |mut acc, b| async move {
                         acc.extend_from_slice(b.as_ref());
                         Ok(acc)
                     })
-                    .await
-                    .expect("FIXME")
+                    .await?
                     .freeze();
 
-                    info!("upload body = {:?}", decrypted.len());
-
-                    let permit = semaphore.acquire().await.expect("FIXME");
                     let result = spawn_blocking(move || {
                         // convert the body
                         let webp = crate::magick::convert(&decrypted, "webp", "image/webp");
@@ -106,17 +99,14 @@ impl Processor {
                     })
                     .await;
 
-                    info!("conversion result = {:?}", result);
                     mem::drop(permit);
+
                     let identifier = request.identifier.clone();
 
                     let after_processed = async move {
-                        let secret_key = webapp
-                            .get_secret_key(&account_unique_id)
-                            .await
-                            .expect("FIXME");
+                        let secret_key = webapp.get_secret_key(&account_unique_id).await?;
 
-                        gcs_bucket.delete(path).await.expect("FIXME");
+                        gcs_bucket.delete(path).await?;
 
                         if let Ok((webp_result, avif_result)) = result {
                             let upload_webp = {
@@ -139,16 +129,14 @@ impl Processor {
                                         pin_mut!(transformed_stream);
 
                                         let (encrypted, header) =
-                                            encrypt_stream(transformed_stream, &secret_key)
-                                                .expect("FIXME");
+                                            encrypt_stream(transformed_stream, &secret_key)?;
 
                                         let encrypted_buf = encrypted
                                             .try_fold(BytesMut::new(), |mut acc, v| {
                                                 acc.put(v.0.as_ref());
                                                 futures::future::ok(acc)
                                             })
-                                            .await
-                                            .expect("FIXME");
+                                            .await?;
 
                                         gcs_bucket
                                             .upload(
@@ -180,16 +168,14 @@ impl Processor {
                                     pin_mut!(transformed_stream);
 
                                     let (encrypted, header) =
-                                        encrypt_stream(transformed_stream, &secret_key)
-                                            .expect("FIXME");
+                                        encrypt_stream(transformed_stream, &secret_key)?;
 
                                     let encrypted_buf = encrypted
                                         .try_fold(BytesMut::new(), |mut acc, v| {
                                             acc.put(v.0.as_ref());
                                             futures::future::ok(acc)
                                         })
-                                        .await
-                                        .expect("FIXME");
+                                        .await?;
 
                                     gcs_bucket
                                         .upload(
@@ -212,11 +198,15 @@ impl Processor {
                                     .collect()
                             };
 
-                            db.save_processed(uploads, request).await.expect("FIXME");
+                            db.save_processed(uploads, request).await?;
                         }
+
+                        Ok::<_, anyhow::Error>(())
                     };
 
                     tokio::spawn(after_processed);
+
+                    Ok::<_, anyhow::Error>(())
                 }
             });
         }

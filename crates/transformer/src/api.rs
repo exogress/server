@@ -9,6 +9,7 @@ use itertools::Itertools;
 use pin_utils::pin_mut;
 use std::{
     convert::{TryFrom, TryInto},
+    io,
     io::Read,
     mem,
     sync::Arc,
@@ -20,6 +21,86 @@ use warp::{body::json, http::StatusCode, post, reject::Reject, reply::Json, Filt
 struct ErrorAccepting(anyhow::Error);
 
 impl Reject for ErrorAccepting {}
+
+#[derive(thiserror::Error, Debug)]
+enum Error {
+    #[error("save upload to bucket error")]
+    SaveUploadError(anyhow::Error),
+
+    #[error("encryption error")]
+    EncryptionError(anyhow::Error),
+
+    #[error("accepting upload error")]
+    ReadBodyError(warp::Error),
+
+    #[error("upload_id not found")]
+    UploadIdNotFound,
+
+    #[error("account error")]
+    AccountError(anyhow::Error),
+
+    #[error("mongo error")]
+    MongoError(anyhow::Error),
+}
+
+async fn handle_upload_request(
+    upload_id: &str,
+    body_stream: impl Stream<Item = Result<impl Buf, warp::Error>> + Send + Sync + Unpin + 'static,
+    mongodb_client: &MongoDbClient,
+    gcs_bucket: &GcsBucketClient,
+    webapp_client: &crate::webapp::Client,
+) -> Result<(), Error> {
+    let maybe_queued_info = mongodb_client
+        .get_queued_info_by_upload_id(upload_id)
+        .await
+        .map_err(Error::MongoError)?;
+    let queued_info = match maybe_queued_info {
+        Some(queued_info) => queued_info,
+        None => {
+            return Err(Error::UploadIdNotFound);
+        }
+    };
+
+    let secret_key = webapp_client
+        .get_secret_key(&queued_info.account_unique_id)
+        .await
+        .map_err(Error::AccountError)?;
+
+    let path = format!(
+        "{}/uploads/{}",
+        queued_info.account_unique_id, queued_info.identifier
+    );
+
+    let (mut encrypted_stream, header) =
+        encrypt_stream(to_vec_body(body_stream), &secret_key).map_err(Error::EncryptionError)?;
+
+    let mut encrypted_len = 0;
+
+    let encrypted_bytes = encrypted_stream
+        .try_fold(BytesMut::new(), |mut acc, item| {
+            acc.put(item.0.as_ref());
+            encrypted_len += item.1;
+            futures::future::ok(acc)
+        })
+        .await
+        .map_err(|e| Error::ReadBodyError(e))?;
+
+    gcs_bucket
+        .upload(
+            path.clone(),
+            encrypted_bytes.len() as u64,
+            futures::stream::once(async { Ok(encrypted_bytes) }),
+        )
+        .await
+        .map_err(Error::SaveUploadError)?;
+
+    mongodb_client
+        .was_uploaded(upload_id, header)
+        .await
+        .map_err(Error::MongoError)?;
+
+    Ok(())
+}
 
 pub fn api_handler(
     webapp_client: crate::webapp::Client,
@@ -101,69 +182,36 @@ pub fn api_handler(
 
     let upload_request = warp::path!("int_api" / "v1" / "transformations" / "uploads" / String)
         .and(warp::post())
-        .and(warp::header::<u64>("content-length"))
+        .and(warp::filters::body::content_length_limit(
+            80 * 1024 * 1024 * 1024,
+        ))
         .and(warp::body::stream())
-        .and_then(move |upload_id: String, content_length, body_stream| {
+        .and_then(move |upload_id: String, body_stream| {
             shadow_clone!(mongodb_client, gcs_bucket, webapp_client);
 
             async move {
-                let maybe_queued_info = mongodb_client
-                    .get_queued_info_by_upload_id(upload_id.as_str())
-                    .await
-                    .expect("FIXME");
-                let queued_info = match maybe_queued_info {
-                    Some(queued_info) => queued_info,
-                    None => {
-                        return Ok(warp::reply::with_status(
-                            "upload not found",
-                            StatusCode::NOT_FOUND,
-                        ));
+                let res = handle_upload_request(
+                    &upload_id,
+                    body_stream,
+                    &mongodb_client,
+                    &gcs_bucket,
+                    &webapp_client,
+                )
+                .await;
+
+                match res {
+                    Ok(()) => Ok::<_, Rejection>(warp::reply::with_status("ok", StatusCode::OK)),
+                    Err(Error::UploadIdNotFound) => Ok(warp::reply::with_status(
+                        "upload_id not found",
+                        StatusCode::NOT_FOUND,
+                    )),
+                    Err(e) => {
+                        error!("Error serving upad request: {}", e);
+                        Ok(warp::reply::with_status(
+                            "server error",
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                        ))
                     }
-                };
-
-                let secret_key = webapp_client
-                    .get_secret_key(&queued_info.account_unique_id)
-                    .await
-                    .expect("FIXME");
-
-                let path = format!(
-                    "{}/uploads/{}",
-                    queued_info.account_unique_id, queued_info.identifier
-                );
-
-                let (mut encrypted_stream, header) =
-                    encrypt_stream(to_vec_body(body_stream), &secret_key).expect("FIXME");
-
-                let mut encrypted_len = 0;
-
-                let encrypted_bytes = encrypted_stream
-                    .try_fold(BytesMut::new(), |mut acc, item| {
-                        acc.put(item.0.as_ref());
-                        encrypted_len += item.1;
-                        futures::future::ok(acc)
-                    })
-                    .await
-                    .expect("FIXME");
-
-                gcs_bucket
-                    .upload(
-                        path.clone(),
-                        encrypted_bytes.len() as u64,
-                        futures::stream::once(async { Ok(encrypted_bytes) }),
-                    )
-                    .await
-                    .expect("ERROR");
-
-                mongodb_client
-                    .was_uploaded(upload_id.as_str(), header)
-                    .await
-                    .expect("FIXME");
-
-                info!("accept stream for upload_id: {}", upload_id);
-                if true {
-                    Ok(warp::reply::with_status("ok", StatusCode::OK))
-                } else {
-                    Err(warp::reject::reject())
                 }
             }
         });
