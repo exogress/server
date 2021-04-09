@@ -4,7 +4,8 @@ RUN rustup component add clippy rustfmt
 RUN apk --update add build-base imagemagick imagemagick-dev \
     libffi-dev openssl-dev libsasl clang cmake \
     ca-certificates pkgconfig llvm-dev libgcc clang-libs \
-    lmdb-dev lmdb lmdb-tools python2
+    lmdb-dev lmdb lmdb-tools python2 libavif libavif-dev \
+    libavif-apps
 
 COPY . /code
 WORKDIR /code/crates
@@ -13,19 +14,10 @@ ENV RUSTFLAGS="-Ctarget-feature=-crt-static -Ctarget-feature=+sse4.2"
 
 FROM dirs as builder
 
-#ADD ci/gcs.json /gcs.json
-#ADD ci/sccache /usr/local/bin/sccache
-
-#ENV SCCACHE_GCS_BUCKET=sccache-exogress-jenkinsn
-#ENV SCCACHE_GCS_RW_MODE=READ_WRITE
-#ENV RUSTC_WRAPPER=/usr/local/bin/sccache
-#ENV SCCACHE_GCS_KEY_PATH=/gcs.json
-
 RUN cargo update -p exogress-common
 RUN cargo build --release
-#&& sccache --show-stats
 
-FROM alpine:3.12 as base
+FROM alpine:3.13 as base
 
 RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc clang-libs lmdb-dev lmdb lmdb-tools
 
@@ -49,7 +41,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-director"]
 
 FROM base as transformer
 COPY --from=builder /code/crates/target/release/exogress-transformer /usr/local/bin/
-RUN apk --update add imagemagick imagemagick-dev pkgconfig
+RUN apk --update add imagemagick imagemagick-dev pkgconfig libavif libavif-dev libavif-apps
 ENV MAGICK_THREAD_LIMIT=1
 RUN exogress-transformer autocompletion bash > /etc/profile.d/exogress-transformer.sh && \
     echo "source /etc/profile.d/exogress-transformer.sh" >> ~/.bashrc

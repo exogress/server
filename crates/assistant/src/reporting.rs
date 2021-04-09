@@ -15,7 +15,6 @@ impl MongoDbClient {
             .await
             .expect("mongodb init error");
 
-        info!("mongodb_client_options = {:?}", mongodb_client_options);
         let mongodb_client = mongodb::Client::with_options(mongodb_client_options)?;
 
         let db = mongodb_client.database(db);
