@@ -12,6 +12,7 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use sodiumoxide::crypto::secretstream::Header;
 use std::{
+    convert::TryInto,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -253,6 +254,21 @@ impl MongoDbClient {
         let client = MongoDbClient { db };
 
         Ok(client)
+    }
+
+    pub async fn queue_size(&self) -> anyhow::Result<u32> {
+        let collection = self.db.collection(QUEUE_COLLECTION);
+        Ok(collection
+            .count_documents(
+                doc! {
+                    "start_processing_at": {"$exists":false},
+                    "upload_id": {"$exists":false},
+                },
+                None,
+            )
+            .await?
+            .try_into()
+            .unwrap())
     }
 
     async fn cleanup_outdated_uploads(&self, now: DateTime<Utc>) -> anyhow::Result<()> {

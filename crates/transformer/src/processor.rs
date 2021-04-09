@@ -11,8 +11,9 @@ use pin_utils::pin_mut;
 use std::{
     io,
     sync::{atomic::AtomicBool, Arc},
+    time::Duration,
 };
-use tokio::task::spawn_blocking;
+use tokio::{task::spawn_blocking, time::sleep};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 pub struct Processor {
@@ -47,6 +48,24 @@ impl Processor {
         let semaphore = Arc::new(self.semaphore);
         let gcs_bucket = self.gcs_bucket.clone();
         let webapp = self.webapp.clone();
+
+        tokio::spawn({
+            shadow_clone!(db);
+
+            async move {
+                loop {
+                    match db.queue_size().await {
+                        Ok(queue_size) => {
+                            crate::statistics::QUEUE_SIZE.set(queue_size as i64);
+                        }
+                        Err(e) => {
+                            error!("Error counting queue size: {}", e);
+                        }
+                    }
+                    sleep(Duration::from_secs(10)).await;
+                }
+            }
+        });
 
         let queued_stream = listen_queue(db.clone(), self.should_stop);
 
@@ -108,9 +127,13 @@ impl Processor {
                     let result = spawn_blocking(move || {
                         info!("start conversion");
 
+                        let started_at = crate::statistics::CONVERSION_TIME.start_timer();
+
                         // convert the body
                         let webp = crate::magick::convert(&decrypted, "webp", "image/webp");
                         let avif = crate::magick::convert(&decrypted, "avif", "image/avif");
+
+                        started_at.observe_duration();
 
                         info!("finish conversion");
                         (webp, avif)
