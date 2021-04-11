@@ -236,7 +236,7 @@ impl MongoDbClient {
                             "upload_requested_at": 1,
                         },
                         "name": "queued_upload_requested_at_index",
-                        "unique": true
+                        "unique": false
                     },
                     {
                         "key": {
