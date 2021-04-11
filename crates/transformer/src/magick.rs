@@ -1,7 +1,7 @@
 use bytes::Bytes;
-use magick_rust::{magick_wand_genesis, MagickWand};
+use magick_rust::{MagickWand, ResourceType};
 use std::{
-    sync::Once,
+    convert::TryInto,
     time::{Duration, Instant},
 };
 
@@ -27,18 +27,26 @@ impl core::fmt::Debug for ImageConversionResult {
     }
 }
 
-static IMAGE_MAGIC: Once = Once::new();
-
 pub(crate) fn convert(
+    conversion_threads: Option<u8>,
+    conversion_memory: Option<u64>,
     image_body: &Bytes,
     format: &str,
     mime_type: &str,
 ) -> anyhow::Result<ImageConversionResult> {
-    IMAGE_MAGIC.call_once(|| {
-        magick_wand_genesis();
-    });
-
     let wand = MagickWand::new();
+
+    if let Some(threads) = conversion_threads {
+        info!("set conversion threads to {}", threads);
+        MagickWand::set_resource_limit(ResourceType::Thread, threads.into())
+            .expect("failed to set magick wand thread limit");
+    }
+
+    if let Some(mem) = conversion_memory {
+        info!("set conversion mem to {}", mem);
+        MagickWand::set_resource_limit(ResourceType::Memory, mem.try_into().unwrap())
+            .expect("failed to set magick wand memory limit");
+    }
 
     wand.read_image_blob(image_body.as_ref())
         .map_err(|e| anyhow!("imagemagick read error: {}", e))?;

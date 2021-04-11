@@ -7,8 +7,10 @@ use bytes::{BufMut, BytesMut};
 use core::mem;
 use exogress_server_common::crypto::{decrypt_stream, encrypt_stream};
 use futures::{StreamExt, TryStreamExt};
+use magick_rust::{MagickWand, ResourceType};
 use pin_utils::pin_mut;
 use std::{
+    convert::TryInto,
     io,
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
@@ -17,17 +19,19 @@ use tokio::{task::spawn_blocking, time::sleep};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 pub struct Processor {
-    semaphore: tokio::sync::Semaphore,
-    max_concurrency: usize,
+    lock: tokio::sync::Mutex<()>,
     webapp: crate::webapp::Client,
     db: MongoDbClient,
     gcs_bucket: GcsBucketClient,
     should_stop: Arc<AtomicBool>,
+    conversion_threads: Option<u8>,
+    conversion_memory: Option<u64>,
 }
 
 impl Processor {
     pub fn new(
-        max_concurrency: usize,
+        conversion_threads: Option<u8>,
+        conversion_memory: Option<u64>,
         webapp: crate::webapp::Client,
         db: MongoDbClient,
         gcs_bucket: GcsBucketClient,
@@ -35,17 +39,18 @@ impl Processor {
     ) -> Self {
         Processor {
             db,
-            semaphore: tokio::sync::Semaphore::new(max_concurrency),
+            lock: tokio::sync::Mutex::new(()),
             gcs_bucket,
             webapp,
             should_stop,
-            max_concurrency,
+            conversion_threads,
+            conversion_memory,
         }
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
         let db = self.db;
-        let semaphore = Arc::new(self.semaphore);
+        let lock = Arc::new(self.lock);
         let gcs_bucket = self.gcs_bucket.clone();
         let webapp = self.webapp.clone();
 
@@ -71,8 +76,11 @@ impl Processor {
 
         pin_mut!(queued_stream);
 
+        let conversion_threads = self.conversion_threads;
+        let conversion_memory = self.conversion_memory;
+
         while let Some(request_result) = queued_stream.next().await {
-            let permit = semaphore.clone().acquire_owned().await?;
+            let guard = lock.clone().lock_owned().await;
 
             let request = match request_result {
                 Err(e) => {
@@ -130,8 +138,20 @@ impl Processor {
                         let started_at = crate::statistics::CONVERSION_TIME.start_timer();
 
                         // convert the body
-                        let webp = crate::magick::convert(&decrypted, "webp", "image/webp");
-                        let avif = crate::magick::convert(&decrypted, "avif", "image/avif");
+                        let webp = crate::magick::convert(
+                            conversion_threads,
+                            conversion_memory,
+                            &decrypted,
+                            "webp",
+                            "image/webp",
+                        );
+                        let avif = crate::magick::convert(
+                            conversion_threads,
+                            conversion_memory,
+                            &decrypted,
+                            "avif",
+                            "image/avif",
+                        );
 
                         started_at.observe_duration();
 
@@ -242,7 +262,7 @@ impl Processor {
                             db.save_processed(uploads, request).await?;
                         }
 
-                        mem::drop(permit);
+                        mem::drop(guard);
 
                         Ok::<_, anyhow::Error>(())
                     };
@@ -256,7 +276,7 @@ impl Processor {
 
         // wait until all permits are returned
         info!("Wait for all outstanding conversions to finish");
-        let _ = semaphore.acquire_many(self.max_concurrency as u32).await?;
+        let _ = lock.lock().await;
         info!("no more processing tasks left. Exiting");
 
         Ok(())

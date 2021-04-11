@@ -30,8 +30,10 @@ use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use http::StatusCode;
+use magick_rust::{magick_wand_genesis, MagickWand, ResourceType};
 use mimalloc::MiMalloc;
 use std::{
+    convert::TryInto,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -96,6 +98,20 @@ fn main() {
                 .value_name("STRING")
                 .required(true)
                 .help("The path to GCS credentials file")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("conversion_threads")
+                .long("conversion-threads")
+                .value_name("NUMBER")
+                .help("Number of threads allowed for conversion")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("conversion_memory")
+                .long("conversion-memory")
+                .value_name("NUMBER")
+                .help("Max memory allowed for conversion")
                 .takes_value(true),
         )
         .arg(
@@ -166,6 +182,14 @@ fn main() {
         .parse()
         .expect("bad gcs-bucket-location");
 
+    let conversion_memory: Option<u64> = matches
+        .value_of("conversion_memory")
+        .map(|s| s.parse().expect("bad --conversion-memory"));
+
+    let conversion_threads: Option<u8> = matches
+        .value_of("conversion_threads")
+        .map(|s| s.parse().expect("bad --conversion-threads"));
+
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
     let IntApiBaseUrls {
@@ -209,6 +233,8 @@ fn main() {
     let webapp_base_url = webapp_base_url.unwrap();
 
     let should_stop = Arc::new(AtomicBool::new(false));
+
+    magick_wand_genesis();
 
     rt.block_on(async move {
         tokio::spawn({
@@ -271,9 +297,16 @@ fn main() {
             shadow_clone!(app_stop_handle);
 
             async move {
-                let res = Processor::new(4, webapp_client, mongodb_client, gcs_bucket, should_stop)
-                    .run()
-                    .await;
+                let res = Processor::new(
+                    conversion_threads,
+                    conversion_memory,
+                    webapp_client,
+                    mongodb_client,
+                    gcs_bucket,
+                    should_stop,
+                )
+                .run()
+                .await;
 
                 // make sure other parts will stop if processor unexpectedly stopped
                 app_stop_handle.stop(StopReason::ProcessorStopped);

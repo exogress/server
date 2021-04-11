@@ -116,7 +116,7 @@ pub fn listen_queue(
     client: MongoDbClient,
     should_stop: Arc<AtomicBool>,
 ) -> impl Stream<Item = Result<QueuedRequest, mongodb::error::Error>> {
-    let collection: Collection<QueuedRequest> = client.db.collection_with_type(QUEUE_COLLECTION);
+    let collection: Collection<QueuedRequest> = client.db.collection(QUEUE_COLLECTION);
     async_stream::stream! {
         loop {
             if should_stop.load(Ordering::Relaxed) {
@@ -257,7 +257,7 @@ impl MongoDbClient {
     }
 
     pub async fn queue_size(&self) -> anyhow::Result<u32> {
-        let collection = self.db.collection(QUEUE_COLLECTION);
+        let collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
         Ok(collection
             .count_documents(
                 doc! {
@@ -272,7 +272,7 @@ impl MongoDbClient {
     }
 
     async fn cleanup_outdated_uploads(&self, now: DateTime<Utc>) -> anyhow::Result<()> {
-        let collection = self.db.collection(QUEUE_COLLECTION);
+        let collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
 
         // Cleanup outdated upload requests
         collection
@@ -294,9 +294,7 @@ impl MongoDbClient {
         &self,
         upload_id: &str,
     ) -> anyhow::Result<Option<QueuedRequest>> {
-        let collection = self
-            .db
-            .collection_with_type::<QueuedRequest>(QUEUE_COLLECTION);
+        let collection = self.db.collection::<QueuedRequest>(QUEUE_COLLECTION);
         let now = Utc::now();
 
         self.cleanup_outdated_uploads(now).await?;
@@ -313,7 +311,7 @@ impl MongoDbClient {
         upload_id: &str,
         header: sodiumoxide::crypto::secretstream::Header,
     ) -> anyhow::Result<()> {
-        let collection = self.db.collection(QUEUE_COLLECTION);
+        let collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
         let filter = doc! {
             "upload_id": upload_id
         };
@@ -359,9 +357,7 @@ impl MongoDbClient {
         content_hash: String,
     ) -> anyhow::Result<ProcessResponse> {
         let now = Utc::now();
-        let queue_collection = self
-            .db
-            .collection_with_type::<QueuedRequest>(QUEUE_COLLECTION);
+        let queue_collection = self.db.collection::<QueuedRequest>(QUEUE_COLLECTION);
 
         self.cleanup_outdated_uploads(now).await?;
 
@@ -407,9 +403,7 @@ impl MongoDbClient {
         identifier: &str,
         content_hash: &str,
     ) -> anyhow::Result<Option<Processed>> {
-        let queue_collection = self
-            .db
-            .collection_with_type::<Processed>(PROCESSED_COLLECTION);
+        let queue_collection = self.db.collection::<Processed>(PROCESSED_COLLECTION);
 
         let filter = doc! {
             "account_unique_id": account_unique_id.to_string(),
@@ -432,9 +426,8 @@ impl MongoDbClient {
             bail!("no processed entries specified");
         }
 
-        let processed_collection: Collection<Processed> =
-            self.db.collection_with_type(PROCESSED_COLLECTION);
-        let queued_collection = self.db.collection(QUEUE_COLLECTION);
+        let processed_collection: Collection<Processed> = self.db.collection(PROCESSED_COLLECTION);
+        let queued_collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
 
         let processed = Processed {
             identifier: queued.identifier.clone(),
