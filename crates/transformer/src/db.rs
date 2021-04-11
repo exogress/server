@@ -229,7 +229,7 @@ impl MongoDbClient {
                             "upload_id": 1,
                         },
                         "name": "queued_upload_id_index",
-                        "unique": true
+                        "unique": false
                     },
                     {
                         "key": {
