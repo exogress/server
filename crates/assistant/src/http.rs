@@ -202,7 +202,7 @@ pub async fn server(
 
                                                 if msg.is_text() {
                                                     let mut txt = msg.to_str().unwrap().to_string();
-                                                    match simd_json::from_str::<WsFromGwMessage>(&mut txt) {
+                                                    match serde_json::from_str::<WsFromGwMessage>(&mut txt) {
                                                         Ok(msg) => {
                                                             crate::statistics::GW_MESSAGES_PARSED
                                                                 .with_label_values(&[
@@ -244,7 +244,7 @@ pub async fn server(
                                     };
 
                                     let notifier = async move {
-                                        let outgoing_msg = simd_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
+                                        let outgoing_msg = serde_json::to_string(&WsToGwMessage::GwConfig(common_gw_tls_config.ws_message().await?))?;
 
                                         tokio::time::timeout(Duration::from_secs(5), ch_ws_tx.send(warp::filters::ws::Message::text(outgoing_msg))).await??;
 
@@ -265,9 +265,9 @@ pub async fn server(
                                                                     match msg.get_payload::<String>() {
                                                                         Ok(mut p) => {
                                                                             info!("redis -> assistant: {:?}", p);
-                                                                            match simd_json::from_str::<Notification>(&mut p) {
+                                                                            match serde_json::from_str::<Notification>(&mut p) {
                                                                                 Ok(notification) => {
-                                                                                    let outgoing_msg = simd_json::to_string(&WsToGwMessage::WebAppNotification(notification))
+                                                                                    let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
                                                                                         .expect("could not serialize");
                                                                                     let r = tokio::time::timeout(Duration::from_secs(5), ch_ws_tx
                                                                                         .send(warp::filters::ws::Message::text(

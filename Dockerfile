@@ -10,7 +10,7 @@ RUN apk --update add build-base imagemagick imagemagick-dev \
 COPY . /code
 WORKDIR /code/crates
 
-ENV RUSTFLAGS="-Ctarget-feature=-crt-static -Ctarget-feature=+sse4.2"
+ENV RUSTFLAGS="-Ctarget-feature=-crt-static"
 
 FROM dirs as builder
 

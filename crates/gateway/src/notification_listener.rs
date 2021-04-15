@@ -351,7 +351,7 @@ impl AssistantClient {
                                                 "received statistics report. will send to assistant WS: {:?}",
                                                 report
                                             );
-                                            let report = simd_json::to_string(&report).unwrap();
+                                            let report = serde_json::to_string(&report).unwrap();
                                             if let Err(e) = (&mut ch_ws_tx).send(tungstenite::Message::Text(report)).await
                                             {
                                                 // TODO: here we miss some statistics report
