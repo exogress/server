@@ -177,8 +177,5 @@ pub fn api_handler(
             }
         });
 
-    process_request
-        .or(upload_request)
-        .with(warp::trace::request())
-        .boxed()
+    process_request.or(upload_request).boxed()
 }

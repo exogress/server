@@ -256,7 +256,8 @@ fn main() {
         let webapp_client =
             crate::webapp::Client::new(webapp_base_url.clone(), int_client_cert.clone());
 
-        let prometheus = warp::path!("metrics").map(dump_prometheus);
+        let prometheus = warp::path!("metrics")
+            .and_then(|| async move { Ok::<_, warp::reject::Rejection>(dump_prometheus()) });
         let healthcheck = warp::path!("healthcheck").and_then({
             shadow_clone!(mongodb_client);
 
@@ -265,10 +266,13 @@ fn main() {
 
                 async move {
                     if mongodb_client.clone().health().await {
-                        Ok::<_, warp::Rejection>(warp::reply::with_status("ok", StatusCode::OK))
+                        Ok::<_, warp::Rejection>(warp::reply::with_status(
+                            "ok".to_string(),
+                            StatusCode::OK,
+                        ))
                     } else {
                         Ok(warp::reply::with_status(
-                            "unhealthy",
+                            "unhealthy".to_string(),
                             StatusCode::INTERNAL_SERVER_ERROR,
                         ))
                     }
@@ -286,7 +290,8 @@ fn main() {
                 gcs_bucket.clone(),
             )
             .or(healthcheck)
-            .or(prometheus),
+            .or(prometheus)
+            .with(warp::trace::request()),
         )
         .bind_with_graceful_shutdown(
             listen_http,
