@@ -147,6 +147,7 @@ fn main() {
         true,
         false,
         false,
+        false,
     );
 
     let args = App::new("Exogress Directory Balancer")
@@ -175,7 +176,7 @@ fn main() {
         int_client_cert,
         webapp_url,
         ..
-    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false, false);
 
     let int_api_client = IntApiClient::new(
         webapp_url.expect("INT api url is not provided"),

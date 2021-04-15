@@ -1,11 +1,13 @@
-use crate::http_serve::{RequestsProcessor, ResolvedHandler};
+use crate::http_serve::{
+    identifier::RequestProcessingIdentifier, RequestsProcessor, ResolvedHandler,
+};
 use byte_unit::Byte;
 use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashSet;
 use etag::EntityTag;
-use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
+use exogress_common::entities::AccountUniqueId;
 use exogress_server_common::crypto;
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use hashbrown::HashSet;
 use http::{
     header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY},
@@ -21,7 +23,6 @@ use std::{
     sync::Arc, time::Duration,
 };
 use tokio::time::sleep;
-use tokio_util::codec::LengthDelimitedCodec;
 use typed_headers::HeaderMapExt;
 
 #[derive(Clone)]
@@ -45,6 +46,12 @@ pub struct HandlerChecksum(u64);
 impl From<u64> for HandlerChecksum {
     fn from(num: u64) -> Self {
         HandlerChecksum(num)
+    }
+}
+
+impl HandlerChecksum {
+    pub fn into_inner(self) -> u64 {
+        self.0
     }
 }
 
@@ -73,6 +80,7 @@ pub struct CacheItem {
     is_weak_etag: Option<bool>,
     last_modified: Option<u32>,
     used_times: u32,
+    content_hash: String,
 }
 
 impl Cache {
@@ -156,26 +164,6 @@ impl Cache {
         path.push(second);
         path.push(format!("{}-{}", last, vary));
         path
-    }
-
-    /// The request_hash used to store the data in blob storage
-    fn sha_request_hash(
-        &self,
-        project_name: &ProjectName,
-        mount_point_name: &MountPointName,
-        handler_name: &HandlerName,
-        handler_checksum: &HandlerChecksum,
-        method: &http::Method,
-        path_and_query: &str,
-    ) -> String {
-        let mut content_sha2 = sha2::Sha512::default();
-        content_sha2.update(project_name.as_str());
-        content_sha2.update(mount_point_name.as_str());
-        content_sha2.update(handler_name.as_str());
-        content_sha2.update(&handler_checksum.0.to_be_bytes());
-        content_sha2.update(method.as_str());
-        content_sha2.update(path_and_query);
-        bs58::encode(content_sha2.finalize()).into_string()
     }
 
     async fn delete_evicted_files(&self, evicted_files: Vec<CacheItem>) -> anyhow::Result<()> {
@@ -322,7 +310,7 @@ impl Cache {
     }
 
     fn vary_hash(vary_headers_ordered_list: &BTreeSet<String>, req_headers: &HeaderMap) -> String {
-        let mut content_sha = sha2::Sha224::default();
+        let mut hashsum = sha2::Sha224::default();
 
         for vary_by_header_name in vary_headers_ordered_list {
             let header_value = req_headers
@@ -330,10 +318,10 @@ impl Cache {
                 .get(vary_by_header_name.to_lowercase())
                 .map(|h| h.to_str().unwrap())
                 .unwrap_or_default();
-            content_sha.update(header_value);
+            hashsum.update(header_value);
         }
 
-        bs58::encode(content_sha.finalize()).into_string()
+        bs58::encode(hashsum.finalize()).into_string()
     }
 
     async fn add_file_without_checks(
@@ -343,6 +331,7 @@ impl Cache {
         res_headers: &HeaderMap,
         status: StatusCode,
         body_encryption_header: Header,
+        content_hash: String,
         valid_till: DateTime<Utc>,
         original_file_size: u32,
         temp_file_path: PathBuf,
@@ -438,6 +427,7 @@ impl Cache {
                     is_weak_etag: etag.as_ref().map(|e| e.weak),
                     last_modified: last_modified.map(|lm| lm.try_into().unwrap()),
                     used_times: 0,
+                    content_hash,
                 })
                 .map_err(|e| anyhow!("{}", e))?;
         }
@@ -469,34 +459,22 @@ impl Cache {
         Ok(())
     }
 
-    pub async fn save_content(
+    pub async fn save_content_from_temp_file(
         &self,
+        processing_identifier: RequestProcessingIdentifier,
         account_unique_id: &AccountUniqueId,
-        project_name: &ProjectName,
-        mount_point_name: &MountPointName,
-        handler_name: &HandlerName,
-        handler_checksum: &HandlerChecksum,
-        method: &http::Method,
         req_headers: &HeaderMap,
         res_headers: &HeaderMap,
         status: StatusCode,
-        path_and_query: &str,
         original_file_size: u32,
         encryption_header: Header,
+        content_hash: String,
         max_account_cache_size: Byte,
         valid_till: DateTime<Utc>,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
         temp_file_path: PathBuf,
     ) -> anyhow::Result<()> {
-        // TODO: ensure GET/HEAD and success resp
-        let file_name = self.sha_request_hash(
-            project_name,
-            mount_point_name,
-            handler_name,
-            handler_checksum,
-            method,
-            path_and_query,
-        );
+        let file_name = processing_identifier.to_string();
 
         let key = (account_unique_id.clone(), file_name.clone());
 
@@ -505,7 +483,7 @@ impl Cache {
                 let mut account_used = self.get_account_used(account_unique_id).await?;
 
                 loop {
-                    if account_used < max_account_cache_size {
+                    if account_used <= max_account_cache_size {
                         break;
                     }
 
@@ -521,7 +499,7 @@ impl Cache {
                 }
 
                 loop {
-                    if account_used < max_account_cache_size {
+                    if account_used <= max_account_cache_size {
                         break;
                     }
 
@@ -534,12 +512,15 @@ impl Cache {
                     account_used = self.get_account_used(account_unique_id).await?;
                 }
 
+                error!("Will add without checks!");
+
                 self.add_file_without_checks(
                     account_unique_id,
                     req_headers,
                     res_headers,
                     status,
                     encryption_header,
+                    content_hash,
                     valid_till,
                     original_file_size,
                     temp_file_path,
@@ -556,6 +537,7 @@ impl Cache {
 
             r
         } else {
+            error!("Will not save since another saving is in progress");
             Ok(())
         }
     }
@@ -564,8 +546,9 @@ impl Cache {
         &self,
         requests_processor: &RequestsProcessor,
         handler: &ResolvedHandler,
+        processing_identifier: &RequestProcessingIdentifier,
         req: &Request<Body>,
-    ) -> anyhow::Result<Option<Response<hyper::Body>>> {
+    ) -> anyhow::Result<Option<(Response<hyper::Body>, String)>> {
         if handler.resolved_variant.is_cache_enabled() != Some(true) {
             return Ok(None);
         }
@@ -575,21 +558,10 @@ impl Cache {
         }
 
         let account_unique_id = &requests_processor.account_unique_id;
-        let project_name = &requests_processor.project_name;
-        let mount_point_name = &requests_processor.mount_point_name;
         let xchacha20poly1305_secret_key = &requests_processor.xchacha20poly1305_secret_key;
         let request_headers = req.headers();
-        let method = req.method();
-        let path_and_query = req.uri().path_and_query().expect("FIXME").as_str();
 
-        let file_name = self.sha_request_hash(
-            project_name,
-            mount_point_name,
-            &handler.handler_name,
-            &handler.handler_checksum,
-            method,
-            path_and_query,
-        );
+        let file_name = processing_identifier.to_string();
 
         let maybe_variation = {
             let ledb = self.ledb.read();
@@ -629,7 +601,7 @@ impl Cache {
         };
 
         if let Some(variation_result) = maybe_variation {
-            let variation = variation_result.map_err(|e| anyhow!("{}", e))?;
+            let variation: CacheItem = variation_result.map_err(|e| anyhow!("{}", e))?;
 
             // at this point we are sure that vary header math
             info!("found matched vary header. will serve from cache");
@@ -652,7 +624,7 @@ impl Cache {
             )
             .ok_or_else(|| anyhow!("failed to read encryption header"))?;
 
-            let mut dec_stream = crypto::decrypt_stream(
+            let dec_stream = crypto::decrypt_reader(
                 Cursor::new(base64::decode(variation.meta)?),
                 &xchacha20poly1305_secret_key,
                 &meta_encryption_header,
@@ -716,7 +688,7 @@ impl Cache {
                 let mut resp = Response::new(hyper::Body::empty());
                 info!("respond not-modified from cache o nconditional response");
                 *resp.status_mut() = StatusCode::NOT_MODIFIED;
-                return Ok(Some(resp));
+                return Ok(Some((resp, variation.content_hash)));
             }
 
             let storage_path = self.storage_path(
@@ -727,7 +699,7 @@ impl Cache {
 
             let reader = tokio::fs::File::open(&storage_path).await?;
 
-            let body = crypto::decrypt_stream(
+            let body = crypto::decrypt_reader(
                 reader,
                 xchacha20poly1305_secret_key,
                 &body_encryption_header,
@@ -747,7 +719,7 @@ impl Cache {
                         original_file_size.into(),
                     ));
             }
-            Ok(Some(resp))
+            Ok(Some((resp, variation.content_hash)))
         } else {
             Ok(None)
         }

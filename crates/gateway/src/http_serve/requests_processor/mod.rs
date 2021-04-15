@@ -1,54 +1,98 @@
 use crate::{
-    cache::{Cache, HandlerChecksum},
     clients::{
         traffic_counter::{RecordedTrafficStatistics, TrafficCounters},
         ClientTunnels,
     },
+    dbip::LocationAndIsp,
     http_serve::{
         auth::JwtEcdsa,
-        requests_processor::modifications::{Replaced, ResolvedPathSegmentModify},
+        cache::{Cache, HandlerChecksum},
+        helpers::clone_response_through_tempfile,
+        identifier::RequestProcessingIdentifier,
+        requests_processor::{
+            modifications::{
+                substitute_str_with_filter_matches, Replaced, ResolvedPathSegmentModify,
+            },
+            pass_through::ResolvedPassThrough,
+            post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
+        },
+        templates::render_limit_reached,
     },
     mime_helpers::{is_mime_match, ordered_by_quality},
     public_hyper_client::MeteredHttpsConnector,
     rules_counter::AccountCounters,
+    transformer::TransformerClient,
     webapp::{ConfigData, ConfigsResponse},
 };
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 pub use auth::{ResolvedGithubAuthDefinition, ResolvedGoogleAuthDefinition};
 use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use core::mem;
 use exogress_common::{
+    common_utils::uri_ext::UriExt,
     config_core::{
-        self, is_profile_active, Action, CatchAction, CatchMatcher, ClientHandlerVariant,
+        self, is_profile_active, referenced,
+        referenced::{Container, Parameter},
+        refinable::RefinableSet,
+        Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandlerVariant,
         MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue,
-        MatchingPath, MethodMatcher, ModifyHeaders, OnResponse, ResponseBody, StaticResponse,
-        StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, UrlPathSegment,
+        MatchingPath, MethodMatcher, ModifyHeaders, ModifyQuery, ModifyQueryStrategy, OnResponse,
+        RedirectTo, RequestModifications, ResponseBody, Scope, StaticResponse, StatusCodeRange,
+        TemplateEngine, TrailingSlashFilterRule, TrailingSlashModification, UrlPathSegment,
     },
     entities::{
-        exceptions, exceptions::MODIFICATION_ERROR, AccountUniqueId, ConfigId, ConfigName,
-        HandlerName, InstanceId, MountPointName, ProjectName, StaticResponseName,
+        exceptions, exceptions::MODIFICATION_ERROR, serde::Serializer,
+        url_prefix::MountPointBaseUrl, AccountUniqueId, ConfigId, ConfigName, Exception,
+        HandlerName, InstanceId, MountPointName, ParameterName, ProjectName, ProjectUniqueId,
+        StaticResponseName,
     },
 };
 use exogress_server_common::{
     crypto,
-    logging::{LogMessage, ProcessingStep, StaticResponseProcessingStep},
+    crypto::decrypt_reader,
+    logging::{ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep},
     presence,
+    transformer::{ProcessResponse, MAX_SIZE_FOR_TRANSFORMATION},
+    ContentHash,
 };
-use futures::{channel::mpsc, SinkExt, StreamExt};
+use futures::{
+    channel::{mpsc, oneshot},
+    SinkExt, StreamExt, TryStreamExt,
+};
 use handlebars::Handlebars;
 use hashbrown::HashMap;
-use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
+use http::{
+    header::{
+        HeaderName, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, LOCATION,
+        RANGE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
+    },
+    HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
+};
 use hyper::Body;
 use itertools::Itertools;
+use langtag::LanguageTagBuf;
+use linked_hash_map::LinkedHashMap;
+use memmap::Mmap;
+use mime::{IMAGE_JPEG, IMAGE_PNG, TEXT_HTML_UTF_8};
 use parking_lot::Mutex;
 use pin_utils::pin_mut;
+use regex::Regex;
+use rw_stream_sink::RwStreamSink;
+use serde::{
+    ser::{SerializeMap, SerializeSeq},
+    Serialize,
+};
 use serde_json::json;
+use sha2::Digest;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
 use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
+    io,
     net::SocketAddr,
+    sync::Arc,
     time::Instant,
 };
 use tokio::io::AsyncWriteExt;
@@ -72,48 +116,6 @@ pub mod refinable;
 mod s3_bucket;
 mod static_dir;
 
-use crate::{
-    dbip::LocationAndIsp,
-    http_serve::{
-        requests_processor::{
-            modifications::substitute_str_with_filter_matches,
-            pass_through::ResolvedPassThrough,
-            post_processing::{ResolvedEncoding, ResolvedImage, ResolvedPostProcessing},
-        },
-        templates::render_limit_reached,
-    },
-};
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use exogress_common::{
-    common_utils::uri_ext::UriExt,
-    config_core::{
-        referenced,
-        referenced::{Container, Parameter},
-        refinable::RefinableSet,
-        ClientConfigRevision, ModifyQuery, ModifyQueryStrategy, RedirectTo, RequestModifications,
-        Scope, TrailingSlashModification,
-    },
-    entities::{
-        serde::Serializer, url_prefix::MountPointBaseUrl, Exception, ParameterName, ProjectUniqueId,
-    },
-};
-use exogress_server_common::logging::ExceptionProcessingStep;
-use http::header::{
-    HeaderName, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, RANGE,
-    STRICT_TRANSPORT_SECURITY, USER_AGENT,
-};
-use langtag::LanguageTagBuf;
-use linked_hash_map::LinkedHashMap;
-use memmap::Mmap;
-use mime::TEXT_HTML_UTF_8;
-use regex::Regex;
-use serde::{
-    ser::{SerializeMap, SerializeSeq},
-    Serialize,
-};
-use std::sync::Arc;
-use tokio::sync::Semaphore;
-
 pub struct RequestsProcessor {
     pub is_active: bool,
     ordered_handlers: Vec<ResolvedHandler>,
@@ -133,9 +135,9 @@ pub struct RequestsProcessor {
     pub xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     max_pop_cache_size_bytes: Byte,
     gw_location: SmolStr,
+    transformer_client: TransformerClient,
     log_messages_tx: mpsc::Sender<LogMessage>,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
-    webp_semaphore: Semaphore,
 }
 
 impl RequestsProcessor {
@@ -217,13 +219,94 @@ impl RequestsProcessor {
             // create new response for each handler, avoid using dirty data from the previous handler
             *res = Response::new(Body::empty());
 
-            let cached_response = self.cache.serve_from_cache(&self, &handler, &req).await;
+            let processing_identifier = RequestProcessingIdentifier::new(
+                &self.project_name,
+                &self.mount_point_name,
+                &handler.handler_name,
+                &handler.handler_checksum,
+                req.method(),
+                req.uri().path_and_query().unwrap().as_str(),
+            );
+
+            let cached_response = self
+                .cache
+                .serve_from_cache(&self, &handler, &processing_identifier, &req)
+                .await;
 
             match cached_response {
-                Ok(Some(resp_from_cache)) => {
+                Ok(Some((mut resp_from_cache, content_hash))) => {
                     if resp_from_cache.status().is_success()
                         || resp_from_cache.status() == StatusCode::NOT_MODIFIED
                     {
+                        if is_eligible_for_transformation(
+                            &resp_from_cache,
+                            handler.resolved_variant.post_processing(),
+                        ) {
+                            if let Some(max_age) = cache_max_age(req, res, handler) {
+                                // FIXME: This is inefficient: need body cloning support on cache response
+
+                                match clone_response_through_tempfile(&mut resp_from_cache) {
+                                    Ok(on_response_finished) => {
+                                        let transformer_client = self.transformer_client.clone();
+                                        let account_secret_key =
+                                            self.xchacha20poly1305_secret_key.clone();
+
+                                        let req_uri = req.uri().clone();
+                                        let req_method = req.method().clone();
+                                        let req_headers = req.headers().clone();
+
+                                        let cache = self.cache.clone();
+                                        let account_unique_id = self.account_unique_id.clone();
+                                        let project_name = self.project_name.clone();
+                                        let mount_point_name = self.mount_point_name.clone();
+                                        let max_pop_cache_size_bytes =
+                                            self.max_pop_cache_size_bytes.clone();
+                                        let xchacha20poly1305_secret_key =
+                                            self.xchacha20poly1305_secret_key.clone();
+                                        let handler_name = handler.handler_name.clone();
+                                        let handler_checksum = handler.handler_checksum.clone();
+
+                                        tokio::spawn(async move {
+                                            if let Some((
+                                                cloned_resp,
+                                                content_len,
+                                                calculated_content_hash,
+                                            )) = on_response_finished.await
+                                            {
+                                                if calculated_content_hash != content_hash {
+                                                    error!("cloned response content_hash != content_hash from cache");
+                                                }
+
+                                                trigger_transformation_if_required(
+                                                    max_age,
+                                                    &req_headers,
+                                                    req_method,
+                                                    &req_uri,
+                                                    cloned_resp,
+                                                    content_len,
+                                                    content_hash,
+                                                    account_secret_key,
+                                                    transformer_client,
+                                                    cache,
+                                                    account_unique_id,
+                                                    project_name,
+                                                    mount_point_name,
+                                                    max_pop_cache_size_bytes,
+                                                    xchacha20poly1305_secret_key,
+                                                    handler_name,
+                                                    handler_checksum,
+                                                )
+                                                .await;
+                                            }
+                                        });
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to clone response through tempfile: {}", e);
+                                    }
+                                }
+                            };
+                        }
+
                         // respond from the cache only if success response
                         *res = resp_from_cache;
 
@@ -307,37 +390,108 @@ impl RequestsProcessor {
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
             Some(handler) => {
-                let optimize_result = self
-                    .optimize_image(
+                if is_eligible_for_transformation(res, handler.resolved_variant.post_processing()) {
+                    if let Some(max_age) = cache_max_age(req, res, handler) {
+                        match clone_response_through_tempfile(res) {
+                            Ok(on_response_finished) => {
+                                let transformer_client = self.transformer_client.clone();
+                                let account_secret_key = self.xchacha20poly1305_secret_key.clone();
+
+                                let req_uri = req.uri().clone();
+                                let req_method = req.method().clone();
+                                let req_headers = req.headers().clone();
+
+                                let cache = self.cache.clone();
+                                let account_unique_id = self.account_unique_id.clone();
+                                let project_name = self.project_name.clone();
+                                let mount_point_name = self.mount_point_name.clone();
+                                let max_pop_cache_size_bytes =
+                                    self.max_pop_cache_size_bytes.clone();
+                                let xchacha20poly1305_secret_key =
+                                    self.xchacha20poly1305_secret_key.clone();
+                                let handler_name = handler.handler_name.clone();
+                                let handler_checksum = handler.handler_checksum.clone();
+
+                                tokio::spawn(async move {
+                                    if let Some((cloned_resp, content_len, content_hash)) =
+                                        on_response_finished.await
+                                    {
+                                        trigger_transformation_if_required(
+                                            max_age,
+                                            &req_headers,
+                                            req_method,
+                                            &req_uri,
+                                            cloned_resp,
+                                            content_len,
+                                            content_hash,
+                                            account_secret_key,
+                                            transformer_client,
+                                            cache,
+                                            account_unique_id,
+                                            project_name,
+                                            mount_point_name,
+                                            max_pop_cache_size_bytes,
+                                            xchacha20poly1305_secret_key,
+                                            handler_name,
+                                            handler_checksum,
+                                        )
+                                        .await;
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                error!("Failed to clone response through tempfile: {}", e);
+                            }
+                        }
+                    }
+                } else {
+                    // compression is never applied after transformation
+                    if let Err(e) = self.compress_if_applicable(
                         req,
                         res,
                         handler
                             .resolved_variant
                             .post_processing()
-                            .map(|pp| &pp.image),
+                            .map(|pp| &pp.encoding),
                         log_message,
-                    )
-                    .await;
-                if let Err(e) = optimize_result {
-                    info!("Skipped image optimization due to the error: {}", e);
-                }
-
-                if let Err(e) = self.compress(
-                    req,
-                    res,
-                    handler
-                        .resolved_variant
-                        .post_processing()
-                        .map(|pp| &pp.encoding),
-                    log_message,
-                ) {
-                    warn!("Error compressing: {}", e);
-                }
+                    ) {
+                        warn!("Error compressing: {}", e);
+                    }
+                };
 
                 res.headers_mut()
                     .insert("server", HeaderValue::from_static("exogress"));
 
-                self.save_to_cache(req, res, handler);
+                if let Some(max_age) = cache_max_age(req, res, handler) {
+                    let cache = self.cache.clone();
+                    let account_unique_id = self.account_unique_id.clone();
+                    let project_name = self.project_name.clone();
+                    let mount_point_name = self.mount_point_name.clone();
+                    let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes.clone();
+                    let xchacha20poly1305_secret_key = self.xchacha20poly1305_secret_key.clone();
+                    let handler_name = handler.handler_name.clone();
+                    let handler_checksum = handler.handler_checksum.clone();
+
+                    let req_headers = req.headers();
+                    let req_method = req.method().clone();
+                    let req_uri = req.uri();
+
+                    save_to_cache(
+                        max_age,
+                        req_headers,
+                        req_method,
+                        req_uri,
+                        res,
+                        cache,
+                        account_unique_id,
+                        project_name,
+                        mount_point_name,
+                        max_pop_cache_size_bytes,
+                        xchacha20poly1305_secret_key,
+                        handler_name,
+                        handler_checksum,
+                    );
+                }
             }
         }
 
@@ -420,147 +574,339 @@ impl RequestsProcessor {
             *res.body_mut() = Body::from(body);
         }
     }
+}
 
-    fn save_to_cache(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        handler: &ResolvedHandler,
-    ) {
-        info!("will try to save to cache");
-        if handler.resolved_variant.is_cache_enabled() != Some(true) {
-            info!("cache is not enabled");
-            return;
-        }
+fn save_to_cache(
+    max_age: chrono::Duration,
+    req_headers: &HeaderMap,
+    req_method: Method,
+    req_uri: &http::Uri,
+    res: &mut Response<Body>,
+    cache: Cache,
+    account_unique_id: AccountUniqueId,
+    project_name: ProjectName,
+    mount_point_name: MountPointName,
+    max_pop_cache_size_bytes: Byte,
+    xchacha20poly1305_secret_key: xchacha20poly1305::Key,
+    handler_name: HandlerName,
+    handler_checksum: HandlerChecksum,
+) {
+    let path_and_query = req_uri.path_and_query().unwrap().to_string();
 
-        if req.method() != &Method::GET && req.method() != &Method::HEAD {
-            info!("bad method");
-            return;
-        };
+    let method = req_method.clone();
+    let req_headers = req_headers.clone();
+    let res_headers = res.headers().clone();
+    let status = res.status().clone();
 
-        if !res.status().is_success() {
-            info!("unsuccessful status");
-            return;
-        }
+    let (mut resp_tx, resp_rx) = mpsc::channel(1);
 
-        if req.headers().get(RANGE).is_some() {
-            info!("range set!");
-            return;
-        }
+    let mut original_body_stream = mem::replace(res.body_mut(), Body::empty());
 
-        let cache_entries: Vec<_> = res
-            .headers()
-            .get_all(CACHE_CONTROL)
-            .iter()
-            .map(|cache_control_header| {
-                let cache_control = cache_control_header.to_str().unwrap();
-                cache_control
-                    .split(',')
-                    .map(|item: &str| item.trim_matches(' '))
-            })
-            .flatten()
-            .collect();
+    let mut content_hash = ContentHash::default();
 
-        let caching_allowed = cache_entries.iter().any(|&c| c == "public")
-            && !cache_entries
-                .iter()
-                .any(|&c| c == "no-cache" || c == "private" || c == "no-store");
-
-        info!("caching_allowed = {:?}", caching_allowed);
-
-        let max_age = cache_entries
-            .iter()
-            .filter_map(|header| header.strip_prefix("max-age="))
-            .map(|h| Ok::<_, anyhow::Error>(chrono::Duration::seconds(h.parse()?)))
-            .flatten()
-            .next();
-
-        info!("max_age = {:?}", max_age);
-
-        if !caching_allowed || max_age.is_none() {
-            info!("exit from cache");
-            return;
-        }
-
-        let max_age = max_age.unwrap();
-
-        let path_and_query = req.uri().path_and_query().unwrap().to_string();
-
-        let cache = self.cache.clone();
-        let account_unique_id = self.account_unique_id.clone();
-        let project_name = self.project_name.clone();
-        let mount_point_name = self.mount_point_name.clone();
-        let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
-        let xchacha20poly1305_secret_key = self.xchacha20poly1305_secret_key.clone();
-
-        let method = req.method().clone();
-        let req_headers = req.headers().clone();
-        let res_headers = res.headers().clone();
-        let status = res.status().clone();
-        let handler_name = handler.handler_name.clone();
-        let handler_checksum = handler.handler_checksum;
-
-        let (mut resp_tx, resp_rx) = mpsc::channel(1);
-
-        let mut original_body_stream = mem::replace(res.body_mut(), Body::empty());
-
-        tokio::spawn(async move {
+    tokio::spawn(async move {
+        let r = async move {
             let tempdir = tokio::task::spawn_blocking(|| tempfile::tempdir()).await??;
 
             let tempfile_path = tempdir.path().to_owned().join("req");
             let mut original_file_size = 0;
             let mut tempfile = tokio::fs::File::create(&tempfile_path).await?;
 
-            let (mut encrypted, header) =
-                crypto::encrypt_stream(original_body_stream, &xchacha20poly1305_secret_key)?;
+            let (content_hash_finished_tx, content_hash_finished_rx) = oneshot::channel();
+
+            let hash_calculating_stream = async_stream::stream! {
+                while let Some(chunk) = original_body_stream.next().await {
+                    let c = chunk?;
+                    content_hash.update(&c);
+                    let _ = resp_tx
+                        .send(c.clone())
+                        .await;
+
+                    yield(Ok::<_, hyper::Error>(c))
+                };
+
+                let _ = content_hash_finished_tx.send(content_hash);
+            };
+
+            pin_mut!(hash_calculating_stream);
+
+            let (encrypted, header) =
+                crypto::encrypt_stream(hash_calculating_stream, &xchacha20poly1305_secret_key)?;
 
             pin_mut!(encrypted);
 
             while let Some(item_result) = encrypted.next().await {
-                let (item, original_cuhnk_size) = item_result?;
-                original_file_size += original_cuhnk_size;
+                let (item, original_chunk_size) = item_result?;
+                original_file_size += original_chunk_size;
 
                 tempfile.write_all(&item).await.unwrap();
-                resp_tx
-                    .send(item)
-                    .await
-                    .map_err(|_e| anyhow!("error sending to client"))?;
             }
 
-            info!("save content to cache!");
+            let processing_identifier = RequestProcessingIdentifier::new(
+                &project_name,
+                &mount_point_name,
+                &handler_name,
+                &handler_checksum,
+                &method,
+                &path_and_query,
+            );
 
-            let cached_response = cache
-                .save_content(
-                    &account_unique_id,
-                    &project_name,
-                    &mount_point_name,
-                    &handler_name,
-                    &handler_checksum,
-                    &method,
-                    &req_headers,
-                    &res_headers,
-                    status,
-                    path_and_query.as_str(),
-                    original_file_size.try_into().unwrap(),
-                    header,
-                    max_pop_cache_size_bytes,
-                    Utc::now() + max_age,
-                    &xchacha20poly1305_secret_key,
-                    tempfile_path,
-                )
-                .await;
+            if let Ok(content_hash) = content_hash_finished_rx.await {
+                let cached_response = cache
+                    .save_content_from_temp_file(
+                        processing_identifier,
+                        &account_unique_id,
+                        &req_headers,
+                        &res_headers,
+                        status,
+                        original_file_size.try_into().unwrap(),
+                        header,
+                        bs58::encode(content_hash.finalize()).into_string(),
+                        max_pop_cache_size_bytes,
+                        Utc::now() + max_age,
+                        &xchacha20poly1305_secret_key,
+                        tempfile_path,
+                    )
+                    .await;
 
-            if let Err(e) = cached_response {
-                crate::statistics::CACHE_ERRORS
-                    .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
-                    .inc();
-                error!("error saving to cache: {}", e);
+                if let Err(e) = cached_response {
+                    crate::statistics::CACHE_ERRORS
+                        .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
+                        .inc();
+                    error!("error saving to cache: {}", e);
+                }
             }
 
             Ok::<_, anyhow::Error>(())
-        });
+        }
+        .await;
 
-        *res.body_mut() = Body::wrap_stream(resp_rx.map(Ok::<_, hyper::Error>));
+        if let Err(e) = e {
+            error!("error saving to cache: {}", e);
+        }
+    });
+
+    *res.body_mut() = Body::wrap_stream(resp_rx.map(Ok::<_, hyper::Error>));
+}
+
+async fn trigger_transformation_if_required(
+    max_age: chrono::Duration,
+    req_headers: &HeaderMap,
+    req_method: Method,
+    req_uri: &http::Uri,
+    mut cloned_res: Response<Body>,
+    content_len: usize,
+    content_hash: String,
+    account_secret_key: xchacha20poly1305::Key,
+    transformer_client: TransformerClient,
+    cache: Cache,
+    account_unique_id: AccountUniqueId,
+    project_name: ProjectName,
+    mount_point_name: MountPointName,
+    max_pop_cache_size_bytes: Byte,
+    xchacha20poly1305_secret_key: xchacha20poly1305::Key,
+    handler_name: HandlerName,
+    handler_checksum: HandlerChecksum,
+) {
+    let r = async move {
+        let maybe_accept = req_headers.typed_get::<typed_headers::Accept>()?;
+
+        let maybe_content_type = cloned_res
+            .headers()
+            .typed_get::<typed_headers::ContentType>()?;
+
+        if let (Some(accept), Some(content_type)) = (maybe_accept, maybe_content_type) {
+            if let Ok(transformer_result) = transformer_client
+                .request_content(&content_hash, &content_type.0)
+                .await
+            {
+                error!("TRANSFORMER: transformer_result = {:?}", transformer_result);
+
+                match transformer_result {
+                    ProcessResponse::Ready(ready) => {
+                        if let Some((best_format, content_type)) = transformer_client
+                            .find_best_conversion(&ready, &accept)
+                            .await
+                        {
+                            let download_result = transformer_client
+                                .download_best_processed(best_format, &content_type, &content_hash)
+                                .await?;
+
+                            if let Some((transformed_body, encryption_header)) = download_result {
+                                let encryption_header =
+                                    sodiumoxide::crypto::secretstream::Header::from_slice(
+                                        base64::decode(encryption_header)?.as_ref(),
+                                    )
+                                    .ok_or_else(|| anyhow!("bad encryption header"))?;
+
+                                let io = tokio_util::compat::FuturesAsyncReadCompatExt::compat(
+                                    RwStreamSink::new(transformed_body.map_err(|e| {
+                                        io::Error::new(
+                                            io::ErrorKind::Other,
+                                            format!("hyper error: {}", e),
+                                        )
+                                    })),
+                                );
+                                let decrypted_stream =
+                                    decrypt_reader(io, &account_secret_key, &encryption_header)?;
+
+                                let transformed_content = decrypted_stream
+                                    .try_fold(Vec::new(), |mut acc, chunk| async move {
+                                        acc.extend_from_slice(&chunk);
+                                        Ok(acc)
+                                    })
+                                    .await?;
+                                info!(
+                                    "decrypted stream is ready! result {:?}",
+                                    transformed_content.len()
+                                );
+
+                                cloned_res.headers_mut().insert(
+                                    "x-exg-transformed",
+                                    HeaderValue::try_from("1").unwrap(),
+                                );
+                                cloned_res
+                                    .headers_mut()
+                                    .insert(CONTENT_TYPE, content_type.parse().unwrap());
+                                cloned_res
+                                    .headers_mut()
+                                    .insert(CONTENT_LENGTH, HeaderValue::from(content_len));
+                                cloned_res
+                                    .headers_mut()
+                                    .insert(ETAG, content_hash[..32].parse().unwrap());
+                                cloned_res.headers_mut().insert(
+                                    LAST_MODIFIED,
+                                    ready.transformed_at.to_rfc2822().parse().unwrap(),
+                                );
+
+                                *cloned_res.body_mut() = Body::from(transformed_content);
+
+                                error!("Will saved transformed to cache");
+
+                                save_to_cache(
+                                    max_age,
+                                    req_headers,
+                                    req_method,
+                                    req_uri,
+                                    &mut cloned_res,
+                                    cache,
+                                    account_unique_id,
+                                    project_name,
+                                    mount_point_name,
+                                    max_pop_cache_size_bytes,
+                                    xchacha20poly1305_secret_key,
+                                    handler_name,
+                                    handler_checksum,
+                                );
+
+                                // FIXME: this is ugly, but we need to consume whole body stream in order
+                                // to successfully complete cache saving
+                                let mut body_to_consume = cloned_res.into_body();
+                                while let Some(_) = body_to_consume.next().await {}
+                            }
+                        } else {
+                            // no appropriate conversion is available to the provided Accept header.
+                            // This is still treated as correctly transformed so taht no more requests are made to transformer
+
+                            cloned_res
+                                .headers_mut()
+                                .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
+
+                            save_to_cache(
+                                max_age,
+                                req_headers,
+                                req_method,
+                                req_uri,
+                                &mut cloned_res,
+                                cache,
+                                account_unique_id,
+                                project_name,
+                                mount_point_name,
+                                max_pop_cache_size_bytes,
+                                xchacha20poly1305_secret_key,
+                                handler_name,
+                                handler_checksum,
+                            );
+
+                            // FIXME: this is ugly, but we need to consume whole body stream in order to successfuly complete cache saving
+                            let mut body_to_consume = cloned_res.into_body();
+                            while let Some(_) = body_to_consume.next().await {}
+                        }
+                    }
+                    ProcessResponse::PendingUpload { upload_id, .. } => {
+                        transformer_client
+                            .upload(&upload_id, content_len, cloned_res.into_body())
+                            .await?;
+                    }
+                    ProcessResponse::Accepted => {
+                        info!("upload has already been accepted");
+                    }
+                    ProcessResponse::Processing => {
+                        info!("upload is processing");
+                    }
+                }
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(e) = r {
+        error!("error in transformation: {}", e);
+    }
+    // todo!("try_lock to ensure no parallel execution is performed");
+    // todo!("overwrite cache entry with the provided data");
+}
+
+fn is_eligible_for_transformation(
+    resp: &Response<Body>,
+    maybe_post_processing: Option<&ResolvedPostProcessing>,
+) -> bool {
+    match maybe_post_processing {
+        Some(post_processing) => {
+            let is_from_transformer = resp.headers().get("x-exg-transformed").is_some();
+
+            if is_from_transformer {
+                return false;
+            }
+
+            if let Ok(Some(content_len)) =
+                resp.headers().typed_get::<typed_headers::ContentLength>()
+            {
+                if content_len.0 > MAX_SIZE_FOR_TRANSFORMATION {
+                    info!("too large for transformation");
+                    // too large file, no transformation
+                    return false;
+                }
+            } else {
+                info!("no content-length. skip transformation");
+                // no content-length, not transforming
+                return false;
+            }
+
+            let content_type_result = resp.headers().typed_get::<typed_headers::ContentType>();
+
+            match content_type_result {
+                Ok(Some(mime_type)) => {
+                    if mime_type.0 == IMAGE_JPEG && post_processing.image.is_jpeg {
+                        true
+                    } else if mime_type.0 == IMAGE_PNG && post_processing.image.is_png {
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Ok(None) => {
+                    error!("no content-type while checking transformation eligibility");
+                    false
+                }
+                Err(_e) => {
+                    error!("bad content-type while checking transformation eligibility");
+                    false
+                }
+            }
+        }
+        None => false,
     }
 }
 
@@ -607,6 +953,66 @@ impl Rebase {
 
         return Some(rebased_url);
     }
+}
+
+pub fn cache_max_age(
+    req: &Request<Body>,
+    res: &Response<Body>,
+    handler: &ResolvedHandler,
+) -> Option<chrono::Duration> {
+    if handler.resolved_variant.is_cache_enabled() != Some(true) {
+        return None;
+    }
+
+    if req.method() != &Method::GET && req.method() != &Method::HEAD {
+        return None;
+    };
+
+    if !res.status().is_success() {
+        info!("unsuccessful status");
+        return None;
+    }
+
+    if req.headers().get(RANGE).is_some() {
+        info!("range set!");
+        return None;
+    }
+
+    let cache_entries: Vec<_> = res
+        .headers()
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .map(|cache_control_header| {
+            let cache_control = cache_control_header.to_str().unwrap();
+            cache_control
+                .split(',')
+                .map(|item: &str| item.trim_matches(' '))
+        })
+        .flatten()
+        .collect();
+
+    let caching_allowed = cache_entries.iter().any(|&c| c == "public")
+        && !cache_entries
+            .iter()
+            .any(|&c| c == "no-cache" || c == "private" || c == "no-store");
+
+    info!("caching_allowed = {:?}", caching_allowed);
+
+    let max_age = cache_entries
+        .iter()
+        .filter_map(|header| header.strip_prefix("max-age="))
+        .map(|h| Ok::<_, anyhow::Error>(chrono::Duration::seconds(h.parse()?)))
+        .flatten()
+        .next();
+
+    info!("max_age = {:?}", max_age);
+
+    if !caching_allowed || max_age.is_none() {
+        info!("exit from cache");
+        return None;
+    }
+
+    Some(max_age.unwrap())
 }
 
 impl From<config_core::Rebase> for Rebase {
@@ -2194,7 +2600,9 @@ impl RequestsProcessor {
         resp: ConfigsResponse,
         google_oauth2_client: super::auth::google::GoogleOauth2Client,
         github_oauth2_client: super::auth::github::GithubOauth2Client,
+        gcs_credentials_file: String,
         assistant_base_url: Url,
+        transformer_base_url: Url,
         client_tunnels: ClientTunnels,
         rules_counter: AccountCounters,
         individual_hostname: SmolStr,
@@ -2302,6 +2710,13 @@ impl RequestsProcessor {
         // let project_static_responses = resp.project_config.refinable.static_responses.clone();
         //
         let mut merged_resolved_handlers = vec![];
+        let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
+            public_counters_tx: public_counters_tx.clone(),
+            resolver: resolver.clone(),
+            counters: traffic_counters.clone(),
+            sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
+            recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
+        });
 
         for (
             _mp_name,
@@ -2331,14 +2746,6 @@ impl RequestsProcessor {
                 active_profile
             );
 
-            let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
-                public_counters_tx: public_counters_tx.clone(),
-                resolver: resolver.clone(),
-                counters: traffic_counters.clone(),
-                sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
-                recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
-            });
-
             let client_config_info = config_name.clone().zip(config_revision.clone());
 
             let mut r = mp.handlers
@@ -2351,7 +2758,7 @@ impl RequestsProcessor {
                     }
                 })
                 .map({
-                    shadow_clone!(active_profile, mount_point_name, refinable);
+                    shadow_clone!(active_profile, mount_point_name, refinable, public_client);
 
                     move |(handler_name, handler)| {
                         let replace_base_path = handler
@@ -2757,9 +3164,14 @@ impl RequestsProcessor {
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,
             gw_location: gw_location.into(),
+            transformer_client: TransformerClient::new(
+                account_unique_id,
+                transformer_base_url,
+                gcs_credentials_file,
+                public_client,
+            )?,
             log_messages_tx,
             dbip,
-            webp_semaphore: tokio::sync::Semaphore::new(4),
         })
     }
 }

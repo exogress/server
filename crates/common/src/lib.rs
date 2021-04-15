@@ -10,3 +10,5 @@ pub mod logging;
 pub mod presence;
 pub mod prometheus;
 pub mod transformer;
+
+pub type ContentHash = sha2::Sha256;

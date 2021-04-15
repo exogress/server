@@ -5,12 +5,10 @@ use crate::{
 };
 use bytes::{BufMut, BytesMut};
 use core::mem;
-use exogress_server_common::crypto::{decrypt_stream, encrypt_stream};
+use exogress_server_common::crypto::{decrypt_reader, encrypt_stream};
 use futures::{StreamExt, TryStreamExt};
-use magick_rust::{MagickWand, ResourceType};
 use pin_utils::pin_mut;
 use std::{
-    convert::TryInto,
     io,
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
@@ -67,7 +65,7 @@ impl Processor {
                             error!("Error counting queue size: {}", e);
                         }
                     }
-                    sleep(Duration::from_secs(10)).await;
+                    sleep(Duration::from_secs(1)).await;
                 }
             }
         });
@@ -103,7 +101,7 @@ impl Processor {
                     let path = format!(
                         "{}/uploads/{}",
                         account_unique_id,
-                        request.identifier.clone()
+                        request.content_hash.clone()
                     );
                     let uploaded_body = gcs_bucket.download(path.clone()).await?;
 
@@ -114,7 +112,7 @@ impl Processor {
                     )
                     .ok_or_else(|| anyhow!("malformed encryption header"))?;
 
-                    let decrypted = decrypt_stream(
+                    let decrypted = decrypt_reader(
                         FuturesAsyncReadCompatExt::compat(
                             to_vec_body(uploaded_body)
                                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
@@ -162,25 +160,28 @@ impl Processor {
 
                     info!("blocking conversion finished. save result");
 
-                    let identifier = request.identifier.clone();
+                    let content_hash = request.content_hash.clone();
 
                     let after_processed = async move {
                         let secret_key = webapp.get_secret_key(&account_unique_id).await?;
 
                         gcs_bucket.delete(path).await?;
 
+                        let bucket_info = gcs_bucket.bucket_info();
+
                         if let Ok((webp_result, avif_result)) = result {
                             let upload_webp = {
-                                shadow_clone!(identifier, gcs_bucket, secret_key);
+                                shadow_clone!(content_hash, gcs_bucket, secret_key);
 
                                 async move {
                                     if let Ok(webp) = webp_result {
                                         let transformed = webp.transformed;
                                         let meta = webp.meta;
                                         let webp_path = format!(
-                                            "{}/processed/{}.webp",
+                                            "{}/processed/{}/{}",
                                             account_unique_id,
-                                            identifier.clone()
+                                            content_hash.clone(),
+                                            meta.content_type
                                         );
 
                                         let transformed_stream = futures::stream::once(async {
@@ -218,8 +219,8 @@ impl Processor {
                                     let transformed = avif.transformed;
                                     let meta = avif.meta;
                                     let avif_path = format!(
-                                        "{}/processed/{}.avif",
-                                        account_unique_id, identifier
+                                        "{}/processed/{}/{}",
+                                        account_unique_id, content_hash, meta.content_type
                                     );
 
                                     let transformed_stream = futures::stream::once(async {
@@ -259,7 +260,7 @@ impl Processor {
                                     .collect()
                             };
 
-                            db.save_processed(uploads, request).await?;
+                            db.save_processed(uploads, request, &bucket_info).await?;
                         }
 
                         mem::drop(guard);

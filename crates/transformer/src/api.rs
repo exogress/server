@@ -2,10 +2,9 @@ use crate::{bucket::GcsBucketClient, db::MongoDbClient, helpers::to_vec_body};
 use bytes::{Buf, BufMut, BytesMut};
 use exogress_server_common::{
     crypto::encrypt_stream,
-    transformer::{BucketProcessedStored, ProcessRequest, ProcessResponse, ProcessingReady},
+    transformer::{ProcessRequest, ProcessResponse, ProcessingReady, MAX_SIZE_FOR_TRANSFORMATION},
 };
 use futures::{Stream, TryStreamExt};
-use itertools::Itertools;
 use warp::{http::StatusCode, reject::Reject, Filter, Rejection};
 
 #[derive(Debug)]
@@ -59,7 +58,7 @@ async fn handle_upload_request(
 
     let path = format!(
         "{}/uploads/{}",
-        queued_info.account_unique_id, queued_info.identifier
+        queued_info.account_unique_id, queued_info.content_hash
     );
 
     let (encrypted_stream, header) =
@@ -98,7 +97,7 @@ pub fn api_handler(
     mongodb_client: MongoDbClient,
     gcs_bucket: GcsBucketClient,
 ) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
-    let process_request = warp::path!("int_api" / "v1" / "transformations" / "process")
+    let process_request = warp::path!("int_api" / "v1" / "transformations" / "content")
         .and(warp::post())
         .and(warp::body::json())
         .and_then({
@@ -112,38 +111,20 @@ pub fn api_handler(
 
                     let result: anyhow::Result<_> = async {
                         let res = mongodb_client
-                            .find_processed(
-                                &account_unique_id,
-                                &body.identifier,
-                                &body.content_hash,
-                            )
+                            .find_processed(&account_unique_id, &body.content_hash)
                             .await?;
                         match res {
-                            Some(processed) => Ok(ProcessResponse::Ready {
-                                formats: processed
-                                    .formats
-                                    .into_iter()
-                                    .map(|processed_format| {
-                                        let bucket_info = gcs_bucket.bucket_info();
-
-                                        ProcessingReady {
-                                            content_type: processed_format.content_type,
-                                            encryption_header: processed_format.encryption_header,
-                                            compression_ratio: processed_format.compression_ratio,
-                                            content_len: processed_format.compressed_size as u64,
-                                            buckets: vec![BucketProcessedStored {
-                                                provider: "gcs".to_string(),
-                                                name: bucket_info.name.into(),
-                                                location: bucket_info.location.to_string(),
-                                            }],
-                                        }
-                                    })
-                                    .sorted_by(|l, r| l.content_len.cmp(&r.content_len))
-                                    .collect(),
+                            Some(processed) => Ok(ProcessResponse::Ready(ProcessingReady {
+                                formats: processed.formats,
                                 original_content_len: processed.source_size as u64,
-                            }),
+                                transformed_at: processed.transformation_started_at,
+                            })),
                             None => Ok(mongodb_client
-                                .find_queued(account_unique_id, body.identifier, body.content_hash)
+                                .find_queued_or_create_upload(
+                                    account_unique_id,
+                                    &body.content_hash,
+                                    &body.content_type,
+                                )
                                 .await?),
                         }
                     }
@@ -163,7 +144,7 @@ pub fn api_handler(
     let upload_request = warp::path!("int_api" / "v1" / "transformations" / "uploads" / String)
         .and(warp::post())
         .and(warp::filters::body::content_length_limit(
-            80 * 1024 * 1024 * 1024,
+            MAX_SIZE_FOR_TRANSFORMATION,
         ))
         .and(warp::body::stream())
         .and_then(move |upload_id: String, body_stream| {
@@ -186,7 +167,7 @@ pub fn api_handler(
                         StatusCode::NOT_FOUND,
                     )),
                     Err(e) => {
-                        error!("Error serving upad request: {}", e);
+                        error!("Error serving upload request: {}", e);
                         Ok(warp::reply::with_status(
                             "server error",
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -196,5 +177,8 @@ pub fn api_handler(
             }
         });
 
-    process_request.or(upload_request).boxed()
+    process_request
+        .or(upload_request)
+        .with(warp::trace::request())
+        .boxed()
 }

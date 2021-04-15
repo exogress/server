@@ -21,16 +21,17 @@ use tokio_rustls::{
     webpki::{DNSNameRef, InvalidDNSNameError},
     TlsConnector,
 };
+use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
 
 pub struct HyperUsableConnection {
     _stop_public_counter_tx: oneshot::Sender<()>,
-    inner: TlsStream<TrafficCountedStream<TcpStream>>,
+    inner: Either<TlsStream<TrafficCountedStream<TcpStream>>, TrafficCountedStream<TcpStream>>,
 }
 
 impl HyperUsableConnection {
     pub fn new(
-        conn: TlsStream<TrafficCountedStream<TcpStream>>,
+        conn: Either<TlsStream<TrafficCountedStream<TcpStream>>, TrafficCountedStream<TcpStream>>,
         stop_public_counter_tx: oneshot::Sender<()>,
     ) -> Self {
         HyperUsableConnection {
@@ -42,10 +43,15 @@ impl HyperUsableConnection {
 
 impl hyper::client::connect::Connection for HyperUsableConnection {
     fn connected(&self) -> hyper::client::connect::Connected {
-        if self.inner.get_ref().1.get_alpn_protocol() == Some(b"h2") {
-            self.inner.get_ref().0.get_ref().connected().negotiated_h2()
-        } else {
-            self.inner.get_ref().0.get_ref().connected()
+        match &self.inner {
+            Either::Left(tls) => {
+                if tls.get_ref().1.get_alpn_protocol() == Some(b"h2") {
+                    tls.get_ref().0.get_ref().connected().negotiated_h2()
+                } else {
+                    tls.get_ref().0.get_ref().connected()
+                }
+            }
+            Either::Right(_) => hyper::client::connect::Connected::new(),
         }
     }
 }
@@ -92,8 +98,8 @@ pub struct MeteredHttpsConnector {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("not an HTTPS")]
-    NotHttps,
+    #[error("bad scheme")]
+    BadScheme,
 
     #[error("no hostname in URI")]
     NoHost,
@@ -131,10 +137,6 @@ impl hyper::service::Service<Uri> for MeteredHttpsConnector {
         let public_counters_tx = self.public_counters_tx.clone();
 
         Box::pin(async move {
-            if dst.scheme_str() != Some("https") {
-                return Err(Error::NotHttps);
-            }
-
             let host = dst.host().ok_or(Error::NoHost)?;
 
             let ip = resolver
@@ -157,13 +159,20 @@ impl hyper::service::Service<Uri> for MeteredHttpsConnector {
                 stop_public_counter_rx,
             ));
 
-            let mut tls_client_config = ClientConfig::new();
-            tls_client_config.root_store =
-                rustls_native_certs::load_native_certs().expect("native certs error");
-
-            let c = TlsConnector::from(Arc::new(tls_client_config))
-                .connect(DNSNameRef::try_from_ascii_str(host)?, counted)
-                .await?;
+            let c = if dst.scheme_str() == Some("https") {
+                let mut tls_client_config = ClientConfig::new();
+                tls_client_config.root_store =
+                    rustls_native_certs::load_native_certs().expect("native certs error");
+                Either::Left(
+                    TlsConnector::from(Arc::new(tls_client_config))
+                        .connect(DNSNameRef::try_from_ascii_str(host)?, counted)
+                        .await?,
+                )
+            } else if dst.scheme_str() == Some("http") {
+                Either::Right(counted)
+            } else {
+                return Err(Error::BadScheme);
+            };
 
             Ok(HyperUsableConnection::new(c, stop_public_counter_tx))
         })

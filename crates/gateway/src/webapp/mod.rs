@@ -1,7 +1,6 @@
 use crate::{
-    cache::Cache,
     clients::{traffic_counter::RecordedTrafficStatistics, ClientTunnels},
-    http_serve::{auth, RequestsProcessor},
+    http_serve::{auth, cache::Cache, RequestsProcessor},
     registry::RequestsProcessorsRegistry,
     rules_counter::AccountCounters,
     urls::matchable_url::MatchableUrl,
@@ -57,6 +56,7 @@ pub struct Client {
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
+    transformer_base_url: Url,
     maybe_identity: Option<Vec<u8>>,
 
     gw_location: SmolStr,
@@ -75,6 +75,8 @@ pub struct Client {
 
     cache: Cache,
     resolver: TokioAsyncResolver,
+
+    gcs_credentials_file: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -337,8 +339,10 @@ impl Client {
         google_oauth2_client: auth::google::GoogleOauth2Client,
         github_oauth2_client: auth::github::GithubOauth2Client,
         assistant_base_url: Url,
+        transformer_base_url: Url,
         public_gw_base_url: &Url,
         gw_location: SmolStr,
+        gcs_credentials_file: String,
         log_messages_tx: mpsc::Sender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
@@ -367,11 +371,12 @@ impl Client {
             retrieve_configs: Arc::new(Default::default()),
             webapp_base_url: base_url,
             certificates: Arc::new(parking_lot::Mutex::new(
-                LruCache::with_expiry_duration_and_capacity(ttl, 1024),
+                LruCache::with_expiry_duration_and_capacity(ttl, 65536),
             )),
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
+            transformer_base_url,
             maybe_identity,
             gw_location,
             public_gw_base_url: public_gw_base_url.clone(),
@@ -383,6 +388,7 @@ impl Client {
             cache,
             dbip,
             resolver,
+            gcs_credentials_file,
         }
     }
 
@@ -476,12 +482,14 @@ impl Client {
                 let google_oauth2_client = self.google_oauth2_client.clone();
                 let github_oauth2_client = self.github_oauth2_client.clone();
                 let assistant_base_url = self.assistant_base_url.clone();
+                let transformer_base_url = self.transformer_base_url.clone();
                 let maybe_identity = self.maybe_identity.clone();
                 let public_gw_base_url = self.public_gw_base_url.clone();
                 let rules_counters = self.rules_counters.clone();
                 let presence_client = self.presence_client.clone();
                 let log_messages_tx = self.log_messages_tx.clone();
                 let dbip = self.dbip.clone();
+                let gcs_credentials_file = self.gcs_credentials_file.clone();
 
                 let requests_processors_registry = self.requests_processors_registry.clone();
 
@@ -490,7 +498,7 @@ impl Client {
 
                     // initiate query
                     tokio::spawn({
-                        shadow_clone!(ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, maybe_identity, public_gw_base_url, rules_counters, config_error, cache, presence_client, dbip);
+                        shadow_clone!(gcs_credentials_file, ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, transformer_base_url, maybe_identity, public_gw_base_url, rules_counters, config_error, cache, presence_client, dbip);
 
                         async move {
                             let retrieval_started_at = crate::statistics::CONFIGS_RETRIEVAL_TIME.start_timer();
@@ -541,7 +549,9 @@ impl Client {
                                                         configs_response,
                                                         google_oauth2_client,
                                                         github_oauth2_client,
+                                                        gcs_credentials_file,
                                                         assistant_base_url,
+                                                        transformer_base_url,
                                                         tunnels,
                                                         rules_counters.clone(),
                                                         individual_hostname,

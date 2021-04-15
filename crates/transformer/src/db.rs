@@ -1,9 +1,13 @@
-use crate::magick::ImageConversionMeta;
+use crate::{bucket::GcsBucketInfo, magick::ImageConversionMeta};
 use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{AccountUniqueId, Ulid};
-use exogress_server_common::transformer::ProcessResponse;
+use exogress_server_common::transformer::{
+    BucketProcessedStored, ProcessResponse, ProcessedFormat, ProcessedFormatResult,
+    ProcessedFormatSucceeded,
+};
 use futures::Stream;
+use itertools::Itertools;
 use lazy_static::lazy_static;
 use mongodb::{
     options::{FindOneAndReplaceOptions, FindOneAndUpdateOptions, FindOneOptions, ReturnDocument},
@@ -69,11 +73,11 @@ pub mod optionally_chrono_datetime_as_bson_datetime {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueuedRequest {
-    pub identifier: String,
+    pub content_type: String,
+    pub content_hash: String,
     #[serde(default)]
     pub encryption_header: Option<String>,
     pub account_unique_id: AccountUniqueId,
-    pub content_hash: String,
     #[serde(with = "chrono_datetime_as_bson_datetime")]
     pub last_requested_at: chrono::DateTime<chrono::Utc>,
     pub num_requests: i64,
@@ -93,21 +97,15 @@ impl QueuedRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessedFormat {
-    pub content_type: String,
-    pub encryption_header: String,
-    pub compressed_size: i64,
-    pub compression_ratio: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Processed {
-    pub identifier: String,
     pub account_unique_id: AccountUniqueId,
     pub source_size: i64,
+    pub content_type: String,
     pub content_hash: String,
     #[serde(with = "chrono_datetime_as_bson_datetime")]
     pub last_requested_at: chrono::DateTime<chrono::Utc>,
+    #[serde(with = "chrono_datetime_as_bson_datetime")]
+    pub transformation_started_at: chrono::DateTime<chrono::Utc>,
     pub num_requests: i64,
     pub formats: Vec<ProcessedFormat>,
 }
@@ -168,25 +166,8 @@ impl MongoDbClient {
                         "key": {
                             "account_unique_id": 1,
                             "content_hash": 1,
-                            "identifier": 1,
-                        },
-                        "name": "processed_account_unique_id_content_hash_identifier_index",
-                        "unique": true
-                    },
-                    {
-                        "key": {
-                            "account_unique_id": 1,
-                            "content_hash": 1,
                         },
                         "name": "processed_account_unique_id_content_hash_index",
-                        "unique": true
-                    },
-                    {
-                        "key": {
-                            "account_unique_id": 1,
-                            "identifier": 1,
-                        },
-                        "name": "processed_account_unique_id_identifier_index",
                         "unique": true
                     }
                 ]
@@ -198,30 +179,13 @@ impl MongoDbClient {
         db.run_command(
             doc! {
                 "createIndexes": QUEUE_COLLECTION,
-                "indexes": [
-                    {
-                        "key": {
-                            "account_unique_id": 1,
-                            "content_hash": 1,
-                            "identifier": 1,
-                        },
-                        "name": "queued_account_unique_id_content_hash_identifier_index",
-                        "unique": true
-                    },
+                "indexes": [,
                     {
                         "key": {
                             "account_unique_id": 1,
                             "content_hash": 1,
                         },
                         "name": "queued_account_unique_id_content_hash_index",
-                        "unique": true
-                    },
-                    {
-                        "key": {
-                            "account_unique_id": 1,
-                            "identifier": 1,
-                        },
-                        "name": "queued_account_unique_id_identifier_index",
                         "unique": true
                     },
                     {
@@ -350,11 +314,11 @@ impl MongoDbClient {
         }
     }
 
-    pub async fn find_queued(
+    pub async fn find_queued_or_create_upload(
         &self,
         account_unique_id: AccountUniqueId,
-        identifier: String,
-        content_hash: String,
+        content_hash: &str,
+        content_type: &str,
     ) -> anyhow::Result<ProcessResponse> {
         let now = Utc::now();
         let queue_collection = self.db.collection::<QueuedRequest>(QUEUE_COLLECTION);
@@ -363,10 +327,7 @@ impl MongoDbClient {
 
         let filter = doc! {
             "account_unique_id": account_unique_id.to_string(),
-            "$or": [
-                { "identifier": identifier.clone() },
-                { "content_hash": content_hash.clone() }
-            ],
+            "content_hash": content_hash.clone(),
         };
         let find_options = FindOneAndUpdateOptions::builder().upsert(true).build();
         let upload_id = Ulid::new().to_string();
@@ -379,8 +340,7 @@ impl MongoDbClient {
                     "$setOnInsert": {
                         "upload_id": upload_id.clone(),
                         "upload_requested_at": Utc::now(),
-                        "content_hash": content_hash.clone(),
-                        "identifier": identifier.clone(),
+                        "content_type": content_type.clone()
                     },
                 },
                 Some(find_options),
@@ -400,27 +360,32 @@ impl MongoDbClient {
     pub async fn find_processed(
         &self,
         account_unique_id: &AccountUniqueId,
-        identifier: &str,
         content_hash: &str,
     ) -> anyhow::Result<Option<Processed>> {
         let queue_collection = self.db.collection::<Processed>(PROCESSED_COLLECTION);
 
         let filter = doc! {
             "account_unique_id": account_unique_id.to_string(),
-            "$or": [
-                { "identifier": identifier },
-                { "content_hash": content_hash }
-            ],
+            "content_hash": content_hash
         };
-        let find_options = FindOneOptions::builder().build();
+        let find_and_update_options = FindOneAndUpdateOptions::builder().build();
 
-        Ok(queue_collection.find_one(filter, find_options).await?)
+        Ok(queue_collection
+            .find_one_and_update(
+                filter,
+                doc! {
+                    "$inc": {"num_requests": 1}
+                },
+                find_and_update_options,
+            )
+            .await?)
     }
 
     pub(crate) async fn save_processed(
         &self,
         processed: Vec<(ImageConversionMeta, Header)>,
         queued: QueuedRequest,
+        bucket_info: &GcsBucketInfo,
     ) -> anyhow::Result<()> {
         if processed.is_empty() {
             bail!("no processed entries specified");
@@ -430,21 +395,40 @@ impl MongoDbClient {
         let queued_collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
 
         let processed = Processed {
-            identifier: queued.identifier.clone(),
+            content_hash: queued.content_hash.clone(),
             account_unique_id: queued.account_unique_id,
             source_size: processed[0].0.source_size as i64,
-            content_hash: queued.content_hash.clone(),
             last_requested_at: queued.last_requested_at,
+            transformation_started_at: Utc::now(),
             num_requests: 0,
             formats: processed
                 .into_iter()
                 .map(|(meta, header)| ProcessedFormat {
                     content_type: meta.content_type,
-                    encryption_header: base64::encode(header.as_ref()),
-                    compressed_size: meta.transformed_size as i64,
-                    compression_ratio: meta.compression_ratio,
+                    profile: "preserve".to_string(),
+                    result: ProcessedFormatResult::Succeeded(ProcessedFormatSucceeded {
+                        encryption_header: base64::encode(header.as_ref()),
+                        content_len: meta.transformed_size as i64,
+                        compression_ratio: meta.compression_ratio,
+                        buckets: vec![BucketProcessedStored {
+                            provider: "gcs".to_string(),
+                            name: bucket_info.name.clone().into(),
+                            location: bucket_info.location.to_string(),
+                        }],
+                        time_taken_ms: meta
+                            .took_time
+                            .as_millis()
+                            .try_into()
+                            .expect("took impossibly too much time"),
+                    }),
+                })
+                .sorted_by(|l, r| {
+                    l.result
+                        .transformed_content_len()
+                        .cmp(&r.result.transformed_content_len())
                 })
                 .collect(),
+            content_type: queued.content_type.clone(),
         };
 
         let options = FindOneAndReplaceOptions::builder().upsert(true).build();
@@ -452,9 +436,8 @@ impl MongoDbClient {
         processed_collection
             .find_one_and_replace(
                 doc! {
-                    "identifier": queued.identifier.clone(),
-                    "account_unique_id": queued.account_unique_id.to_string(),
                     "content_hash": queued.content_hash.clone(),
+                    "account_unique_id": queued.account_unique_id.to_string(),
                 },
                 processed,
                 Some(options),
@@ -464,9 +447,8 @@ impl MongoDbClient {
         queued_collection
             .delete_many(
                 doc! {
-                    "identifier": queued.identifier,
-                    "account_unique_id": queued.account_unique_id.to_string(),
                     "content_hash": queued.content_hash,
+                    "account_unique_id": queued.account_unique_id.to_string(),
                 },
                 None,
             )

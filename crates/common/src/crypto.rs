@@ -4,7 +4,7 @@ use sodiumoxide::crypto::secretstream::xchacha20poly1305;
 use std::{convert::TryFrom, io};
 use tokio_util::codec::LengthDelimitedCodec;
 
-pub fn decrypt_stream(
+pub fn decrypt_reader(
     reader: impl tokio::io::AsyncRead,
     xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
     body_encryption_header: &sodiumoxide::crypto::secretstream::Header,

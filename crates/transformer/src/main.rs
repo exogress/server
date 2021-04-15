@@ -30,10 +30,9 @@ use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use http::StatusCode;
-use magick_rust::{magick_wand_genesis, MagickWand, ResourceType};
+use magick_rust::magick_wand_genesis;
 use mimalloc::MiMalloc;
 use std::{
-    convert::TryInto,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -133,6 +132,7 @@ fn main() {
         true,
         false,
         false,
+        false,
     );
 
     let args = App::new("Exogress Transformer")
@@ -196,7 +196,7 @@ fn main() {
         webapp_url: webapp_base_url,
         int_client_cert,
         ..
-    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false, false);
 
     let listen_http = matches
         .value_of("listen_http")
