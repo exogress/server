@@ -242,6 +242,7 @@ impl RequestsProcessor {
                             &resp_from_cache,
                             handler.resolved_variant.post_processing(),
                         ) {
+                            error!("After cache responded, it is eligible for transformation");
                             if let Some(max_age) = cache_max_age(req, res, handler) {
                                 // FIXME: This is inefficient: need body cloning support on cache response
 
@@ -310,6 +311,8 @@ impl RequestsProcessor {
                                     }
                                 }
                             };
+                        } else {
+                            error!("after cache responded, it's not eligible for transformation");
                         }
 
                         // respond from the cache only if success response
@@ -870,6 +873,11 @@ fn is_eligible_for_transformation(
     resp: &Response<Body>,
     maybe_post_processing: Option<&ResolvedPostProcessing>,
 ) -> bool {
+    if !resp.status().is_success() {
+        error!("Cache response is not success. Skip transformation");
+        return false;
+    }
+
     match maybe_post_processing {
         Some(post_processing) => {
             let is_from_transformer = resp.headers().get("x-exg-transformed").is_some();
