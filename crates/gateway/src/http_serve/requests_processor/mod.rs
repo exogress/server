@@ -19,7 +19,7 @@ use crate::{
         templates::render_limit_reached,
     },
     mime_helpers::{is_mime_match, ordered_by_quality},
-    public_hyper_client::MeteredHttpsConnector,
+    public_hyper_client::MeteredHttpConnector,
     rules_counter::AccountCounters,
     transformer::TransformerClient,
     webapp::{ConfigData, ConfigsResponse},
@@ -716,101 +716,70 @@ async fn trigger_transformation_if_required(
             .typed_get::<typed_headers::ContentType>()?;
 
         if let (Some(accept), Some(content_type)) = (maybe_accept, maybe_content_type) {
-            if let Ok(transformer_result) = transformer_client
+            let transformer_result = transformer_client
                 .request_content(&content_hash, &content_type.0)
-                .await
-            {
-                error!("TRANSFORMER: transformer_result = {:?}", transformer_result);
+                .await?;
+            error!("TRANSFORMER: transformer_result = {:?}", transformer_result);
 
-                match transformer_result {
-                    ProcessResponse::Ready(ready) => {
-                        if let Some((best_format, content_type)) = transformer_client
-                            .find_best_conversion(&ready, &accept)
-                            .await
-                        {
-                            let download_result = transformer_client
-                                .download_best_processed(best_format, &content_type, &content_hash)
-                                .await?;
+            match transformer_result {
+                ProcessResponse::Ready(ready) => {
+                    if let Some((best_format, content_type)) = transformer_client
+                        .find_best_conversion(&ready, &accept)
+                        .await
+                    {
+                        let download_result = transformer_client
+                            .download_best_processed(best_format, &content_type, &content_hash)
+                            .await?;
 
-                            if let Some((transformed_body, encryption_header)) = download_result {
-                                let encryption_header =
-                                    sodiumoxide::crypto::secretstream::Header::from_slice(
-                                        base64::decode(encryption_header)?.as_ref(),
+                        if let Some((transformed_body, encryption_header)) = download_result {
+                            let encryption_header =
+                                sodiumoxide::crypto::secretstream::Header::from_slice(
+                                    base64::decode(encryption_header)?.as_ref(),
+                                )
+                                .ok_or_else(|| anyhow!("bad encryption header"))?;
+
+                            let io = tokio_util::compat::FuturesAsyncReadCompatExt::compat(
+                                RwStreamSink::new(transformed_body.map_err(|e| {
+                                    io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!("hyper error: {}", e),
                                     )
-                                    .ok_or_else(|| anyhow!("bad encryption header"))?;
+                                })),
+                            );
+                            let decrypted_stream =
+                                decrypt_reader(io, &account_secret_key, &encryption_header)?;
 
-                                let io = tokio_util::compat::FuturesAsyncReadCompatExt::compat(
-                                    RwStreamSink::new(transformed_body.map_err(|e| {
-                                        io::Error::new(
-                                            io::ErrorKind::Other,
-                                            format!("hyper error: {}", e),
-                                        )
-                                    })),
-                                );
-                                let decrypted_stream =
-                                    decrypt_reader(io, &account_secret_key, &encryption_header)?;
-
-                                let transformed_content = decrypted_stream
-                                    .try_fold(Vec::new(), |mut acc, chunk| async move {
-                                        acc.extend_from_slice(&chunk);
-                                        Ok(acc)
-                                    })
-                                    .await?;
-                                info!(
-                                    "decrypted stream is ready! result {:?}",
-                                    transformed_content.len()
-                                );
-
-                                cloned_res.headers_mut().insert(
-                                    "x-exg-transformed",
-                                    HeaderValue::try_from("1").unwrap(),
-                                );
-                                cloned_res
-                                    .headers_mut()
-                                    .insert(CONTENT_TYPE, content_type.parse().unwrap());
-                                cloned_res
-                                    .headers_mut()
-                                    .insert(CONTENT_LENGTH, HeaderValue::from(content_len));
-                                cloned_res
-                                    .headers_mut()
-                                    .insert(ETAG, content_hash[..32].parse().unwrap());
-                                cloned_res.headers_mut().insert(
-                                    LAST_MODIFIED,
-                                    ready.transformed_at.to_rfc2822().parse().unwrap(),
-                                );
-
-                                *cloned_res.body_mut() = Body::from(transformed_content);
-
-                                error!("Will saved transformed to cache");
-
-                                save_to_cache(
-                                    max_age,
-                                    req_headers,
-                                    req_method,
-                                    req_uri,
-                                    &mut cloned_res,
-                                    cache,
-                                    account_unique_id,
-                                    project_name,
-                                    mount_point_name,
-                                    max_pop_cache_size_bytes,
-                                    xchacha20poly1305_secret_key,
-                                    handler_name,
-                                    handler_checksum,
-                                );
-
-                                // FIXME: this is ugly, but we need to consume whole body stream in order
-                                // to successfully complete cache saving
-                                let mut body_to_consume = cloned_res.into_body();
-                                while let Some(_) = body_to_consume.next().await {}
-                            }
-                        } else {
-                            // no appropriate conversion is available to the provided Accept header.
-                            // This is still treated as correctly transformed so taht no more requests are made to transformer
+                            let transformed_content = decrypted_stream
+                                .try_fold(Vec::new(), |mut acc, chunk| async move {
+                                    acc.extend_from_slice(&chunk);
+                                    Ok(acc)
+                                })
+                                .await?;
+                            info!(
+                                "decrypted stream is ready! result {:?}",
+                                transformed_content.len()
+                            );
 
                             cloned_res
                                 .headers_mut()
                                 .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
+                            cloned_res
+                                .headers_mut()
+                                .insert(CONTENT_TYPE, content_type.parse().unwrap());
+                            cloned_res
+                                .headers_mut()
+                                .insert(CONTENT_LENGTH, HeaderValue::from(content_len));
+                            cloned_res
+                                .headers_mut()
+                                .insert(ETAG, content_hash[..32].parse().unwrap());
+                            cloned_res.headers_mut().insert(
+                                LAST_MODIFIED,
+                                ready.transformed_at.to_rfc2822().parse().unwrap(),
+                            );
+
+                            *cloned_res.body_mut() = Body::from(transformed_content);
+
+                            error!("Will saved transformed to cache");
 
                             save_to_cache(
                                 max_age,
@@ -828,22 +797,50 @@ async fn trigger_transformation_if_required(
                                 handler_checksum,
                             );
 
-                            // FIXME: this is ugly, but we need to consume whole body stream in order to successfuly complete cache saving
+                            // FIXME: this is ugly, but we need to consume whole body stream in order
+                            // to successfully complete cache saving
                             let mut body_to_consume = cloned_res.into_body();
                             while let Some(_) = body_to_consume.next().await {}
                         }
+                    } else {
+                        // no appropriate conversion is available to the provided Accept header.
+                        // This is still treated as correctly transformed so taht no more requests are made to transformer
+
+                        cloned_res
+                            .headers_mut()
+                            .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
+
+                        save_to_cache(
+                            max_age,
+                            req_headers,
+                            req_method,
+                            req_uri,
+                            &mut cloned_res,
+                            cache,
+                            account_unique_id,
+                            project_name,
+                            mount_point_name,
+                            max_pop_cache_size_bytes,
+                            xchacha20poly1305_secret_key,
+                            handler_name,
+                            handler_checksum,
+                        );
+
+                        // FIXME: this is ugly, but we need to consume whole body stream in order to successfuly complete cache saving
+                        let mut body_to_consume = cloned_res.into_body();
+                        while let Some(_) = body_to_consume.next().await {}
                     }
-                    ProcessResponse::PendingUpload { upload_id, .. } => {
-                        transformer_client
-                            .upload(&upload_id, content_len, cloned_res.into_body())
-                            .await?;
-                    }
-                    ProcessResponse::Accepted => {
-                        info!("upload has already been accepted");
-                    }
-                    ProcessResponse::Processing => {
-                        info!("upload is processing");
-                    }
+                }
+                ProcessResponse::PendingUpload { upload_id, .. } => {
+                    transformer_client
+                        .upload(&upload_id, content_len, cloned_res.into_body())
+                        .await?;
+                }
+                ProcessResponse::Accepted => {
+                    info!("upload has already been accepted");
+                }
+                ProcessResponse::Processing => {
+                    info!("upload is processing");
                 }
             }
         }
@@ -2710,12 +2707,21 @@ impl RequestsProcessor {
         // let project_static_responses = resp.project_config.refinable.static_responses.clone();
         //
         let mut merged_resolved_handlers = vec![];
-        let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpsConnector {
+        let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
             public_counters_tx: public_counters_tx.clone(),
             resolver: resolver.clone(),
             counters: traffic_counters.clone(),
             sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
             recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
+            maybe_identity: None,
+        });
+        let int_metered_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
+            public_counters_tx: public_counters_tx.clone(),
+            resolver: resolver.clone(),
+            counters: traffic_counters.clone(),
+            sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
+            recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
+            maybe_identity: maybe_identity.clone(),
         });
 
         for (
@@ -3153,7 +3159,7 @@ impl RequestsProcessor {
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
-            maybe_identity,
+            maybe_identity: maybe_identity.clone(),
             strict_transport_security: resp.strict_transport_security,
             rules_counter,
             account_unique_id,
@@ -3168,7 +3174,8 @@ impl RequestsProcessor {
                 account_unique_id,
                 transformer_base_url,
                 gcs_credentials_file,
-                public_client,
+                int_metered_client,
+                maybe_identity.clone(),
             )?,
             log_messages_tx,
             dbip,

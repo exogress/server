@@ -1,4 +1,4 @@
-use crate::public_hyper_client::MeteredHttpsConnector;
+use crate::public_hyper_client::MeteredHttpConnector;
 use core::mem;
 use exogress_common::entities::AccountUniqueId;
 use exogress_server_common::transformer::{
@@ -19,9 +19,10 @@ use url::Url;
 pub struct TransformerClient {
     account_unique_id: AccountUniqueId,
     base_url: Url,
-    client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
+    client: hyper::Client<MeteredHttpConnector, hyper::Body>,
     gcs_credentials: Arc<ServiceAccountAccess>,
     gcs_token_storage: Arc<tokio::sync::Mutex<Option<tame_oauth::Token>>>,
+    maybe_identity: Option<Vec<u8>>,
 }
 
 impl TransformerClient {
@@ -29,7 +30,8 @@ impl TransformerClient {
         account_unique_id: AccountUniqueId,
         base_url: Url,
         gcs_credentials_file: String,
-        client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
+        client: hyper::Client<MeteredHttpConnector, hyper::Body>,
+        maybe_identity: Option<Vec<u8>>,
     ) -> anyhow::Result<Self> {
         let gcs_service_account = tame_oauth::gcp::ServiceAccountInfo::deserialize(
             std::fs::read_to_string(gcs_credentials_file)?.as_str(),
@@ -43,6 +45,7 @@ impl TransformerClient {
             client,
             gcs_credentials: Arc::new(gcs_service_account_access),
             gcs_token_storage: Arc::new(Default::default()),
+            maybe_identity,
         })
     }
 
