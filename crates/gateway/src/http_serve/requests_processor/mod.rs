@@ -267,36 +267,41 @@ impl RequestsProcessor {
                                         let handler_checksum = handler.handler_checksum.clone();
 
                                         tokio::spawn(async move {
-                                            if let Some((
-                                                cloned_resp,
-                                                content_len,
-                                                calculated_content_hash,
-                                            )) = on_response_finished.await
-                                            {
-                                                if calculated_content_hash != content_hash {
-                                                    error!("cloned response content_hash != content_hash from cache");
-                                                }
-
-                                                trigger_transformation_if_required(
-                                                    max_age,
-                                                    &req_headers,
-                                                    req_method,
-                                                    &req_uri,
+                                            error!("waiting for on_response_finished");
+                                            match on_response_finished.await {
+                                                Some((
                                                     cloned_resp,
                                                     content_len,
-                                                    content_hash,
-                                                    account_secret_key,
-                                                    transformer_client,
-                                                    cache,
-                                                    account_unique_id,
-                                                    project_name,
-                                                    mount_point_name,
-                                                    max_pop_cache_size_bytes,
-                                                    xchacha20poly1305_secret_key,
-                                                    handler_name,
-                                                    handler_checksum,
-                                                )
-                                                .await;
+                                                    calculated_content_hash,
+                                                )) => {
+                                                    if calculated_content_hash != content_hash {
+                                                        error!("cloned response content_hash != content_hash from cache");
+                                                    }
+
+                                                    trigger_transformation_if_required(
+                                                        max_age,
+                                                        &req_headers,
+                                                        req_method,
+                                                        &req_uri,
+                                                        cloned_resp,
+                                                        content_len,
+                                                        content_hash,
+                                                        account_secret_key,
+                                                        transformer_client,
+                                                        cache,
+                                                        account_unique_id,
+                                                        project_name,
+                                                        mount_point_name,
+                                                        max_pop_cache_size_bytes,
+                                                        xchacha20poly1305_secret_key,
+                                                        handler_name,
+                                                        handler_checksum,
+                                                    )
+                                                    .await;
+                                                }
+                                                None => {
+                                                    error!("on_response_finished returned None!");
+                                                }
                                             }
                                         });
                                     }
@@ -716,13 +721,18 @@ async fn trigger_transformation_if_required(
             .typed_get::<typed_headers::ContentType>()?;
 
         if let (Some(accept), Some(content_type)) = (maybe_accept, maybe_content_type) {
+            error!("TRANSFORMER: request_content");
+
             let transformer_result = transformer_client
                 .request_content(&content_hash, &content_type.0)
                 .await?;
+
             error!("TRANSFORMER: transformer_result = {:?}", transformer_result);
 
             match transformer_result {
                 ProcessResponse::Ready(ready) => {
+                    error!("");
+
                     if let Some((best_format, content_type)) = transformer_client
                         .find_best_conversion(&ready, &accept)
                         .await
@@ -832,15 +842,16 @@ async fn trigger_transformation_if_required(
                     }
                 }
                 ProcessResponse::PendingUpload { upload_id, .. } => {
+                    error!("will upload");
                     transformer_client
                         .upload(&upload_id, content_len, cloned_res.into_body())
                         .await?;
                 }
                 ProcessResponse::Accepted => {
-                    info!("upload has already been accepted");
+                    error!("upload has already been accepted");
                 }
                 ProcessResponse::Processing => {
-                    info!("upload is processing");
+                    error!("upload is processing");
                 }
             }
         }
