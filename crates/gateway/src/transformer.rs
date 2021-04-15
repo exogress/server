@@ -246,7 +246,19 @@ impl TransformerClient {
         } else if response.status() == StatusCode::NOT_FOUND {
             Ok(None)
         } else {
-            bail!("failed to download transformed content");
+            let status = response.status();
+            let entire_body = response
+                .into_body()
+                .try_fold(Vec::new(), |mut data, chunk| async move {
+                    data.extend_from_slice(&chunk);
+                    Ok(data)
+                })
+                .await;
+            bail!(
+                "failed to download transformed content. status: {:?}, body: {:?}",
+                status,
+                entire_body
+            );
         }
     }
 }

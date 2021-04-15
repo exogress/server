@@ -18,7 +18,6 @@ use tokio::{
 use tokio_rustls::{
     client::TlsStream,
     rustls::{internal::pemfile, ClientConfig, Session},
-    webpki,
     webpki::{DNSNameRef, InvalidDNSNameError},
     TlsConnector,
 };
