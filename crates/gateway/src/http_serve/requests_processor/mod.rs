@@ -681,7 +681,7 @@ fn save_to_cache(
         }
         .await;
 
-        if let Err(e) = e {
+        if let Err(e) = r {
             error!("error saving to cache: {}", e);
         }
     });
