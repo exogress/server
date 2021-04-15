@@ -817,7 +817,7 @@ async fn trigger_transformation_if_required(
                         }
                     } else {
                         // no appropriate conversion is available to the provided Accept header.
-                        // This is still treated as correctly transformed so taht no more requests are made to transformer
+                        // This is still treated as correctly transformed so that no more requests are made to transformer
 
                         cloned_res
                             .headers_mut()
@@ -1006,6 +1006,9 @@ pub fn cache_max_age(
         })
         .flatten()
         .collect();
+
+    error!("cache_control = {:?}", res.headers().get_all(CACHE_CONTROL));
+    error!("cache_entries = {:?}", cache_entries);
 
     let caching_allowed = cache_entries.iter().any(|&c| c == "public")
         && !cache_entries
