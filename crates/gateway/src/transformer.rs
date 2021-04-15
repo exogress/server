@@ -253,7 +253,9 @@ impl TransformerClient {
                     data.extend_from_slice(&chunk);
                     Ok(data)
                 })
-                .await;
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|v| String::from_utf8(v).map_err(anyhow::Error::from));
             bail!(
                 "failed to download transformed content. status: {:?}, body: {:?}",
                 status,
