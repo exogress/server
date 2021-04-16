@@ -1,4 +1,5 @@
 use crate::{bucket::GcsBucketInfo, magick::ImageConversionMeta};
+use anyhow::Error;
 use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{AccountUniqueId, Ulid};
@@ -383,44 +384,48 @@ impl MongoDbClient {
 
     pub(crate) async fn save_processed(
         &self,
-        processed: Vec<(ImageConversionMeta, Header)>,
+        source_size: u32,
+        processed: Vec<(String, anyhow::Result<(ImageConversionMeta, Header)>)>,
         queued: QueuedRequest,
         bucket_info: &GcsBucketInfo,
     ) -> anyhow::Result<()> {
-        if processed.is_empty() {
-            bail!("no processed entries specified");
-        }
-
         let processed_collection: Collection<Processed> = self.db.collection(PROCESSED_COLLECTION);
         let queued_collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
 
         let processed = Processed {
             content_hash: queued.content_hash.clone(),
             account_unique_id: queued.account_unique_id,
-            source_size: processed[0].0.source_size as i64,
+            source_size: source_size as i64,
             last_requested_at: queued.last_requested_at,
             transformation_started_at: Utc::now(),
             num_requests: 0,
             formats: processed
                 .into_iter()
-                .map(|(meta, header)| ProcessedFormat {
-                    content_type: meta.content_type,
+                .map(|(content_type, conversion_result)| ProcessedFormat {
+                    content_type,
                     profile: "preserve".to_string(),
-                    result: ProcessedFormatResult::Succeeded(ProcessedFormatSucceeded {
-                        encryption_header: base64::encode(header.as_ref()),
-                        content_len: meta.transformed_size as i64,
-                        compression_ratio: meta.compression_ratio,
-                        buckets: vec![BucketProcessedStored {
-                            provider: "gcs".to_string(),
-                            name: bucket_info.name.clone().into(),
-                            location: bucket_info.location.to_string(),
-                        }],
-                        time_taken_ms: meta
-                            .took_time
-                            .as_millis()
-                            .try_into()
-                            .expect("took impossibly too much time"),
-                    }),
+                    result: match conversion_result {
+                        Ok((meta, header)) => {
+                            ProcessedFormatResult::Succeeded(ProcessedFormatSucceeded {
+                                encryption_header: base64::encode(header.as_ref()),
+                                content_len: meta.transformed_size as i64,
+                                compression_ratio: meta.compression_ratio,
+                                buckets: vec![BucketProcessedStored {
+                                    provider: "gcs".to_string(),
+                                    name: bucket_info.name.clone().into(),
+                                    location: bucket_info.location.to_string(),
+                                }],
+                                time_taken_ms: meta
+                                    .took_time
+                                    .as_millis()
+                                    .try_into()
+                                    .expect("took impossibly too much time"),
+                            })
+                        }
+                        Err(e) => ProcessedFormatResult::Failed {
+                            reason: e.to_string(),
+                        },
+                    },
                 })
                 .sorted_by(|l, r| {
                     l.result

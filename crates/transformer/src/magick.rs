@@ -1,14 +1,17 @@
 use bytes::Bytes;
-use magick_rust::{MagickWand, ResourceType};
 use std::{
-    convert::TryInto,
+    io,
+    io::Write,
+    process::Stdio,
     time::{Duration, Instant},
 };
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    task::spawn_blocking,
+};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageConversionMeta {
-    pub content_type: String,
-    pub source_size: u64,
     pub transformed_size: u64,
     pub took_time: Duration,
     pub compression_ratio: f32,
@@ -27,49 +30,101 @@ impl core::fmt::Debug for ImageConversionResult {
     }
 }
 
-pub(crate) fn convert(
+pub(crate) async fn convert(
     conversion_threads: Option<u8>,
     conversion_memory: Option<u64>,
-    image_body: &Bytes,
+    image_body: Bytes,
     format: &str,
-    mime_type: &str,
+    _mime_type: &str,
 ) -> anyhow::Result<ImageConversionResult> {
-    let wand = MagickWand::new();
+    let mut cmd = tokio::process::Command::new("magick");
 
     if let Some(threads) = conversion_threads {
         info!("set conversion threads to {}", threads);
-        MagickWand::set_resource_limit(ResourceType::Thread, threads.into())
-            .expect("failed to set magick wand thread limit");
+        cmd.arg("-limit").arg("thread").arg(threads.to_string());
     }
 
     if let Some(mem) = conversion_memory {
         info!("set conversion mem to {}", mem);
-        MagickWand::set_resource_limit(ResourceType::Memory, mem.try_into().unwrap())
-            .expect("failed to set magick wand memory limit");
+        cmd.arg("-limit").arg("memory").arg(mem.to_string());
     }
 
-    wand.read_image_blob(image_body.as_ref())
-        .map_err(|e| anyhow!("imagemagick read error: {}", e))?;
+    let src_tempfile = spawn_blocking({
+        shadow_clone!(image_body);
+
+        move || {
+            let mut tempfile = tempfile::NamedTempFile::new()?;
+            tempfile.write_all(&image_body)?;
+            Ok::<_, io::Error>(tempfile)
+        }
+    })
+    .await??;
+
+    let src_path = src_tempfile.path().to_path_buf();
+    cmd.arg(src_path.to_str().unwrap());
+
+    let dst_tempfile = spawn_blocking(move || tempfile::NamedTempFile::new()).await??;
+
+    cmd.arg(format!(
+        "{}:{}",
+        format.to_uppercase(),
+        dst_tempfile.path().to_str().unwrap()
+    ));
 
     let start_conversion = Instant::now();
-    let transformed: Bytes = wand
-        .write_image_blob(format)
-        .map_err(|e| anyhow!("imagemagick write error: {}", e))?
-        .into();
+
+    error!("Will spawn cmd: {:?}", cmd);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+
+    tokio::spawn(async move {
+        while let Some(line) = stdout_reader.next_line().await? {
+            info!("Imagemagick >> {}", line);
+        }
+
+        Ok::<_, io::Error>(())
+    });
+
+    tokio::spawn(async move {
+        while let Some(line) = stderr_reader.next_line().await? {
+            info!("Imagemagick >> {}", line);
+        }
+
+        Ok::<_, io::Error>(())
+    });
+
+    let cmd_res = child.wait().await;
     let elapsed = start_conversion.elapsed();
+    error!("conversion result = {:?}. took = {:?}", cmd_res, elapsed);
+
+    let status = cmd_res?;
+
+    if !status.success() {
+        bail!("bad conversion command status: {}", status);
+    };
+
+    let mut tokio_dst = tokio::fs::File::from_std(dst_tempfile.reopen()?);
+
+    let mut transformed = Vec::new();
+
+    tokio_dst.read_to_end(&mut transformed).await?;
 
     let source_size = image_body.len() as u64;
-
     let compression_ratio = source_size as f32 / transformed.len() as f32;
 
     Ok::<_, anyhow::Error>(ImageConversionResult {
         meta: ImageConversionMeta {
-            content_type: mime_type.to_string(),
-            source_size,
             transformed_size: transformed.len() as u64,
             took_time: elapsed,
             compression_ratio,
         },
-        transformed,
+        transformed: transformed.into(),
     })
 }

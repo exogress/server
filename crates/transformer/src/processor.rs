@@ -13,7 +13,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
-use tokio::{task::spawn_blocking, time::sleep};
+use tokio::time::sleep;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 pub struct Processor {
@@ -128,35 +128,35 @@ impl Processor {
                     .await?
                     .freeze();
 
+                    let source_size = decrypted.len() as u32;
+
                     info!("decrypted body len = {}", decrypted.len());
 
-                    let result = spawn_blocking(move || {
-                        info!("start conversion");
+                    info!("start conversion");
 
-                        let started_at = crate::statistics::CONVERSION_TIME.start_timer();
+                    let started_at = crate::statistics::CONVERSION_TIME.start_timer();
 
-                        // convert the body
-                        let webp = crate::magick::convert(
-                            conversion_threads,
-                            conversion_memory,
-                            &decrypted,
-                            "webp",
-                            "image/webp",
-                        );
-                        let avif = crate::magick::convert(
-                            conversion_threads,
-                            conversion_memory,
-                            &decrypted,
-                            "avif",
-                            "image/avif",
-                        );
-
-                        started_at.observe_duration();
-
-                        info!("finish conversion");
-                        (webp, avif)
-                    })
+                    // convert the body
+                    let webp_result = crate::magick::convert(
+                        conversion_threads,
+                        conversion_memory,
+                        decrypted.clone(),
+                        "webp",
+                        "image/webp",
+                    )
                     .await;
+                    let avif_result = crate::magick::convert(
+                        conversion_threads,
+                        conversion_memory,
+                        decrypted,
+                        "avif",
+                        "image/avif",
+                    )
+                    .await;
+
+                    started_at.observe_duration();
+
+                    info!("finish conversion");
 
                     info!("blocking conversion finished. save result");
 
@@ -169,99 +169,94 @@ impl Processor {
 
                         let bucket_info = gcs_bucket.bucket_info();
 
-                        if let Ok((webp_result, avif_result)) = result {
-                            let upload_webp = {
-                                shadow_clone!(content_hash, gcs_bucket, secret_key);
+                        let mut results = vec![];
 
-                                async move {
-                                    if let Ok(webp) = webp_result {
-                                        let transformed = webp.transformed;
-                                        let meta = webp.meta;
-                                        let webp_path = format!(
-                                            "{}/processed/{}/{}",
-                                            account_unique_id,
-                                            content_hash.clone(),
-                                            meta.content_type
-                                        );
+                        match webp_result {
+                            Ok(webp) => {
+                                let transformed = webp.transformed;
+                                let meta = webp.meta;
+                                let webp_path = format!(
+                                    "{}/processed/{}/{}",
+                                    account_unique_id,
+                                    content_hash.clone(),
+                                    "image/webp"
+                                );
 
-                                        let transformed_stream = futures::stream::once(async {
-                                            Ok::<_, warp::Error>(transformed)
-                                        });
+                                let transformed_stream = futures::stream::once(async {
+                                    Ok::<_, warp::Error>(transformed)
+                                });
 
-                                        pin_mut!(transformed_stream);
+                                pin_mut!(transformed_stream);
 
-                                        let (encrypted, header) =
-                                            encrypt_stream(transformed_stream, &secret_key)?;
+                                let (encrypted, header) =
+                                    encrypt_stream(transformed_stream, &secret_key)?;
 
-                                        let encrypted_buf = encrypted
-                                            .try_fold(BytesMut::new(), |mut acc, v| {
-                                                acc.put(v.0.as_ref());
-                                                futures::future::ok(acc)
-                                            })
-                                            .await?;
+                                let encrypted_buf = encrypted
+                                    .try_fold(BytesMut::new(), |mut acc, v| {
+                                        acc.put(v.0.as_ref());
+                                        futures::future::ok(acc)
+                                    })
+                                    .await?;
 
-                                        gcs_bucket
-                                            .upload(
-                                                webp_path,
-                                                encrypted_buf.len() as u64,
-                                                futures::stream::once(async { Ok(encrypted_buf) }),
-                                            )
-                                            .await?;
-                                        Ok::<_, anyhow::Error>(Some((meta, header)))
-                                    } else {
-                                        Ok(None)
-                                    }
-                                }
-                            };
+                                gcs_bucket
+                                    .upload(
+                                        webp_path,
+                                        encrypted_buf.len() as u64,
+                                        futures::stream::once(async { Ok(encrypted_buf) }),
+                                    )
+                                    .await?;
 
-                            let upload_avif = async move {
-                                if let Ok(avif) = avif_result {
-                                    let transformed = avif.transformed;
-                                    let meta = avif.meta;
-                                    let avif_path = format!(
-                                        "{}/processed/{}/{}",
-                                        account_unique_id, content_hash, meta.content_type
-                                    );
-
-                                    let transformed_stream = futures::stream::once(async {
-                                        Ok::<_, warp::Error>(transformed)
-                                    });
-
-                                    pin_mut!(transformed_stream);
-
-                                    let (encrypted, header) =
-                                        encrypt_stream(transformed_stream, &secret_key)?;
-
-                                    let encrypted_buf = encrypted
-                                        .try_fold(BytesMut::new(), |mut acc, v| {
-                                            acc.put(v.0.as_ref());
-                                            futures::future::ok(acc)
-                                        })
-                                        .await?;
-
-                                    gcs_bucket
-                                        .upload(
-                                            avif_path,
-                                            encrypted_buf.len() as u64,
-                                            futures::stream::once(async { Ok(encrypted_buf) }),
-                                        )
-                                        .await?;
-                                    Ok::<_, anyhow::Error>(Some((meta, header)))
-                                } else {
-                                    Ok(None)
-                                }
-                            };
-
-                            let uploads: Vec<_> = {
-                                let (a, b) = futures::future::join(upload_webp, upload_avif).await;
-                                vec![a, b]
-                                    .into_iter()
-                                    .filter_map(|c| c.ok().flatten())
-                                    .collect()
-                            };
-
-                            db.save_processed(uploads, request, &bucket_info).await?;
+                                results
+                                    .push(("image/webp".to_string(), Ok((meta.clone(), header))));
+                            }
+                            Err(e) => {
+                                results.push(("image/webp".to_string(), Err(e)));
+                            }
                         }
+
+                        match avif_result {
+                            Ok(avif) => {
+                                let transformed = avif.transformed;
+                                let meta = avif.meta;
+                                let avif_path = format!(
+                                    "{}/processed/{}/{}",
+                                    account_unique_id, content_hash, "image/avif"
+                                );
+
+                                let transformed_stream = futures::stream::once(async {
+                                    Ok::<_, warp::Error>(transformed)
+                                });
+
+                                pin_mut!(transformed_stream);
+
+                                let (encrypted, header) =
+                                    encrypt_stream(transformed_stream, &secret_key)?;
+
+                                let encrypted_buf = encrypted
+                                    .try_fold(BytesMut::new(), |mut acc, v| {
+                                        acc.put(v.0.as_ref());
+                                        futures::future::ok(acc)
+                                    })
+                                    .await?;
+
+                                gcs_bucket
+                                    .upload(
+                                        avif_path,
+                                        encrypted_buf.len() as u64,
+                                        futures::stream::once(async { Ok(encrypted_buf) }),
+                                    )
+                                    .await?;
+
+                                results
+                                    .push(("image/avif".to_string(), Ok((meta.clone(), header))));
+                            }
+                            Err(e) => {
+                                results.push(("image/avif".to_string(), Err(e)));
+                            }
+                        }
+
+                        db.save_processed(source_size, results, request, &bucket_info)
+                            .await?;
 
                         mem::drop(guard);
 

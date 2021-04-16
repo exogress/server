@@ -30,7 +30,6 @@ use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use http::StatusCode;
-use magick_rust::magick_wand_genesis;
 use mimalloc::MiMalloc;
 use std::{
     net::SocketAddr,
@@ -233,8 +232,6 @@ fn main() {
     let webapp_base_url = webapp_base_url.unwrap();
 
     let should_stop = Arc::new(AtomicBool::new(false));
-
-    magick_wand_genesis();
 
     rt.block_on(async move {
         tokio::spawn({
