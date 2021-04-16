@@ -2,7 +2,7 @@ use crate::{bucket::GcsBucketInfo, magick::ImageConversionMeta};
 use anyhow::Error;
 use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
-use exogress_common::entities::{AccountUniqueId, Ulid};
+use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName, Ulid};
 use exogress_server_common::transformer::{
     BucketProcessedStored, ProcessResponse, ProcessedFormat, ProcessedFormatResult,
     ProcessedFormatSucceeded,
@@ -76,6 +76,12 @@ pub mod optionally_chrono_datetime_as_bson_datetime {
 pub struct QueuedRequest {
     pub content_type: String,
     pub content_hash: String,
+
+    pub url: String,
+    pub mount_point_name: MountPointName,
+    pub project_name: ProjectName,
+    pub handler_name: HandlerName,
+
     #[serde(default)]
     pub encryption_header: Option<String>,
     pub account_unique_id: AccountUniqueId,
@@ -99,6 +105,11 @@ impl QueuedRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Processed {
+    pub url: String,
+    pub mount_point_name: MountPointName,
+    pub project_name: ProjectName,
+    pub handler_name: HandlerName,
+
     pub account_unique_id: AccountUniqueId,
     pub source_size: i64,
     pub content_type: String,
@@ -320,6 +331,10 @@ impl MongoDbClient {
         account_unique_id: AccountUniqueId,
         content_hash: &str,
         content_type: &str,
+        handler_name: &str,
+        project_name: &str,
+        mount_point_name: &str,
+        url: &str,
     ) -> anyhow::Result<ProcessResponse> {
         let now = Utc::now();
         let queue_collection = self.db.collection::<QueuedRequest>(QUEUE_COLLECTION);
@@ -341,7 +356,11 @@ impl MongoDbClient {
                     "$setOnInsert": {
                         "upload_id": upload_id.clone(),
                         "upload_requested_at": Utc::now(),
-                        "content_type": content_type.clone()
+                        "content_type": content_type.clone(),
+                        "handler_name": handler_name.to_string(),
+                        "project_name": project_name.to_string(),
+                        "mount_point_name": mount_point_name.to_string(),
+                        "url":  url.to_string(),
                     },
                 },
                 Some(find_options),
@@ -393,6 +412,10 @@ impl MongoDbClient {
         let queued_collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
 
         let processed = Processed {
+            url: queued.url.clone(),
+            mount_point_name: queued.mount_point_name.clone(),
+            project_name: queued.project_name.clone(),
+            handler_name: queued.handler_name.clone(),
             content_hash: queued.content_hash.clone(),
             account_unique_id: queued.account_unique_id,
             source_size: source_size as i64,

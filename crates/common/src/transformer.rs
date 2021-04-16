@@ -1,5 +1,5 @@
 use chrono::serde::ts_milliseconds;
-use exogress_common::entities::AccountUniqueId;
+use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
 
 pub const MAX_SIZE_FOR_TRANSFORMATION: u64 = 80 * 1024 * 1024;
 
@@ -8,6 +8,10 @@ pub struct ProcessRequest {
     pub content_type: String,
     pub content_hash: String,
     pub account_unique_id: AccountUniqueId,
+    pub url: String,
+    pub mount_point_name: MountPointName,
+    pub project_name: ProjectName,
+    pub handler_name: HandlerName,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

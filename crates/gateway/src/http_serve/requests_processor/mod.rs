@@ -266,6 +266,7 @@ impl RequestsProcessor {
                                             self.xchacha20poly1305_secret_key.clone();
                                         let handler_name = handler.handler_name.clone();
                                         let handler_checksum = handler.handler_checksum.clone();
+                                        let requested_url = requested_url.clone();
 
                                         tokio::spawn(async move {
                                             error!("waiting for on_response_finished");
@@ -297,6 +298,7 @@ impl RequestsProcessor {
                                                         xchacha20poly1305_secret_key,
                                                         handler_name,
                                                         handler_checksum,
+                                                        &requested_url,
                                                     )
                                                     .await;
                                                 }
@@ -419,6 +421,7 @@ impl RequestsProcessor {
                                     self.xchacha20poly1305_secret_key.clone();
                                 let handler_name = handler.handler_name.clone();
                                 let handler_checksum = handler.handler_checksum.clone();
+                                let requested_url = requested_url.clone();
 
                                 tokio::spawn(async move {
                                     if let Some((cloned_resp, content_len, content_hash)) =
@@ -442,6 +445,7 @@ impl RequestsProcessor {
                                             xchacha20poly1305_secret_key,
                                             handler_name,
                                             handler_checksum,
+                                            &requested_url,
                                         )
                                         .await;
                                     }
@@ -715,6 +719,7 @@ async fn trigger_transformation_if_required(
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     handler_name: HandlerName,
     handler_checksum: HandlerChecksum,
+    requested_url: &http::uri::Uri,
 ) {
     let r = async move {
         let maybe_accept = req_headers.typed_get::<typed_headers::Accept>()?;
@@ -727,7 +732,14 @@ async fn trigger_transformation_if_required(
             error!("TRANSFORMER: request_content");
 
             let transformer_result = transformer_client
-                .request_content(&content_hash, &content_type.0)
+                .request_content(
+                    &content_hash,
+                    &content_type.0,
+                    &handler_name,
+                    &project_name,
+                    &mount_point_name,
+                    &requested_url,
+                )
                 .await?;
 
             error!("TRANSFORMER: transformer_result = {:?}", transformer_result);

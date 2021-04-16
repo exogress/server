@@ -1,6 +1,6 @@
 use crate::public_hyper_client::MeteredHttpConnector;
 use core::mem;
-use exogress_common::entities::AccountUniqueId;
+use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName};
 use exogress_server_common::transformer::{
     ProcessRequest, ProcessResponse, ProcessedFormatResult, ProcessedFormatSucceeded,
     ProcessingReady,
@@ -53,6 +53,10 @@ impl TransformerClient {
         &self,
         content_hash: &str,
         content_type: &mime::Mime,
+        handler_name: &HandlerName,
+        project_name: &ProjectName,
+        mount_point_name: &MountPointName,
+        requested_url: &http::uri::Uri,
     ) -> anyhow::Result<ProcessResponse> {
         let mut url = self.base_url.clone();
 
@@ -67,6 +71,10 @@ impl TransformerClient {
             content_type: content_type.essence_str().to_string(),
             content_hash: content_hash.to_string(),
             account_unique_id: self.account_unique_id,
+            url: requested_url.to_string(),
+            mount_point_name: mount_point_name.clone(),
+            project_name: project_name.clone(),
+            handler_name: handler_name.clone(),
         };
 
         let json = serde_json::to_string(&body).unwrap();
