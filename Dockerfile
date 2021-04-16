@@ -1,25 +1,20 @@
-FROM rust:1.51-alpine3.13 as dirs
+FROM rust:1.51 as dirs
 
 RUN rustup component add clippy rustfmt
-RUN apk --update add build-base imagemagick imagemagick-dev \
-    libffi-dev openssl-dev libsasl clang cmake \
-    ca-certificates pkgconfig llvm-dev libgcc clang-libs \
-    lmdb-dev lmdb lmdb-tools python2 libavif libavif-dev \
-    libavif-apps
+RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
+    build-essential clang cmake build-essential lmdb-utils liblmdb-dev liblmdb0
 
 COPY . /code
 WORKDIR /code/crates
-
-ENV RUSTFLAGS="-Ctarget-feature=-crt-static"
 
 FROM dirs as builder
 
 RUN cargo update -p exogress-common
 RUN cargo build --release
 
-FROM alpine:3.13 as base
+FROM debian:buster as base
 
-RUN apk --update add libffi-dev openssl-dev libsasl ca-certificates pkgconfig libgcc clang-libs lmdb-dev lmdb lmdb-tools
+RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
 
 FROM base as signaler
 COPY --from=builder /code/crates/target/release/exogress-signaler /usr/local/bin/
@@ -39,10 +34,9 @@ RUN exogress-director autocompletion bash > /etc/profile.d/exogress-director.sh 
     echo "source /etc/profile.d/exogress-director.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-director"]
 
-FROM base as transformer
+FROM dpokidov/imagemagick:7.0.11-2-buster as transformer
+RUN apt-get update && apt-get install -y libssl1.1 libsasl2-dev ca-certificates
 COPY --from=builder /code/crates/target/release/exogress-transformer /usr/local/bin/
-RUN apk --update add imagemagick imagemagick-dev pkgconfig libavif libavif-dev libavif-apps
-ENV MAGICK_THREAD_LIMIT=1
 RUN exogress-transformer autocompletion bash > /etc/profile.d/exogress-transformer.sh && \
     echo "source /etc/profile.d/exogress-transformer.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-transformer"]
@@ -50,7 +44,7 @@ ENTRYPOINT ["/usr/local/bin/exogress-transformer"]
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
-RUN apk --update add imagemagick imagemagick-dev pkgconfig lmdb-dev lmdb lmdb-tools
+RUN apt install -y lmdb-utils liblmdb-dev liblmdb0
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
