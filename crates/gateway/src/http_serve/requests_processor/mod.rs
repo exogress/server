@@ -243,7 +243,7 @@ impl RequestsProcessor {
                             handler.resolved_variant.post_processing(),
                         ) {
                             error!("After cache responded, it is eligible for transformation");
-                            if let Some(max_age) = cache_max_age(req, res, handler) {
+                            if let Some(max_age) = cache_max_age(req, &resp_from_cache, handler) {
                                 // FIXME: This is inefficient: need body cloning support on cache response
 
                                 match clone_response_through_tempfile(&mut resp_from_cache) {
