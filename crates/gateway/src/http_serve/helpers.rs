@@ -34,11 +34,13 @@ pub fn clone_response_through_tempfile(
     let original_headers = res.headers().clone();
     let original_status = res.status();
 
+    let mut cloned_response = Response::new(Body::empty());
+    *cloned_response.headers_mut() = original_headers;
+    *cloned_response.status_mut() = original_status;
+
     let create_response = async move {
         if let Some((reader, content_hash, content_length)) = saved_content.await {
-            let mut cloned_response = Response::new(Body::wrap_stream(chunks(reader, 16536)));
-            *cloned_response.headers_mut() = original_headers;
-            *cloned_response.status_mut() = original_status;
+            *cloned_response.body_mut() = Body::wrap_stream(chunks(reader, 16536));
 
             cloned_response
                 .headers_mut()
