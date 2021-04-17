@@ -1,5 +1,4 @@
 use crate::{bucket::GcsBucketInfo, magick::ImageConversionMeta};
-use anyhow::Error;
 use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName, Ulid};

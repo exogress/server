@@ -34,8 +34,8 @@ pub(crate) async fn convert(
     conversion_threads: Option<u8>,
     conversion_memory: Option<u64>,
     image_body: Bytes,
-    format: &str,
-    _mime_type: &str,
+    transform_to_format: &str,
+    mime_type: &str,
 ) -> anyhow::Result<ImageConversionResult> {
     let mut cmd = tokio::process::Command::new("magick");
 
@@ -47,6 +47,13 @@ pub(crate) async fn convert(
     if let Some(mem) = conversion_memory {
         info!("set conversion mem to {}", mem);
         cmd.arg("-limit").arg("memory").arg(mem.to_string());
+    }
+
+    if mime_type == "image/png" {
+        cmd.arg("-quality 100");
+        if transform_to_format == "webp" {
+            cmd.arg("-define webp:lossless=true");
+        }
     }
 
     let src_tempfile = spawn_blocking({
@@ -67,7 +74,7 @@ pub(crate) async fn convert(
 
     cmd.arg(format!(
         "{}:{}",
-        format.to_uppercase(),
+        transform_to_format.to_uppercase(),
         dst_tempfile.path().to_str().unwrap()
     ));
 
