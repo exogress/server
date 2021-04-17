@@ -164,6 +164,7 @@ impl TransformerClient {
                     None
                 }
             })
+            .filter(|(processed, _)| processed.compression_ratio > 1.0)
             .filter(|(_succeeded, content_type)| {
                 // we do strict match on specific transformed types
                 accept

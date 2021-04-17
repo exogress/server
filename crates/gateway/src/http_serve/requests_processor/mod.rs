@@ -746,8 +746,6 @@ async fn trigger_transformation_if_required(
 
             match transformer_result {
                 ProcessResponse::Ready(ready) => {
-                    error!("");
-
                     if let Some((best_format, content_type)) = transformer_client
                         .find_best_conversion(&ready, &accept)
                         .await
