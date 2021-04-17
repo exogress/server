@@ -34,8 +34,9 @@ pub(crate) async fn convert(
     conversion_threads: Option<u8>,
     conversion_memory: Option<u64>,
     image_body: Bytes,
+    source_content_type: &str,
     transform_to_format: &str,
-    mime_type: &str,
+    _transform_to_mime_type: &str,
 ) -> anyhow::Result<ImageConversionResult> {
     let mut cmd = tokio::process::Command::new("magick");
 
@@ -49,7 +50,7 @@ pub(crate) async fn convert(
         cmd.arg("-limit").arg("memory").arg(mem.to_string());
     }
 
-    if mime_type == "image/png" {
+    if source_content_type == "image/png" {
         cmd.arg("-quality 100");
         if transform_to_format == "webp" {
             cmd.arg("-define webp:lossless=true");

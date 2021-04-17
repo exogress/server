@@ -141,6 +141,7 @@ impl Processor {
                         conversion_threads,
                         conversion_memory,
                         decrypted.clone(),
+                        &request.content_type,
                         "webp",
                         "image/webp",
                     )
@@ -149,6 +150,7 @@ impl Processor {
                         conversion_threads,
                         conversion_memory,
                         decrypted,
+                        &request.content_type,
                         "avif",
                         "image/avif",
                     )
