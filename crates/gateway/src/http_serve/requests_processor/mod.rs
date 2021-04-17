@@ -118,6 +118,7 @@ mod static_dir;
 
 pub struct RequestsProcessor {
     pub is_active: bool,
+    pub is_transformations_limited: bool,
     ordered_handlers: Vec<ResolvedHandler>,
     pub generated_at: DateTime<Utc>,
     pub google_oauth2_client: super::auth::google::GoogleOauth2Client,
@@ -238,10 +239,12 @@ impl RequestsProcessor {
                     if resp_from_cache.status().is_success()
                         || resp_from_cache.status() == StatusCode::NOT_MODIFIED
                     {
-                        if is_eligible_for_transformation(
-                            &resp_from_cache,
-                            handler.resolved_variant.post_processing(),
-                        ) {
+                        if !self.is_transformations_limited
+                            && is_eligible_for_transformation(
+                                &resp_from_cache,
+                                handler.resolved_variant.post_processing(),
+                            )
+                        {
                             error!("After cache responded, it is eligible for transformation");
                             if let Some(max_age) = cache_max_age(req, &resp_from_cache, handler) {
                                 // FIXME: This is inefficient: need body cloning support on cache response
@@ -400,7 +403,12 @@ impl RequestsProcessor {
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
             Some(handler) => {
-                if is_eligible_for_transformation(res, handler.resolved_variant.post_processing()) {
+                if !self.is_transformations_limited
+                    && is_eligible_for_transformation(
+                        res,
+                        handler.resolved_variant.post_processing(),
+                    )
+                {
                     if let Some(max_age) = cache_max_age(req, res, handler) {
                         match clone_response_through_tempfile(res) {
                             Ok(on_response_finished) => {
@@ -3181,6 +3189,7 @@ impl RequestsProcessor {
 
         Ok(RequestsProcessor {
             is_active: resp.is_active,
+            is_transformations_limited: resp.is_transformations_limited,
             ordered_handlers: if resp.is_active {
                 merged_resolved_handlers
             } else {

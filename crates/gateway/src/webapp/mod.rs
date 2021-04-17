@@ -221,6 +221,7 @@ pub struct ConfigsResponse {
     pub xchacha20poly1305_secret_key: String,
     pub max_pop_cache_size_bytes: Byte,
     pub params: HashMap<ParameterName, Parameter>,
+    pub is_transformations_limited: bool,
 }
 
 impl ConfigsResponse {
