@@ -16,9 +16,8 @@ use exogress_common::{
         ClientConfig, ClientConfigRevision, ProjectConfig, Scope,
     },
     entities::{
-        url_prefix::MountPointBaseUrl, AccessKeyId, AccountName, AccountUniqueId, ConfigName,
-        InstanceId, MountPointName, ParameterName, ProfileName, ProjectName, ProjectUniqueId,
-        Upstream,
+        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
+        ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
     },
 };
 use exogress_server_common::{logging::LogMessage, presence};
@@ -209,7 +208,7 @@ pub struct ConfigsResponse {
     pub is_active: bool,
     #[serde(with = "ts_milliseconds")]
     pub generated_at: DateTime<Utc>,
-    pub url_prefix: MountPointBaseUrl,
+    pub fqdn: String,
     pub account: AccountName,
     pub account_unique_id: AccountUniqueId,
     pub project_unique_id: ProjectUniqueId,
@@ -433,29 +432,22 @@ impl Client {
         matchable_url: MatchableUrl,
         tunnels: ClientTunnels,
         individual_hostname: SmolStr,
-    ) -> Result<
-        Option<(
-            Arc<RequestsProcessor>,
-            // RateLimiters,
-            MountPointBaseUrl,
-        )>,
-        Error,
-    > {
+    ) -> Result<Option<Arc<RequestsProcessor>>, Error> {
         let cache = self.cache.clone();
         let resolver = self.resolver.clone();
         let public_counters_tx = self.public_counters_tx.clone();
 
         // Try to read from cache
-        if let Some((cached, mount_point_base_path)) =
-            self.requests_processors_registry.resolve(&matchable_url)
-        //, tunnels.clone(), external_port, proto)
+        if let Some(maybe_cached) = self
+            .requests_processors_registry
+            .resolve(matchable_url.host().as_str())
         {
             crate::statistics::CONFIGS_CACHE_HIT.inc();
 
-            match cached {
+            match maybe_cached {
                 Some(data) => {
                     // mapping exist
-                    return Ok(Some((data, mount_point_base_path)));
+                    return Ok(Some(data));
                 }
                 None => {
                     return Ok(None);
@@ -518,9 +510,9 @@ impl Client {
 
                             url.set_query(Some(
                                 format!(
-                                    "url={}",
+                                    "fqdn={}",
                                     percent_encoding::utf8_percent_encode(
-                                        format!("{}", matchable_url).as_str(),
+                                        matchable_url.host().as_str(),
                                         NON_ALPHANUMERIC,
                                     )
                                 )
@@ -540,8 +532,8 @@ impl Client {
 
                                                 crate::statistics::CONFIGS_RETRIEVAL_SUCCESS.inc();
 
-                                                let url_prefix =
-                                                    configs_response.url_prefix.clone();
+                                                let fqdn =
+                                                    configs_response.fqdn.clone();
                                                 let generated_at =
                                                     configs_response.generated_at.clone();
 
@@ -575,7 +567,7 @@ impl Client {
                                                     };
 
                                                 requests_processors_registry.upsert(
-                                                    &url_prefix,
+                                                    &fqdn,
                                                     Some(requests_processor),
                                                     &generated_at,
                                                 );
@@ -596,7 +588,7 @@ impl Client {
                                     } else if status == StatusCode::NOT_FOUND {
                                         crate::statistics::CONFIGS_RETRIEVAL_SUCCESS.inc();
                                         requests_processors_registry.upsert(
-                                            &matchable_url.to_url_prefix(),
+                                            &matchable_url.host(),
                                             None,
                                             &Utc::now(), //FIXME: return generated_at in 404 resp
                                         );
@@ -650,10 +642,11 @@ impl Client {
             }
         }
 
-        if let Some((cached, url_prefix)) =
-            self.requests_processors_registry.resolve(&matchable_url)
+        if let Some(cached) = self
+            .requests_processors_registry
+            .resolve(matchable_url.host().as_str())
         {
-            Ok(cached.map(|a| (a, url_prefix)))
+            Ok(cached)
         } else {
             error!("Still can't resolve after successful reset event happened");
             Err(Error::CouldNotRetrieve)

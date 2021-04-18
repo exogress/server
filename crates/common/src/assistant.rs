@@ -1,8 +1,6 @@
 use crate::logging::LogMessage;
 use chrono::serde::ts_milliseconds;
-use exogress_common::entities::{
-    url_prefix::MountPointBaseUrl, AccountUniqueId, ConfigId, ProjectUniqueId,
-};
+use exogress_common::entities::{AccountUniqueId, ConfigId, ProjectUniqueId};
 use sentry::types::{DateTime, Utc};
 use std::time::Duration;
 
@@ -29,7 +27,7 @@ pub struct GatewayConfigMessage {
 pub enum Action {
     #[serde(rename = "invalidate")]
     Invalidate {
-        url_prefixes: Vec<MountPointBaseUrl>,
+        fqdns: Vec<String>,
         config_ids: Vec<ConfigId>,
     },
 }

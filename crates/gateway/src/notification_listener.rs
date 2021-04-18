@@ -405,18 +405,15 @@ impl AssistantClient {
                 info!("received msg: {:?}", msg);
                 match msg {
                     WsToGwMessage::WebAppNotification(notification) => match notification.action {
-                        Action::Invalidate {
-                            url_prefixes,
-                            config_ids,
-                        } => {
-                            for url_prefix in url_prefixes.into_iter() {
-                                let domain_only = url_prefix.domain_only();
+                        Action::Invalidate { fqdns, config_ids } => {
+                            for fqdn in fqdns.into_iter() {
+                                let domain_only = fqdn.to_string();
                                 mappings.remove_by_notification_if_time_applicable(
                                     &domain_only,
                                     &notification.generated_at,
                                 );
 
-                                let host = url_prefix.host().to_string();
+                                let host = fqdn.to_string();
 
                                 info!("invalidate certificate for: {}", host);
 

@@ -111,7 +111,7 @@ pub async fn server(
                                     instance_id,
                                     access_key_id,
                                     account_unique_id,
-                                    base_urls: _,
+                                    fqdns: _,
                                 } = match presence_client
                                     .set_online(
                                         &authorization,
@@ -200,7 +200,7 @@ pub async fn server(
                                                 serde_json::to_string(
                                                     &SignalerHandshakeResponse::Ok {
                                                         instance_id: response.instance_id,
-                                                        base_urls: response.base_urls.clone(),
+                                                        base_urls: response.fqdns.iter().map(|fqdn| format!("{}/", fqdn)).collect(),
                                                     },
                                                 )
                                                 .unwrap(),
@@ -375,7 +375,7 @@ pub async fn server(
                                                                                     serde_json::to_string_pretty(
                                                                                         &WsCloudToInstanceMessage::ConfigUpdateResult(
                                                                                             ConfigUpdateResult::Ok {
-                                                                                                base_urls: response.base_urls.clone(),
+                                                                                                base_urls: response.fqdns.iter().map(|fqdn| format!("{}/", fqdn)).collect(),
                                                                                             })).unwrap()
                                                                                 ))
                                                                                 .await?;

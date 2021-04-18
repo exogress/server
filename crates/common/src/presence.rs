@@ -2,8 +2,8 @@
 use exogress_common::{
     config_core::ClientConfig,
     entities::{
-        url_prefix::MountPointBaseUrl, AccessKeyId, AccountName, AccountUniqueId,
-        HealthCheckProbeName, InstanceId, ProfileName, ProjectName, SmolStr, Upstream,
+        AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProfileName,
+        ProjectName, SmolStr, Upstream,
     },
     signaling::ProbeHealthStatus,
 };
@@ -20,12 +20,12 @@ pub struct InstanceRegistered {
     pub instance_id: InstanceId,
     pub account_unique_id: AccountUniqueId,
     pub access_key_id: AccessKeyId,
-    pub base_urls: Vec<MountPointBaseUrl>,
+    pub fqdns: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstanceUpdated {
-    pub base_urls: Vec<MountPointBaseUrl>,
+    pub fqdns: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

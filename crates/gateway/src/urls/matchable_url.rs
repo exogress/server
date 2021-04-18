@@ -1,5 +1,4 @@
-use exogress_common::entities::url_prefix::MountPointBaseUrl;
-use std::{fmt, str::FromStr};
+use std::fmt;
 use url::Url;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -9,13 +8,6 @@ pub struct MatchableUrl {
     path: String,
     username: String,
     password: Option<String>,
-}
-
-impl MatchableUrl {
-    pub fn to_url_prefix(&self) -> MountPointBaseUrl {
-        let s = format!("{}{}", self.host, self.path);
-        MountPointBaseUrl::from_str(s.as_ref()).expect("unexpected bad data in UrlForRewriting")
-    }
 }
 
 impl fmt::Display for MatchableUrl {
@@ -84,41 +76,8 @@ impl MatchableUrl {
         })
     }
 
-    // pub fn matches(self, pattern: MatchPattern) -> Option<Matched> {
-    //     if self
-    //         .inner
-    //         .as_str()
-    //         .starts_with(pattern.matchable_prefix.as_str())
-    //     {
-    //         if pattern.matchable_prefix.len() < self.inner.len() {
-    //             let pattern_last_idx = pattern.matchable_prefix.len() - 1;
-    //             let next_idx = pattern.matchable_prefix.len();
-    //             let pattern_last_char = pattern
-    //                 .matchable_prefix
-    //                 .get(pattern_last_idx..=pattern_last_idx)
-    //                 .unwrap();
-    //             let next_char = self.inner.get(next_idx..=next_idx).unwrap();
-    //
-    //             if pattern_last_char != "/" && next_char != "/" && next_char != "?" {
-    //                 return None;
-    //             }
-    //         }
-    //         Some(Matched {
-    //             url: self,
-    //             pattern,
-    //             config_name: None,
-    //         })
-    //     } else {
-    //         None
-    //     }
-    // }
-
     pub fn host(&self) -> String {
         self.host.clone()
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.inner.as_str()
     }
 }
 

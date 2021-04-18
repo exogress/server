@@ -42,10 +42,9 @@ use exogress_common::{
         TemplateEngine, TrailingSlashFilterRule, TrailingSlashModification, UrlPathSegment,
     },
     entities::{
-        exceptions, exceptions::MODIFICATION_ERROR, serde::Serializer,
-        url_prefix::MountPointBaseUrl, AccountUniqueId, ConfigId, ConfigName, Exception,
-        HandlerName, InstanceId, MountPointName, ParameterName, ProjectName, ProjectUniqueId,
-        StaticResponseName,
+        exceptions, exceptions::MODIFICATION_ERROR, serde::Serializer, AccountUniqueId, ConfigId,
+        ConfigName, Exception, HandlerName, InstanceId, MountPointName, ParameterName, ProjectName,
+        ProjectUniqueId, StaticResponseName,
     },
 };
 use exogress_server_common::{
@@ -131,7 +130,7 @@ pub struct RequestsProcessor {
     pub project_unique_id: ProjectUniqueId,
     cache: Cache,
     pub project_name: ProjectName,
-    url_prefix: MountPointBaseUrl,
+    fqdn: String,
     pub mount_point_name: MountPointName,
     pub xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     max_pop_cache_size_bytes: Byte,
@@ -206,7 +205,7 @@ impl RequestsProcessor {
             .lock()
             .as_object_mut()
             .unwrap()
-            .insert("mount_point_hostname".into(), self.url_prefix.host().into());
+            .insert("mount_point_hostname".into(), self.fqdn.clone().into());
 
         self.rules_counter
             .register_request(&self.account_unique_id, &self.project_unique_id);
@@ -2674,7 +2673,7 @@ impl RequestsProcessor {
             public_key: resp.jwt_ecdsa.public_key.into(),
         };
 
-        let mount_point_base_url = resp.url_prefix;
+        let mount_point_fqdn = resp.fqdn;
         let account_unique_id = resp.account_unique_id;
         let project_unique_id = resp.project_unique_id;
         let account_name = resp.account;
@@ -2773,7 +2772,7 @@ impl RequestsProcessor {
                 instance_ids,
                 project_rescue,
                 jwt_ecdsa,
-                mount_point_base_url,
+                mount_point_fqdn,
                 google_oauth2_client,
                 github_oauth2_client,
                 assistant_base_url,
@@ -2848,7 +2847,7 @@ impl RequestsProcessor {
                                             )
                                         }),
                                         handler_name: handler_name.clone(),
-                                        mount_point_base_url: mount_point_base_url.clone(),
+                                        mount_point_fqdn: mount_point_fqdn.clone(),
                                         jwt_ecdsa: jwt_ecdsa.clone(),
                                         google_oauth2_client: google_oauth2_client.clone(),
                                         github_oauth2_client: github_oauth2_client.clone(),
@@ -2902,7 +2901,7 @@ impl RequestsProcessor {
                                             config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
                                         },
                                         individual_hostname: individual_hostname.clone(),
-                                        public_hostname: mount_point_base_url.host().into(),
+                                        public_hostname: mount_point_fqdn.to_string().into(),
                                     })
                                 }
                                 ClientHandlerVariant::Proxy(proxy) => {
@@ -2958,7 +2957,7 @@ impl RequestsProcessor {
                                             config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
                                         },
                                         individual_hostname: individual_hostname.clone(),
-                                        public_hostname: mount_point_base_url.host().into(),
+                                        public_hostname: mount_point_fqdn.to_string().into(),
                                         presence_client: presence_client.clone(),
                                         is_cache_enabled: proxy.cache.enabled,
                                         is_websockets_enabled: proxy.websockets,
@@ -3206,7 +3205,7 @@ impl RequestsProcessor {
             account_unique_id,
             cache,
             project_name,
-            url_prefix: mount_point_base_url.clone(),
+            fqdn: mount_point_fqdn.clone(),
             mount_point_name,
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,

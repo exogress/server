@@ -1,4 +1,4 @@
-use exogress_common::entities::{url_prefix::MountPointBaseUrl, HandlerName};
+use exogress_common::entities::HandlerName;
 use exogress_server_common::assistant::{GetValue, SetValue};
 use http::StatusCode;
 use oauth2::{basic::BasicTokenResponse, reqwest::Error};
@@ -69,7 +69,7 @@ pub struct JwtEcdsa {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowData {
     pub requested_url: Url,
-    pub base_url: MountPointBaseUrl,
+    pub fqdn: String,
     pub jwt_ecdsa: JwtEcdsa,
     pub provider: Oauth2Provider,
     pub handler_name: HandlerName,

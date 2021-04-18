@@ -2,7 +2,7 @@ use crate::http_serve::auth::{
     github::GithubOauth2Client, google::GoogleOauth2Client, JwtEcdsa, Oauth2Provider,
 };
 use cookie::Cookie;
-use exogress_common::entities::{url_prefix::MountPointBaseUrl, HandlerName};
+use exogress_common::entities::HandlerName;
 use handlebars::Handlebars;
 use http::{
     header::{LOCATION, SET_COOKIE},
@@ -34,14 +34,14 @@ pub fn render_limit_reached() -> String {
 }
 
 fn render_login(
-    mount_point_base_url: &MountPointBaseUrl,
+    fqdn: &str,
     requested_url: &Url,
     handler_name: &HandlerName,
     auth: &[Oauth2Provider],
 ) -> String {
     let handlebars = Handlebars::new();
 
-    let mut url = mount_point_base_url.to_url();
+    let mut url: Url = format!("https://{}/", fqdn).parse().unwrap();
 
     url.path_segments_mut().unwrap().push("_exg").push("auth");
     url.set_query(Some(
@@ -83,7 +83,7 @@ fn render_login(
 
 pub async fn respond_with_login(
     res: &mut Response<Body>,
-    base_url: &MountPointBaseUrl,
+    fqdn: &str,
     provided_oauth2_provider: &Option<Oauth2Provider>,
     requested_url: &Url,
     handler_name: &HandlerName,
@@ -97,13 +97,13 @@ pub async fn respond_with_login(
             *res.status_mut() = StatusCode::OK;
             res.headers_mut()
                 .typed_insert::<ContentType>(&ContentType(mime::TEXT_HTML_UTF_8));
-            *res.body_mut() = Body::from(render_login(base_url, requested_url, handler_name, auth));
+            *res.body_mut() = Body::from(render_login(fqdn, requested_url, handler_name, auth));
         }
         Some(provider) => {
             let redirect_to = match provider {
                 Oauth2Provider::Google => google_oauth2_client
                     .save_state_and_retrieve_authorization_url(
-                        &base_url,
+                        &fqdn,
                         jwt_ecdsa,
                         requested_url,
                         handler_name,
@@ -112,7 +112,7 @@ pub async fn respond_with_login(
                     .expect("FIXME"),
                 Oauth2Provider::Github => github_oauth2_client
                     .save_state_and_retrieve_authorization_url(
-                        &base_url,
+                        &fqdn,
                         jwt_ecdsa,
                         requested_url,
                         handler_name,
@@ -124,7 +124,7 @@ pub async fn respond_with_login(
             let delete_cookie = Cookie::build(format!("x-exg-auth-{}", handler_name), "deleted")
                 .http_only(true)
                 .secure(true)
-                .path(base_url.path())
+                .path("/")
                 .expires(time::OffsetDateTime::unix_epoch())
                 .finish();
 

@@ -636,8 +636,11 @@ pub async fn server(
                                         .await
                                         .expect("FIXME");
 
-                                        let mut redirect_to =
-                                            callback_result.oauth2_flow_data.base_url.to_url();
+                                        let mut redirect_to: Url = format!(
+                                            "https://{}/",
+                                            callback_result.oauth2_flow_data.fqdn
+                                        )
+                                        .parse()?;
 
                                         // FIXME: Broken logic here!
                                         redirect_to
@@ -703,7 +706,7 @@ pub async fn server(
                         .await;
 
                         match handle_result {
-                            Ok(Ok(Some((requests_processor, _mount_point_base_url)))) => {
+                            Ok(Ok(Some(requests_processor))) => {
                                 let result = tokio::time::timeout(Duration::from_secs(20), async {
                                     requests_processor
                                         .process(

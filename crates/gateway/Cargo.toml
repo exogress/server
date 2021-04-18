@@ -47,7 +47,6 @@ mime = "0.3.16"
 never = "0.1.0"
 oauth2 = { version = "4.0.0-beta.1" }
 parking_lot = { version = "0.11", features = ["serde"] }
-patricia_tree = "0.3.0"
 percent-encoding = "2.1.0"
 pin-utils = "0.1.0"
 progress_bar = "0.1.3"
