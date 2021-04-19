@@ -149,11 +149,12 @@ impl GoogleOauth2Client {
         )
         .await?;
 
-        let code = AuthorizationCode::new(
-            params
-                .remove("code")
-                .ok_or(Oauth2FlowError::NoCodeInCallback)?,
-        );
+        let code_param = params
+            .remove("code")
+            .ok_or(Oauth2FlowError::NoCodeInCallback)?;
+        let code_param_decoded = percent_encoding::percent_decode_str(&code_param).decode_utf8()?;
+
+        let code = AuthorizationCode::new(code_param_decoded.to_string());
 
         let token = self
             .creds

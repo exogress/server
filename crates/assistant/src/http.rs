@@ -20,7 +20,7 @@ use tokio::{
     time::{sleep, Duration},
 };
 use tracing_futures::Instrument;
-use warp::Filter;
+use warp::{http::StatusCode, Filter, Rejection};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayCommonTlsConfig {
@@ -446,39 +446,39 @@ pub async fn server(
             }
         });
 
-    let get_kv = warp::path!("int_api" / "v1" / "keys" / String)
-        .and(warp::filters::method::get())
-        .and_then({
-            shadow_clone!(redis);
-
-            move |key: String| {
+    let get_kv =
+        warp::path!("int_api" / "v1" / "keys" / String)
+            .and(warp::filters::method::get())
+            .and_then({
                 shadow_clone!(redis);
 
-                async move {
-                    let res: Result<String, redis::RedisError> = async move {
-                        let mut redis_conn = redis.get_async_connection().await?;
+                move |key: String| {
+                    shadow_clone!(redis);
 
-                        let r = redis_conn.get(key.as_str()).await?;
-                        redis_conn.del(key.as_str()).await?;
+                    async move {
+                        let res: Result<Option<String>, redis::RedisError> = async move {
+                            let mut redis_conn = redis.get_async_connection().await?;
 
-                        Ok(r)
-                    }
-                    .await;
-
-                    match res {
-                        Ok(payload) => {
-                            Ok::<_, warp::reject::Rejection>(warp::reply::json::<GetValue>(
-                                &GetValue { payload },
-                            ))
+                            let maybe_resp: Option<String> = redis_conn.get(key.as_str()).await?;
+                            if let Some(resp) = maybe_resp {
+                                redis_conn.del(key.as_str()).await?;
+                                Ok(Some(resp))
+                            } else {
+                                Ok(None)
+                            }
                         }
-                        Err(e) => {
-                            error!("redis error: {}", e);
-                            Err(warp::reject::not_found())
+                        .await;
+
+                        match res {
+                            Ok(Some(payload)) => Ok::<_, warp::reject::Rejection>(
+                                warp::reply::json::<GetValue>(&GetValue { payload }),
+                            ),
+                            Ok(None) => Err(warp::reject::not_found()),
+                            Err(e) => Err(warp::reject::custom(InternalServerError {})),
                         }
                     }
                 }
-            }
-        });
+            });
 
     let health = warp::path!("int" / "healthcheck")
         .and(warp::filters::method::get())
