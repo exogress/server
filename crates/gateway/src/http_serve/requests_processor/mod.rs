@@ -2875,8 +2875,8 @@ impl RequestsProcessor {
                                                 min_size: static_dir.post_processing.encoding.min_size,
                                             },
                                             image: ResolvedImage {
-                                                is_png: static_dir.post_processing.image.png,
-                                                is_jpeg: static_dir.post_processing.image.jpeg,
+                                                is_png: static_dir.post_processing.image_optimization.enabled && static_dir.post_processing.image_optimization.png,
+                                                is_jpeg: static_dir.post_processing.image_optimization.enabled && static_dir.post_processing.image_optimization.jpeg,
                                             }
                                         },
                                         config: static_dir,
@@ -2922,8 +2922,8 @@ impl RequestsProcessor {
                                                 min_size: proxy.post_processing.encoding.min_size,
                                             },
                                             image: ResolvedImage {
-                                                is_png: proxy.post_processing.image.png,
-                                                is_jpeg: proxy.post_processing.image.jpeg,
+                                                is_png: proxy.post_processing.image_optimization.enabled && proxy.post_processing.image_optimization.png,
+                                                is_jpeg: proxy.post_processing.image_optimization.enabled && proxy.post_processing.image_optimization.jpeg,
                                             }
                                         },
                                         name: proxy.upstream.clone(),
@@ -2981,8 +2981,8 @@ impl RequestsProcessor {
                                                 min_size: s3_bucket.post_processing.encoding.min_size,
                                             },
                                             image: ResolvedImage {
-                                                is_png: s3_bucket.post_processing.image.png,
-                                                is_jpeg: s3_bucket.post_processing.image.jpeg,
+                                                is_png: s3_bucket.post_processing.image_optimization.enabled && s3_bucket.post_processing.image_optimization.png,
+                                                is_jpeg: s3_bucket.post_processing.image_optimization.enabled && s3_bucket.post_processing.image_optimization.jpeg,
                                             }
                                         },
                                         client: public_client.clone(),
@@ -3037,8 +3037,8 @@ impl RequestsProcessor {
                                                 min_size: gcs_bucket.post_processing.encoding.min_size,
                                             },
                                             image: ResolvedImage {
-                                                is_png: gcs_bucket.post_processing.image.png,
-                                                is_jpeg: gcs_bucket.post_processing.image.jpeg,
+                                                is_png: gcs_bucket.post_processing.image_optimization.enabled && gcs_bucket.post_processing.image_optimization.png,
+                                                is_jpeg: gcs_bucket.post_processing.image_optimization.enabled && gcs_bucket.post_processing.image_optimization.jpeg,
                                             }
                                         },
                                         client: public_client.clone(),

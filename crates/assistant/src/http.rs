@@ -20,7 +20,7 @@ use tokio::{
     time::{sleep, Duration},
 };
 use tracing_futures::Instrument;
-use warp::{http::StatusCode, Filter, Rejection};
+use warp::Filter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayCommonTlsConfig {
@@ -474,7 +474,7 @@ pub async fn server(
                                 warp::reply::json::<GetValue>(&GetValue { payload }),
                             ),
                             Ok(None) => Err(warp::reject::not_found()),
-                            Err(e) => Err(warp::reject::custom(InternalServerError {})),
+                            Err(_e) => Err(warp::reject::custom(InternalServerError {})),
                         }
                     }
                 }
