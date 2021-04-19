@@ -52,9 +52,9 @@ pub(crate) async fn convert(
     }
 
     if source_content_type == "image/png" {
-        cmd.arg("-quality 100");
+        cmd.arg("-quality").arg("100");
         if transform_to_format == "webp" {
-            cmd.arg("-define webp:lossless=true");
+            cmd.arg("-define").arg("webp:lossless=true");
         }
     }
 
