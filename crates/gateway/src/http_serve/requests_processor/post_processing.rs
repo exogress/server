@@ -1,30 +1,15 @@
 use crate::http_serve::RequestsProcessor;
 use exogress_common::config_core::referenced;
-use exogress_server_common::logging::{
-    CompressProcessingStep, LogMessage, OptimizeProcessingStep, ProcessingStep,
-};
+use exogress_server_common::logging::{CompressProcessingStep, LogMessage, ProcessingStep};
 use futures::TryStreamExt;
 use hashbrown::HashSet;
-use http::{
-    header::{CONTENT_LENGTH, CONTENT_TYPE},
-    HeaderValue, Request, Response,
-};
+use http::{HeaderValue, Request, Response};
 use hyper::Body;
 use itertools::Itertools;
-use magick_rust::{magick_wand_genesis, MagickWand};
 use smol_str::SmolStr;
-use std::{
-    convert::TryFrom,
-    io, mem,
-    str::FromStr,
-    sync::{Arc, Once},
-    time::Instant,
-};
-use tokio::task;
+use std::{convert::TryFrom, io, mem};
 use tokio_util::either::Either;
-use typed_headers::{ContentCoding, ContentType, HeaderMapExt};
-
-static IMAGE_MAGIC: Once = Once::new();
+use typed_headers::{ContentCoding, HeaderMapExt};
 
 #[derive(Clone, Debug)]
 pub struct ResolvedPostProcessing {
@@ -46,48 +31,6 @@ pub struct ResolvedImage {
     pub is_png: bool,
     pub is_jpeg: bool,
 }
-
-// lazy_static! {
-//     pub static ref COMPRESSABLE_MIME_TYPES: HashSet<&'static str> = vec![
-//         mime::TEXT_CSS.essence_str(),
-//         mime::TEXT_CSV.essence_str(),
-//         mime::TEXT_HTML.essence_str(),
-//         mime::TEXT_JAVASCRIPT.essence_str(),
-//         mime::TEXT_PLAIN.essence_str(),
-//         mime::TEXT_STAR.essence_str(),
-//         mime::TEXT_TAB_SEPARATED_VALUES.essence_str(),
-//         mime::TEXT_VCARD.essence_str(),
-//         mime::TEXT_XML.essence_str(),
-//         mime::IMAGE_BMP.essence_str(),
-//         mime::IMAGE_SVG.essence_str(),
-//         mime::APPLICATION_JAVASCRIPT.essence_str(),
-//         mime::APPLICATION_JSON.essence_str(),
-//         "application/atom+xml",
-//         "application/geo+json",
-//         "application/x-javascript",
-//         "application/ld+json",
-//         "application/manifest+json",
-//         "application/rdf+xml",
-//         "application/rss+xml",
-//         "application/vnd.ms-fontobject",
-//         "application/wasm",
-//         "application/x-web-app-manifest+json",
-//         "application/xhtml+xml",
-//         "application/xml",
-//         "font/eot",
-//         "font/otf",
-//         "font/ttf",
-//         "text/cache-manifest",
-//         "text/calendar",
-//         "text/markdown",
-//         "text/vnd.rim.location.xloc",
-//         "text/vtt",
-//         "text/x-component",
-//         "text/x-cross-domain-policy",
-//     ]
-//     .into_iter()
-//     .collect();
-// }
 
 #[derive(Debug, Clone, Copy)]
 pub enum SupportedContentEncoding {
@@ -120,118 +63,7 @@ impl<'a> TryFrom<&'a ContentCoding> for SupportedContentEncoding {
 }
 
 impl RequestsProcessor {
-    pub async fn optimize_image(
-        &self,
-        req: &Request<Body>,
-        res: &mut Response<Body>,
-        image_post_processing_config: Option<&ResolvedImage>,
-        log_message: &mut LogMessage,
-    ) -> Result<(), anyhow::Error> {
-        let image_post_processing_config = match image_post_processing_config {
-            None => return Ok(()),
-            Some(image_post_processing_config) => image_post_processing_config,
-        };
-
-        let url = req.uri().to_string();
-
-        let content_type: mime::Mime = res
-            .headers()
-            .get(CONTENT_TYPE)
-            .ok_or_else(|| anyhow!("no content-type"))?
-            .to_str()?
-            .parse()?;
-
-        if (content_type == mime::IMAGE_JPEG && image_post_processing_config.is_jpeg)
-            || (content_type == mime::IMAGE_PNG && image_post_processing_config.is_png)
-        {
-            res.headers_mut()
-                .insert("vary", HeaderValue::from_str("Accept").unwrap());
-
-            let is_webp_supported = req
-                .headers()
-                .typed_get::<typed_headers::Accept>()?
-                .ok_or_else(|| anyhow!("no accept header"))?
-                .iter()
-                .find(|&item| item.item == mime::Mime::from_str("image/webp").unwrap())
-                .is_some();
-            if !is_webp_supported {
-                return Ok(());
-            }
-
-            IMAGE_MAGIC.call_once(|| {
-                magick_wand_genesis();
-            });
-
-            info!("Waiting for permit...");
-            let _permit = self.webp_semaphore.acquire().await.unwrap();
-            info!("Move on with webp!");
-
-            let image_body = Arc::new(
-                mem::replace(res.body_mut(), Body::empty())
-                    .try_fold(Vec::new(), |mut data, chunk| async move {
-                        data.extend_from_slice(&chunk);
-                        Ok(data)
-                    })
-                    .await?,
-            );
-
-            let source_image_len = image_body.len();
-
-            let converted_image_result = task::spawn_blocking({
-                shadow_clone!(image_body);
-
-                move || {
-                    let start_converion = Instant::now();
-                    let wand = MagickWand::new();
-                    wand.read_image_blob(image_body.as_ref())
-                        .map_err(|e| anyhow!("imagemagick read error: {}", e))?;
-                    let converted_image = wand
-                        .write_image_blob("webp")
-                        .map_err(|e| anyhow!("imagemagick write error: {}", e))?;
-
-                    let elapsed = start_converion.elapsed();
-
-                    info!("webp conversion of {} took {:?}", url, elapsed);
-
-                    Ok::<_, anyhow::Error>(converted_image)
-                }
-            })
-            .await?;
-
-            match converted_image_result {
-                Ok(buf) => {
-                    const WEBP_MIME: &str = "image/webp";
-                    let buf_len = buf.len();
-                    let ratio = source_image_len as f64 / buf_len as f64;
-                    log_message
-                        .steps
-                        .push(ProcessingStep::Optimize(OptimizeProcessingStep {
-                            from_content_type: content_type.essence_str().into(),
-                            to_content_type: WEBP_MIME.into(),
-                            compression_ratio: ratio,
-                        }));
-                    *res.body_mut() = Body::from(buf);
-                    res.headers_mut().typed_insert::<ContentType>(&ContentType(
-                        mime::Mime::from_str(WEBP_MIME.into()).unwrap(),
-                    ));
-                    res.headers_mut()
-                        .insert(CONTENT_LENGTH, HeaderValue::from(buf_len));
-                }
-                Err(e) => {
-                    warn!("error converting image to WebP: {}", e);
-                    assert_eq!(Arc::strong_count(&image_body), 1);
-                    // restore original image body
-                    *res.body_mut() = Body::from(Arc::try_unwrap(image_body).unwrap());
-                }
-            }
-
-            Ok(())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn compress(
+    pub fn compress_if_applicable(
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,

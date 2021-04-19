@@ -3,7 +3,7 @@ use crate::{
         helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
         s3_bucket, HandlerInvocationResult,
     },
-    public_hyper_client::MeteredHttpsConnector,
+    public_hyper_client::MeteredHttpConnector,
 };
 use core::mem;
 use exogress_common::{
@@ -42,7 +42,7 @@ impl BucketError {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedS3Bucket {
-    pub client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
+    pub client: hyper::Client<MeteredHttpConnector, hyper::Body>,
     pub credentials: Option<Result<rusty_s3::Credentials, referenced::Error>>,
     pub bucket: Result<rusty_s3::Bucket, s3_bucket::BucketError>,
     pub is_cache_enabled: bool,

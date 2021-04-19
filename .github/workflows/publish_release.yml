@@ -11,6 +11,7 @@ env:
   IMAGE_GATEWAY: quay.io/exogress/gateway
   IMAGE_ASSISTANT: quay.io/exogress/assistant
   IMAGE_DIRECTOR: quay.io/exogress/director
+  IMAGE_TRANSFORMER: quay.io/exogress/transformer
 
 jobs:
   test:
@@ -73,6 +74,10 @@ jobs:
         run:
           docker build --pull --target=assistant -t ${IMAGE_ASSISTANT}:${{ github.event.release.tag_name }} .
 
+      - name: Build transformer
+        run:
+          docker build --pull --target=transformer -t ${IMAGE_TRANSFORMER}:${{ github.event.release.tag_name }} .
+
       - name: Tag and push signaler
         run: |
           docker push ${IMAGE_SIGNALER}:${{ github.event.release.tag_name }}
@@ -88,3 +93,7 @@ jobs:
       - name: Tag and push  assistant
         run: |
           docker push ${IMAGE_ASSISTANT}:${{ github.event.release.tag_name }}
+
+      - name: Tag and push transformer
+        run: |
+          docker push ${IMAGE_TRANSFORMER}:${{ github.event.release.tag_name }}

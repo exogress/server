@@ -9,7 +9,7 @@ use futures::{
 use http::Uri;
 use prometheus::IntCounter;
 use rand::{seq::IteratorRandom, thread_rng};
-use std::{pin::Pin, sync::Arc, task};
+use std::{io::Cursor, pin::Pin, sync::Arc, task};
 use tokio::{
     io,
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -17,20 +17,21 @@ use tokio::{
 };
 use tokio_rustls::{
     client::TlsStream,
-    rustls::{ClientConfig, Session},
+    rustls::{internal::pemfile, ClientConfig, Session},
     webpki::{DNSNameRef, InvalidDNSNameError},
     TlsConnector,
 };
+use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
 
 pub struct HyperUsableConnection {
     _stop_public_counter_tx: oneshot::Sender<()>,
-    inner: TlsStream<TrafficCountedStream<TcpStream>>,
+    inner: Either<TlsStream<TrafficCountedStream<TcpStream>>, TrafficCountedStream<TcpStream>>,
 }
 
 impl HyperUsableConnection {
     pub fn new(
-        conn: TlsStream<TrafficCountedStream<TcpStream>>,
+        conn: Either<TlsStream<TrafficCountedStream<TcpStream>>, TrafficCountedStream<TcpStream>>,
         stop_public_counter_tx: oneshot::Sender<()>,
     ) -> Self {
         HyperUsableConnection {
@@ -42,10 +43,15 @@ impl HyperUsableConnection {
 
 impl hyper::client::connect::Connection for HyperUsableConnection {
     fn connected(&self) -> hyper::client::connect::Connected {
-        if self.inner.get_ref().1.get_alpn_protocol() == Some(b"h2") {
-            self.inner.get_ref().0.get_ref().connected().negotiated_h2()
-        } else {
-            self.inner.get_ref().0.get_ref().connected()
+        match &self.inner {
+            Either::Left(tls) => {
+                if tls.get_ref().1.get_alpn_protocol() == Some(b"h2") {
+                    tls.get_ref().0.get_ref().connected().negotiated_h2()
+                } else {
+                    tls.get_ref().0.get_ref().connected()
+                }
+            }
+            Either::Right(_) => hyper::client::connect::Connected::new(),
         }
     }
 }
@@ -82,18 +88,19 @@ impl AsyncWrite for HyperUsableConnection {
 }
 
 #[derive(Clone)]
-pub struct MeteredHttpsConnector {
+pub struct MeteredHttpConnector {
     pub public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
     pub resolver: TokioAsyncResolver,
     pub counters: Arc<TrafficCounters>,
     pub sent_counter: IntCounter,
     pub recv_counter: IntCounter,
+    pub maybe_identity: Option<Vec<u8>>,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("not an HTTPS")]
-    NotHttps,
+    #[error("bad scheme")]
+    BadScheme,
 
     #[error("no hostname in URI")]
     NoHost,
@@ -112,9 +119,12 @@ pub enum Error {
 
     #[error("invalid DNS name error: {_0}")]
     InvalidHostname(#[from] InvalidDNSNameError),
+
+    #[error("bad certificate")]
+    BadCert,
 }
 
-impl hyper::service::Service<Uri> for MeteredHttpsConnector {
+impl hyper::service::Service<Uri> for MeteredHttpConnector {
     type Response = HyperUsableConnection;
     type Error = Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
@@ -129,12 +139,9 @@ impl hyper::service::Service<Uri> for MeteredHttpsConnector {
         let sent_counter = self.sent_counter.clone();
         let recv_counter = self.recv_counter.clone();
         let public_counters_tx = self.public_counters_tx.clone();
+        let maybe_identity = self.maybe_identity.clone();
 
         Box::pin(async move {
-            if dst.scheme_str() != Some("https") {
-                return Err(Error::NotHttps);
-            }
-
             let host = dst.host().ok_or(Error::NoHost)?;
 
             let ip = resolver
@@ -157,13 +164,48 @@ impl hyper::service::Service<Uri> for MeteredHttpsConnector {
                 stop_public_counter_rx,
             ));
 
-            let mut tls_client_config = ClientConfig::new();
-            tls_client_config.root_store =
-                rustls_native_certs::load_native_certs().expect("native certs error");
+            let c = if dst.scheme_str() == Some("https") {
+                let mut tls_client_config = ClientConfig::new();
+                tls_client_config.root_store =
+                    rustls_native_certs::load_native_certs().expect("native certs error");
 
-            let c = TlsConnector::from(Arc::new(tls_client_config))
-                .connect(DNSNameRef::try_from_ascii_str(host)?, counted)
-                .await?;
+                if let Some(buf) = &maybe_identity {
+                    let (key, certs) = {
+                        let mut pem = Cursor::new(buf);
+                        let certs = pemfile::certs(&mut pem).map_err(|_| Error::BadCert)?;
+                        pem.set_position(0);
+                        let mut sk = pemfile::pkcs8_private_keys(&mut pem)
+                            .and_then(|pkcs8_keys| {
+                                if pkcs8_keys.is_empty() {
+                                    Err(())
+                                } else {
+                                    Ok(pkcs8_keys)
+                                }
+                            })
+                            .or_else(|_| {
+                                pem.set_position(0);
+                                pemfile::rsa_private_keys(&mut pem)
+                            })
+                            .map_err(|_| Error::BadCert)?;
+                        if let (Some(sk), false) = (sk.pop(), certs.is_empty()) {
+                            (sk, certs)
+                        } else {
+                            return Err(Error::BadCert);
+                        }
+                    };
+                    tls_client_config.set_single_client_cert(certs, key)?;
+                }
+
+                Either::Left(
+                    TlsConnector::from(Arc::new(tls_client_config))
+                        .connect(DNSNameRef::try_from_ascii_str(host)?, counted)
+                        .await?,
+                )
+            } else if dst.scheme_str() == Some("http") {
+                Either::Right(counted)
+            } else {
+                return Err(Error::BadScheme);
+            };
 
             Ok(HyperUsableConnection::new(c, stop_public_counter_tx))
         })

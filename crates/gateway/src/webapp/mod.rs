@@ -1,7 +1,6 @@
 use crate::{
-    cache::Cache,
     clients::{traffic_counter::RecordedTrafficStatistics, ClientTunnels},
-    http_serve::{auth, RequestsProcessor},
+    http_serve::{auth, cache::Cache, RequestsProcessor},
     registry::RequestsProcessorsRegistry,
     rules_counter::AccountCounters,
     urls::matchable_url::MatchableUrl,
@@ -17,9 +16,8 @@ use exogress_common::{
         ClientConfig, ClientConfigRevision, ProjectConfig, Scope,
     },
     entities::{
-        url_prefix::MountPointBaseUrl, AccessKeyId, AccountName, AccountUniqueId, ConfigName,
-        InstanceId, MountPointName, ParameterName, ProfileName, ProjectName, ProjectUniqueId,
-        Upstream,
+        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
+        ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
     },
 };
 use exogress_server_common::{logging::LogMessage, presence};
@@ -57,6 +55,7 @@ pub struct Client {
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
+    transformer_base_url: Url,
     maybe_identity: Option<Vec<u8>>,
 
     gw_location: SmolStr,
@@ -75,6 +74,8 @@ pub struct Client {
 
     cache: Cache,
     resolver: TokioAsyncResolver,
+
+    gcs_credentials_file: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -207,7 +208,7 @@ pub struct ConfigsResponse {
     pub is_active: bool,
     #[serde(with = "ts_milliseconds")]
     pub generated_at: DateTime<Utc>,
-    pub url_prefix: MountPointBaseUrl,
+    pub fqdn: String,
     pub account: AccountName,
     pub account_unique_id: AccountUniqueId,
     pub project_unique_id: ProjectUniqueId,
@@ -219,6 +220,7 @@ pub struct ConfigsResponse {
     pub xchacha20poly1305_secret_key: String,
     pub max_pop_cache_size_bytes: Byte,
     pub params: HashMap<ParameterName, Parameter>,
+    pub is_transformations_limited: bool,
 }
 
 impl ConfigsResponse {
@@ -337,8 +339,10 @@ impl Client {
         google_oauth2_client: auth::google::GoogleOauth2Client,
         github_oauth2_client: auth::github::GithubOauth2Client,
         assistant_base_url: Url,
+        transformer_base_url: Url,
         public_gw_base_url: &Url,
         gw_location: SmolStr,
+        gcs_credentials_file: String,
         log_messages_tx: mpsc::Sender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
@@ -367,11 +371,12 @@ impl Client {
             retrieve_configs: Arc::new(Default::default()),
             webapp_base_url: base_url,
             certificates: Arc::new(parking_lot::Mutex::new(
-                LruCache::with_expiry_duration_and_capacity(ttl, 1024),
+                LruCache::with_expiry_duration_and_capacity(ttl, 65536),
             )),
             google_oauth2_client,
             github_oauth2_client,
             assistant_base_url,
+            transformer_base_url,
             maybe_identity,
             gw_location,
             public_gw_base_url: public_gw_base_url.clone(),
@@ -383,6 +388,7 @@ impl Client {
             cache,
             dbip,
             resolver,
+            gcs_credentials_file,
         }
     }
 
@@ -426,29 +432,22 @@ impl Client {
         matchable_url: MatchableUrl,
         tunnels: ClientTunnels,
         individual_hostname: SmolStr,
-    ) -> Result<
-        Option<(
-            Arc<RequestsProcessor>,
-            // RateLimiters,
-            MountPointBaseUrl,
-        )>,
-        Error,
-    > {
+    ) -> Result<Option<Arc<RequestsProcessor>>, Error> {
         let cache = self.cache.clone();
         let resolver = self.resolver.clone();
         let public_counters_tx = self.public_counters_tx.clone();
 
         // Try to read from cache
-        if let Some((cached, mount_point_base_path)) =
-            self.requests_processors_registry.resolve(&matchable_url)
-        //, tunnels.clone(), external_port, proto)
+        if let Some(maybe_cached) = self
+            .requests_processors_registry
+            .resolve(matchable_url.host().as_str())
         {
             crate::statistics::CONFIGS_CACHE_HIT.inc();
 
-            match cached {
+            match maybe_cached {
                 Some(data) => {
                     // mapping exist
-                    return Ok(Some((data, mount_point_base_path)));
+                    return Ok(Some(data));
                 }
                 None => {
                     return Ok(None);
@@ -476,12 +475,14 @@ impl Client {
                 let google_oauth2_client = self.google_oauth2_client.clone();
                 let github_oauth2_client = self.github_oauth2_client.clone();
                 let assistant_base_url = self.assistant_base_url.clone();
+                let transformer_base_url = self.transformer_base_url.clone();
                 let maybe_identity = self.maybe_identity.clone();
                 let public_gw_base_url = self.public_gw_base_url.clone();
                 let rules_counters = self.rules_counters.clone();
                 let presence_client = self.presence_client.clone();
                 let log_messages_tx = self.log_messages_tx.clone();
                 let dbip = self.dbip.clone();
+                let gcs_credentials_file = self.gcs_credentials_file.clone();
 
                 let requests_processors_registry = self.requests_processors_registry.clone();
 
@@ -490,7 +491,7 @@ impl Client {
 
                     // initiate query
                     tokio::spawn({
-                        shadow_clone!(ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, maybe_identity, public_gw_base_url, rules_counters, config_error, cache, presence_client, dbip);
+                        shadow_clone!(gcs_credentials_file, ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, transformer_base_url, maybe_identity, public_gw_base_url, rules_counters, config_error, cache, presence_client, dbip);
 
                         async move {
                             let retrieval_started_at = crate::statistics::CONFIGS_RETRIEVAL_TIME.start_timer();
@@ -509,9 +510,9 @@ impl Client {
 
                             url.set_query(Some(
                                 format!(
-                                    "url={}",
+                                    "fqdn={}",
                                     percent_encoding::utf8_percent_encode(
-                                        format!("{}", matchable_url).as_str(),
+                                        matchable_url.host().as_str(),
                                         NON_ALPHANUMERIC,
                                     )
                                 )
@@ -531,8 +532,8 @@ impl Client {
 
                                                 crate::statistics::CONFIGS_RETRIEVAL_SUCCESS.inc();
 
-                                                let url_prefix =
-                                                    configs_response.url_prefix.clone();
+                                                let fqdn =
+                                                    configs_response.fqdn.clone();
                                                 let generated_at =
                                                     configs_response.generated_at.clone();
 
@@ -541,7 +542,9 @@ impl Client {
                                                         configs_response,
                                                         google_oauth2_client,
                                                         github_oauth2_client,
+                                                        gcs_credentials_file,
                                                         assistant_base_url,
+                                                        transformer_base_url,
                                                         tunnels,
                                                         rules_counters.clone(),
                                                         individual_hostname,
@@ -564,7 +567,7 @@ impl Client {
                                                     };
 
                                                 requests_processors_registry.upsert(
-                                                    &url_prefix,
+                                                    &fqdn,
                                                     Some(requests_processor),
                                                     &generated_at,
                                                 );
@@ -585,7 +588,7 @@ impl Client {
                                     } else if status == StatusCode::NOT_FOUND {
                                         crate::statistics::CONFIGS_RETRIEVAL_SUCCESS.inc();
                                         requests_processors_registry.upsert(
-                                            &matchable_url.to_url_prefix(),
+                                            &matchable_url.host(),
                                             None,
                                             &Utc::now(), //FIXME: return generated_at in 404 resp
                                         );
@@ -639,10 +642,11 @@ impl Client {
             }
         }
 
-        if let Some((cached, url_prefix)) =
-            self.requests_processors_registry.resolve(&matchable_url)
+        if let Some(cached) = self
+            .requests_processors_registry
+            .resolve(matchable_url.host().as_str())
         {
-            Ok(cached.map(|a| (a, url_prefix)))
+            Ok(cached)
         } else {
             error!("Still can't resolve after successful reset event happened");
             Err(Error::CouldNotRetrieve)

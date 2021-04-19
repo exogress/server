@@ -15,7 +15,6 @@ impl MongoDbClient {
             .await
             .expect("mongodb init error");
 
-        info!("mongodb_client_options = {:?}", mongodb_client_options);
         let mongodb_client = mongodb::Client::with_options(mongodb_client_options)?;
 
         let db = mongodb_client.database(db);
@@ -48,9 +47,9 @@ impl MongoDbClient {
         gw_hostname: &str,
         gw_location: &str,
     ) -> Result<(), mongodb::error::Error> {
-        let usage_counters = self.db.collection("usage_counters");
-        let usage_counters_daily = self.db.collection("usage_counters_daily");
-        let accounts = self.db.collection("accounts");
+        let usage_counters = self.db.collection::<bson::Document>("usage_counters");
+        let usage_counters_daily = self.db.collection::<bson::Document>("usage_counters_daily");
+        let accounts = self.db.collection::<bson::Document>("accounts");
 
         match &report {
             StatisticsReport::Traffic { records } => {

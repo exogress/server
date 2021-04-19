@@ -351,7 +351,7 @@ impl AssistantClient {
                                                 "received statistics report. will send to assistant WS: {:?}",
                                                 report
                                             );
-                                            let report = simd_json::to_string(&report).unwrap();
+                                            let report = serde_json::to_string(&report).unwrap();
                                             if let Err(e) = (&mut ch_ws_tx).send(tungstenite::Message::Text(report)).await
                                             {
                                                 // TODO: here we miss some statistics report
@@ -405,18 +405,15 @@ impl AssistantClient {
                 info!("received msg: {:?}", msg);
                 match msg {
                     WsToGwMessage::WebAppNotification(notification) => match notification.action {
-                        Action::Invalidate {
-                            url_prefixes,
-                            config_ids,
-                        } => {
-                            for url_prefix in url_prefixes.into_iter() {
-                                let domain_only = url_prefix.domain_only();
+                        Action::Invalidate { fqdns, config_ids } => {
+                            for fqdn in fqdns.into_iter() {
+                                let domain_only = fqdn.to_string();
                                 mappings.remove_by_notification_if_time_applicable(
                                     &domain_only,
                                     &notification.generated_at,
                                 );
 
-                                let host = url_prefix.host().to_string();
+                                let host = fqdn.to_string();
 
                                 info!("invalidate certificate for: {}", host);
 

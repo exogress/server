@@ -154,6 +154,7 @@ fn main() {
         true,
         false,
         false,
+        false,
     );
 
     let args = App::new("Exogress Assistant Server")
@@ -180,7 +181,7 @@ fn main() {
         webapp_url: webapp_base_url,
         int_client_cert,
         ..
-    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false, false);
 
     let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
 

@@ -6,6 +6,7 @@ pub fn add_args<'a>(
     use_webapp: bool,
     use_assistant: bool,
     use_signaler: bool,
+    use_transformer: bool,
 ) -> clap::App<'a, 'a> {
     let mut v = vec![];
     let mut app = app.arg(
@@ -52,8 +53,20 @@ pub fn add_args<'a>(
                 .takes_value(true),
         );
     }
+    if use_transformer {
+        const NAME: &str = "transformer_base_url";
+        v.push(NAME);
+        app = app.arg(
+            Arg::with_name(NAME)
+                .long("transformer-base-url")
+                .value_name("URL")
+                .required(false)
+                .help("Overwrite transformer Base URL")
+                .takes_value(true),
+        );
+    }
 
-    if use_webapp || use_signaler || use_assistant {
+    if use_webapp || use_signaler || use_assistant || use_transformer {
         app = app.arg(
             Arg::with_name("int_base_url")
                 .long("int-base-url")
@@ -71,6 +84,7 @@ pub struct IntApiBaseUrls {
     pub assistant_url: Option<Url>,
     pub signaler_url: Option<Url>,
     pub webapp_url: Option<Url>,
+    pub transformer_url: Option<Url>,
     pub int_client_cert: Option<Vec<u8>>,
 }
 
@@ -79,6 +93,7 @@ pub fn extract_matches(
     use_webapp: bool,
     use_assistant: bool,
     use_signaler: bool,
+    use_transformer: bool,
 ) -> IntApiBaseUrls {
     let base_url = matches.value_of("int_base_url");
 
@@ -130,6 +145,22 @@ pub fn extract_matches(
         None
     };
 
+    let transformer_url = if use_transformer {
+        Some(
+            matches
+                .value_of("transformer_base_url")
+                .map(|v| v.parse().expect("bad Transformer API base url"))
+                .unwrap_or_else(|| {
+                    base_url
+                        .expect("Int API base URL should be set")
+                        .parse()
+                        .expect("bad int api base url")
+                }),
+        )
+    } else {
+        None
+    };
+
     let int_client_cert = matches
         .value_of("int_client_cert")
         .map(|path| std::fs::read(path).expect("cannot read int api client cert"));
@@ -138,6 +169,7 @@ pub fn extract_matches(
         assistant_url,
         signaler_url,
         webapp_url,
+        transformer_url,
         int_client_cert,
     }
 }

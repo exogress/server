@@ -1,121 +1,46 @@
-use std::{
-    sync::{Arc, Weak},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use crate::http_serve::RequestsProcessor;
 use chrono::{DateTime, Utc};
 use lru_time_cache::LruCache;
-use patricia_tree::PatriciaMap;
-
-use crate::urls::matchable_url::MatchableUrl;
-use exogress_common::entities::url_prefix::MountPointBaseUrl;
 
 struct Inner {
-    // List of prefix with expiration according to policies
+    // List of domain with expiration according to policies
     lru_storage: LruCache<String, Option<Arc<RequestsProcessor>>>,
-
-    // Radix (Patricia) tree to search for longest prefix
-    from_prefix_lookup_tree: PatriciaMap<Option<Weak<RequestsProcessor>>>,
 }
 
 impl Inner {
-    fn process_evicted(&mut self, evicted: Vec<(String, Option<Arc<RequestsProcessor>>)>) {
-        for (k, _) in evicted.into_iter() {
-            self.from_prefix_lookup_tree.remove(k);
-        }
-    }
-
     fn upsert(
         &mut self,
-        url_prefix: &MountPointBaseUrl,
+        fqdn: &str,
         requests_processors: Option<RequestsProcessor>,
         generated_at: &DateTime<Utc>,
     ) {
-        //cleanup all RequestsProcessors overlapping with this one
-        self.remove_by_notification_if_time_applicable(url_prefix, generated_at);
+        if let Some(Some(requests_processors)) = self.lru_storage.get(fqdn) {
+            if generated_at < &requests_processors.generated_at {
+                return;
+            }
+        }
 
-        let from_key: String = url_prefix.to_string().into();
-
-        let for_lru = requests_processors.map(Arc::new);
-        let for_trie = for_lru.as_ref().map(|arc| Arc::downgrade(arc));
-
-        let (_, evicted) = self.lru_storage.notify_insert(from_key.clone(), for_lru);
-
-        self.process_evicted(evicted);
-
-        self.from_prefix_lookup_tree.insert(from_key, for_trie);
+        self.lru_storage
+            .insert(fqdn.to_string(), requests_processors.map(Arc::new));
     }
 
     fn remove_by_notification_if_time_applicable(
         &mut self,
-        url_prefix: &MountPointBaseUrl,
+        fqdn: &str,
         generated_at: &DateTime<Utc>,
     ) {
-        let s: String = url_prefix.to_string().into();
-
-        let items_for_invalidation = self
-            .from_prefix_lookup_tree
-            .iter_prefix(s.as_ref())
-            .map(|(k, _)| k)
-            .collect::<Vec<_>>();
-
-        for k in items_for_invalidation {
-            let found_url_prefix: MountPointBaseUrl = std::str::from_utf8(k.as_ref())
-                .expect("corrupted data in patricia tree")
-                .parse()
-                .expect("Corrupted data in patricia tree");
-
-            if !url_prefix.is_subpath_of_or_equal(&found_url_prefix) {
-                info!("{} is not a subpath of {}", url_prefix, found_url_prefix);
-                continue;
+        if let Some(Some(requests_processors)) = self.lru_storage.get(fqdn) {
+            if generated_at > &requests_processors.generated_at {
+                self.lru_storage.remove(fqdn);
+                crate::statistics::CONFIGS_FORGOTTEN.inc();
             }
-
-            info!("Remove data with key {}", found_url_prefix);
-
-            let found_url_prefix_string: String = found_url_prefix.to_string().into();
-
-            let (maybe_requests_processors, evicted) =
-                self.lru_storage.notify_get(&found_url_prefix_string);
-
-            if let Some(Some(requests_processors)) = maybe_requests_processors {
-                if generated_at <= &requests_processors.generated_at {
-                    // ignore if stale. process evicted before returning
-                    self.process_evicted(evicted);
-                    continue;
-                }
-            }
-
-            self.process_evicted(evicted);
-
-            self.lru_storage.remove(&found_url_prefix_string);
-            self.from_prefix_lookup_tree
-                .remove(&found_url_prefix_string);
-            crate::statistics::CONFIGS_FORGOTTEN.inc();
         }
     }
 
-    fn find_requests_processors(
-        &mut self,
-        matchable_url: &MatchableUrl,
-    ) -> Option<(Option<Arc<RequestsProcessor>>, MountPointBaseUrl)> {
-        self.from_prefix_lookup_tree
-            .get_longest_common_prefix(matchable_url.as_str())
-            .map(|(prefix, v)| {
-                (
-                    v.as_ref().map(|weak| {
-                        if let Some(r) = weak.upgrade() {
-                            r
-                        } else {
-                            panic!("Unexpected dangling weak pointer in from- PatriciaTree")
-                        }
-                    }),
-                    std::str::from_utf8(prefix)
-                        .expect("FIXME")
-                        .parse()
-                        .expect("FIXME"),
-                )
-            })
+    fn find_requests_processors(&mut self, fqdn: &str) -> Option<Option<Arc<RequestsProcessor>>> {
+        self.lru_storage.get(fqdn).cloned()
     }
 }
 
@@ -129,52 +54,34 @@ impl RequestsProcessorsRegistry {
         RequestsProcessorsRegistry {
             inner: Arc::new(parking_lot::Mutex::new(Inner {
                 lru_storage: LruCache::with_expiry_duration(ttl),
-                from_prefix_lookup_tree: Default::default(),
             })),
         }
     }
 
     /// Find proper RequestProcessor
-    pub fn resolve(
-        &self,
-        matchable_url: &MatchableUrl,
-        // external_port: u16,
-        // proto: Protocol,
-    ) -> Option<(Option<Arc<RequestsProcessor>>, MountPointBaseUrl)> {
-        self.inner.lock().find_requests_processors(matchable_url)
-        // .map(move |(maybe_mapping, matched_prefix)| {
-        //     (
-        //         maybe_mapping.and_then(|r| match r.handle(url_prefix, external_port, proto) {
-        //             Ok(r) => Some(r),
-        //             Err(e) => {
-        //                 error!("error handling URL: {:?}", e);
-        //                 None
-        //             }
-        //         }),
-        //         matched_prefix,
-        //     )
-        // })
+    pub fn resolve(&self, fqdn: &str) -> Option<Option<Arc<RequestsProcessor>>> {
+        self.inner.lock().find_requests_processors(fqdn)
     }
 
     pub fn remove_by_notification_if_time_applicable(
         &self,
-        url_prefix: &MountPointBaseUrl,
+        fqdn: &str,
         generated_at: &DateTime<Utc>,
     ) {
         self.inner
             .lock()
-            .remove_by_notification_if_time_applicable(url_prefix, generated_at)
+            .remove_by_notification_if_time_applicable(fqdn, generated_at)
     }
 
     pub fn upsert(
         &self,
-        url_prefix: &MountPointBaseUrl,
+        fqdn: &str,
         requests_processors: Option<RequestsProcessor>,
         generated_at: &DateTime<Utc>,
     ) {
         self.inner
             .lock()
-            .upsert(url_prefix, requests_processors, generated_at)
+            .upsert(fqdn, requests_processors, generated_at)
     }
 }
 

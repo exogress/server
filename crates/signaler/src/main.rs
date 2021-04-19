@@ -79,6 +79,7 @@ fn main() {
         true,
         false,
         false,
+        false,
     );
 
     let args = App::new("Exogress Signaler Server")
@@ -105,7 +106,7 @@ fn main() {
         webapp_url: webapp_base_url,
         int_client_cert,
         ..
-    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false);
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, false, false, false);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
 
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);

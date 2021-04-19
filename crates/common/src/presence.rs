@@ -2,8 +2,8 @@
 use exogress_common::{
     config_core::ClientConfig,
     entities::{
-        url_prefix::MountPointBaseUrl, AccessKeyId, AccountName, AccountUniqueId,
-        HealthCheckProbeName, InstanceId, ProfileName, ProjectName, SmolStr, Upstream,
+        AccessKeyId, AccountName, AccountUniqueId, HealthCheckProbeName, InstanceId, ProfileName,
+        ProjectName, SmolStr, Upstream,
     },
     signaling::ProbeHealthStatus,
 };
@@ -20,12 +20,12 @@ pub struct InstanceRegistered {
     pub instance_id: InstanceId,
     pub account_unique_id: AccountUniqueId,
     pub access_key_id: AccessKeyId,
-    pub base_urls: Vec<MountPointBaseUrl>,
+    pub fqdns: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstanceUpdated {
-    pub base_urls: Vec<MountPointBaseUrl>,
+    pub fqdns: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,9 +100,7 @@ impl Client {
             StatusCode::NOT_FOUND => Err(Error::NotFound),
             StatusCode::FORBIDDEN => Err(Error::Forbidden),
             StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
-            StatusCode::BAD_REQUEST => {
-                Err(Error::BadRequest(res.text().await.ok().map(|s| s.into())))
-            }
+            StatusCode::BAD_REQUEST => Err(Error::BadRequest(res.text().await.ok())),
             code => Err(Error::BadResponse(code)),
         }
     }
@@ -163,7 +161,7 @@ impl Client {
         authorization: &str,
         project: &ProjectName,
         account: &AccountName,
-        labels_json: &String,
+        labels_json: &str,
         config: &ClientConfig,
         active_profile: &Option<ProfileName>,
     ) -> Result<InstanceRegistered, Error> {

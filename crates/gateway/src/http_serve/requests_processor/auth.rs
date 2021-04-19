@@ -14,7 +14,7 @@ use exogress_common::{
         referenced,
         referenced::acl::{Acl, AclEntry},
     },
-    entities::{exceptions, url_prefix::MountPointBaseUrl, HandlerName},
+    entities::{exceptions, HandlerName},
 };
 use exogress_server_common::logging::{
     AclAction, AuthHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
@@ -54,7 +54,7 @@ pub struct ResolvedAuth {
     pub github: Option<ResolvedGithubAuthDefinition>,
     pub google: Option<ResolvedGoogleAuthDefinition>,
     pub handler_name: HandlerName,
-    pub mount_point_base_url: MountPointBaseUrl,
+    pub mount_point_fqdn: String,
     pub jwt_ecdsa: JwtEcdsa,
     pub google_oauth2_client: GoogleOauth2Client,
     pub github_oauth2_client: GithubOauth2Client,
@@ -69,7 +69,10 @@ impl ResolvedAuth {
 
     fn respond_not_authorized(&self, req: &Request<Body>, res: &mut Response<Body>) {
         *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-        let mut redirect_to = self.mount_point_base_url.to_url();
+        let mut redirect_to: Url = format!("https://{}/", self.mount_point_fqdn)
+            .parse()
+            .unwrap();
+
         redirect_to
             .path_segments_mut()
             .unwrap()
@@ -185,7 +188,7 @@ impl ResolvedAuth {
 
                             respond_with_login(
                                 res,
-                                &self.mount_point_base_url,
+                                &self.mount_point_fqdn,
                                 &provided_oauth2_provider,
                                 &requested_url,
                                 &handler_name,
@@ -300,12 +303,7 @@ impl ResolvedAuth {
 
                                                 let set_cookie =
                                                     Cookie::build(auth_cookie_name, token)
-                                                        .path(
-                                                            retrieved_flow_data
-                                                                .oauth2_flow_data
-                                                                .base_url
-                                                                .path(),
-                                                        )
+                                                        .path("/")
                                                         .max_age(time::Duration::hours(24))
                                                         .http_only(true)
                                                         .secure(true)

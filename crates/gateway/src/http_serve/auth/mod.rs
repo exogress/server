@@ -1,10 +1,13 @@
-use exogress_common::entities::{url_prefix::MountPointBaseUrl, HandlerName};
+use exogress_common::entities::HandlerName;
 use exogress_server_common::assistant::{GetValue, SetValue};
 use http::StatusCode;
 use oauth2::{basic::BasicTokenResponse, reqwest::Error};
 use reqwest::Identity;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{str::FromStr, time::Duration};
+use std::{
+    str::{FromStr, Utf8Error},
+    time::Duration,
+};
 use url::Url;
 
 pub mod github;
@@ -69,7 +72,7 @@ pub struct JwtEcdsa {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowData {
     pub requested_url: Url,
-    pub base_url: MountPointBaseUrl,
+    pub fqdn: String,
     pub jwt_ecdsa: JwtEcdsa,
     pub provider: Oauth2Provider,
     pub handler_name: HandlerName,
@@ -101,6 +104,9 @@ pub enum Oauth2FlowError {
 
     #[error("error in persisting state: {_0}")]
     PersistentStateError(#[from] AssistantError),
+
+    #[error("UTF-8 error: {_0}")]
+    Utf8Error(#[from] Utf8Error),
 
     #[error("no `code` param in google oauth2 callback")]
     NoCodeInCallback,
@@ -163,6 +169,7 @@ pub async fn retrieve_assistant_key<T: DeserializeOwned>(
 
     if resp.status().is_success() {
         let value: GetValue = resp.json().await?;
+        info!("Oauth2 plain = {:?}", value);
         Ok(serde_json::from_str::<T>(value.payload.as_str())?)
     } else {
         Err(AssistantError::BadStatus(resp.status()))

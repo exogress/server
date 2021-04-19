@@ -3,7 +3,7 @@ use crate::{
         helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
         HandlerInvocationResult,
     },
-    public_hyper_client::MeteredHttpsConnector,
+    public_hyper_client::MeteredHttpConnector,
 };
 use core::{fmt, mem};
 use exogress_common::{
@@ -44,7 +44,7 @@ impl AuthError {
 }
 
 pub struct ResolvedGcsBucket {
-    pub client: hyper::Client<MeteredHttpsConnector, hyper::Body>,
+    pub client: hyper::Client<MeteredHttpConnector, hyper::Body>,
     pub bucket_name: Result<GcsBucket, referenced::Error>,
     pub auth: Result<tame_oauth::gcp::ServiceAccountAccess, AuthError>,
     pub token: tokio::sync::Mutex<Option<tame_oauth::Token>>,
@@ -91,7 +91,8 @@ impl ResolvedGcsBucket {
             exceptions::GCS_AUTH_ERROR_BUILD_REQUEST_EROR
         );
 
-        let token = match self.token.lock().await.clone() {
+        let current_token = self.token.lock().await.clone();
+        let token = match current_token {
             Some(token) if !token.has_expired() => token,
             _ => {
                 let new_token = match token_or_req {

@@ -31,11 +31,11 @@ use url::Url;
 use crate::clients::{tunnels_acceptor, ClientTunnels};
 
 use crate::{
-    cache::Cache,
     clients::traffic_counter::OneOfTrafficStatistics,
     http_serve::{
         acme::acme_server,
         auth::{github::GithubOauth2Client, google::GoogleOauth2Client},
+        cache::Cache,
     },
     notification_listener::AssistantClient,
     stop_reasons::StopReason,
@@ -54,7 +54,6 @@ use parking_lot::RwLock;
 use tokio::{runtime::Builder, time::sleep};
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
-mod cache;
 pub(crate) mod clients;
 mod dbip;
 mod http_serve;
@@ -66,6 +65,7 @@ mod registry;
 mod rules_counter;
 mod statistics;
 mod stop_reasons;
+mod transformer;
 mod urls;
 mod webapp;
 
@@ -214,6 +214,14 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("gcs_credentials_file")
+                .long("gcs-credentials-file")
+                .value_name("STRING")
+                .required(true)
+                .help("The path to GCS credentials file")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("cache_ttl_secs")
                 .long("cache-ttl")
                 .value_name("SECONDS")
@@ -288,6 +296,7 @@ fn main() {
         true,
         true,
         true,
+        true,
     );
 
     let args = App::new("Exogress Gateway")
@@ -342,14 +351,21 @@ fn main() {
         assistant_url: assistant_base_url,
         signaler_url: signaler_base_url,
         webapp_url: webapp_base_url,
+        transformer_url: transformer_base_url,
         int_client_cert,
-    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, true, true);
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, true, true, true, true);
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
+
+    let gcs_credentials_file = matches
+        .value_of("gcs_credentials_file")
+        .expect("no --gcs-credentials-file provided")
+        .to_string();
 
     let assistant_base_url = assistant_base_url.expect("no assistant_base_url");
     let signaler_base_url = signaler_base_url.expect("no signaler_base_url");
     let webapp_base_url = webapp_base_url.expect("no webapp_base_url");
+    let transformer_base_url = transformer_base_url.expect("no transformer_base_url");
 
     let cache_dir: PathBuf = matches
         .value_of("cache_dir")
@@ -414,6 +430,7 @@ fn main() {
     let individual_tls_cert_path = matches.value_of("individual_tls_cert_path").unwrap();
     let individual_tls_key_path = matches.value_of("individual_tls_key_path").unwrap();
 
+    info!("Use Transformer url at {}", transformer_base_url);
     info!("Use Webapp url at {}", webapp_base_url);
 
     let webroot: PathBuf = fs::canonicalize(
@@ -657,8 +674,10 @@ fn main() {
             google_oauth2_client.clone(),
             github_oauth2_client.clone(),
             assistant_base_url.clone(),
+            transformer_base_url.clone(),
             &public_base_url,
             gw_location.clone(),
+            gcs_credentials_file,
             log_messages_tx,
             int_client_cert.clone(),
             cache,
@@ -876,6 +895,7 @@ fn main() {
             individual_hostname.into(),
             google_oauth2_client,
             github_oauth2_client,
+            transformer_base_url,
             assistant_base_url,
             int_client_cert,
             https_counters_tx,

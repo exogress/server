@@ -1,6 +1,6 @@
 [package]
 name = "exogress-server-common"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
@@ -14,12 +14,13 @@ chrono = { version = "0.4.15", features = ["serde"] }
 thiserror = "1.0.20"
 serde_json = "1.0.48"
 http = "0.2.1"
-tracing-gelf = { git = "https://github.com/glebpom/tracing-gelf.git", branch="tokio-1.0", features = ["tokio-rustls"] }
+tracing-gelf = { git = "https://github.com/glebpom/tracing-gelf.git", branch = "tokio-1.0", features = ["tokio-rustls"] }
 tokio-rustls = "0.22"
 rustls-native-certs = "0.5"
 anyhow = "1.0.34"
 tracing-subscriber = "0.2.11"
 futures = "0.3"
+sha2 = "0.9"
 hashbrown = "0.9.1"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns"] }
 urlencoding = "1.1.1"
@@ -27,7 +28,20 @@ lazy_static = "1.4.0"
 serde_with = "1.6"
 parking_lot = { version = "0.11", features = ["serde"] }
 langtag = { git = "https://github.com/glebpom/langtag.git", branch = "master" }
-
+sodiumoxide = { version = "0.2.6", optional = true }
+tokio-util = { version = "0.6", features = ["io"], optional = true }
+tokio = { version = "1.0", optional = true }
+async-stream = { version = "0.3.0", optional = true }
+hyper = { version = "0.14.5", features = ["stream"] }
+mime_guess = "2.0.3"
+percent-encoding = "2.1.0"
+futures-util = "0.3.14"
 trust-dns-resolver = "0.20"
+bytes = "1.0.1"
+rand = "0.8.3"
+mime = "0.3.16"
 
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "config-core", "signaling"], default-features = false }
+
+[features]
+crypto = ["sodiumoxide", "tokio-util", "tokio", "async-stream"]

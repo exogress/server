@@ -4,7 +4,7 @@ use crate::http_serve::auth::{
     retrieve_assistant_key, save_assistant_key, AssistantError, CallbackResult, FlowData, JwtEcdsa,
     Oauth2FlowError, Oauth2Provider,
 };
-use exogress_common::entities::{url_prefix::MountPointBaseUrl, HandlerName};
+use exogress_common::entities::HandlerName;
 use linked_hash_map::LinkedHashMap;
 use oauth2::{
     basic::BasicClient, reqwest::async_http_client, AuthUrl, AuthorizationCode, ClientId,
@@ -88,7 +88,7 @@ impl GithubOauth2Client {
 
     pub async fn save_state_and_retrieve_authorization_url(
         &self,
-        base_url: &MountPointBaseUrl,
+        fqdn: &str,
         jwt_ecdsa: &JwtEcdsa,
         requested_url: &Url,
         handler_name: &HandlerName,
@@ -107,7 +107,7 @@ impl GithubOauth2Client {
                 data: FlowData {
                     requested_url: requested_url.clone(),
                     jwt_ecdsa: jwt_ecdsa.clone(),
-                    base_url: base_url.clone(),
+                    fqdn: fqdn.to_string(),
                     provider: Oauth2Provider::Github,
                     handler_name: handler_name.clone(),
                 },
@@ -137,11 +137,11 @@ impl GithubOauth2Client {
         )
         .await?;
 
-        let code = AuthorizationCode::new(
-            params
-                .remove("code")
-                .ok_or(Oauth2FlowError::NoCodeInCallback)?,
-        );
+        let code_param = params
+            .remove("code")
+            .ok_or(Oauth2FlowError::NoCodeInCallback)?;
+        let code_param_decoded = percent_encoding::percent_decode_str(&code_param).decode_utf8()?;
+        let code = AuthorizationCode::new(code_param_decoded.to_string());
 
         let token = self
             .creds
