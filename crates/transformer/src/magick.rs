@@ -1,3 +1,4 @@
+use crate::PROCESSING_MAX_TIME_SOFT;
 use bytes::Bytes;
 use std::{
     io,
@@ -108,11 +109,12 @@ pub(crate) async fn convert(
         Ok::<_, io::Error>(())
     });
 
-    let cmd_res = child.wait().await;
+    let cmd_res =
+        tokio::time::timeout(PROCESSING_MAX_TIME_SOFT.to_std().unwrap(), child.wait()).await;
     let elapsed = start_conversion.elapsed();
     error!("conversion result = {:?}. took = {:?}", cmd_res, elapsed);
 
-    let status = cmd_res?;
+    let status = cmd_res??;
 
     if !status.success() {
         bail!("bad conversion command status: {}", status);

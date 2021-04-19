@@ -30,6 +30,7 @@ use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use http::StatusCode;
+use lazy_static::lazy_static;
 use mimalloc::MiMalloc;
 use std::{
     net::SocketAddr,
@@ -45,6 +46,12 @@ use warp::Filter;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+lazy_static! {
+    static ref UPLOAD_TTL: chrono::Duration = chrono::Duration::seconds(30);
+    static ref PROCESSING_MAX_TIME_HARD: chrono::Duration = chrono::Duration::minutes(2);
+    static ref PROCESSING_MAX_TIME_SOFT: chrono::Duration = chrono::Duration::minutes(1);
+}
 
 fn main() {
     let all_gcs_locations_strings: Vec<_> =

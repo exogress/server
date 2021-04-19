@@ -1,4 +1,6 @@
-use crate::{bucket::GcsBucketInfo, magick::ImageConversionMeta};
+use crate::{
+    bucket::GcsBucketInfo, magick::ImageConversionMeta, PROCESSING_MAX_TIME_HARD, UPLOAD_TTL,
+};
 use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName, Ulid};
@@ -8,7 +10,6 @@ use exogress_server_common::transformer::{
 };
 use futures::Stream;
 use itertools::Itertools;
-use lazy_static::lazy_static;
 use mongodb::{
     options::{FindOneAndReplaceOptions, FindOneAndUpdateOptions, FindOneOptions, ReturnDocument},
     Collection,
@@ -27,11 +28,6 @@ use tokio::time::sleep;
 
 const QUEUE_COLLECTION: &str = "queue";
 const PROCESSED_COLLECTION: &str = "processed";
-
-lazy_static! {
-    static ref UPLOAD_TTL: chrono::Duration = chrono::Duration::seconds(30);
-    static ref PROCESSING_MAX_TIME: chrono::Duration = chrono::Duration::minutes(1);
-}
 
 #[derive(Clone)]
 pub struct MongoDbClient {
@@ -255,7 +251,7 @@ impl MongoDbClient {
                 doc! {
                     "$or": [
                         {"upload_requested_at": { "$lt": now - *UPLOAD_TTL } },
-                        {"start_processing_at": { "$lt": now - *PROCESSING_MAX_TIME } },
+                        {"start_processing_at": { "$lt": now - *PROCESSING_MAX_TIME_HARD } },
                     ]
                 },
                 None,
