@@ -234,7 +234,7 @@ impl RequestsProcessor {
                 .await;
 
             match cached_response {
-                Ok(Some(mut resp_from_cache)) => {
+                Ok(Some(resp_from_cache)) => {
                     if resp_from_cache.is_full_response_success()
                         || resp_from_cache.has_conditional()
                     {
@@ -707,7 +707,7 @@ async fn trigger_transformation_if_required(
     req_headers: &HeaderMap,
     req_method: Method,
     req_uri: &http::Uri,
-    mut cloned_res: ClonedResponse,
+    cloned_res: ClonedResponse,
     account_secret_key: xchacha20poly1305::Key,
     transformer_client: TransformerClient,
     cache: Cache,
@@ -834,6 +834,16 @@ async fn trigger_transformation_if_required(
 
                         resp.headers_mut()
                             .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
+                        resp.headers_mut()
+                            .insert(CONTENT_TYPE, content_type.to_string().parse().unwrap());
+                        resp.headers_mut()
+                            .insert(CONTENT_LENGTH, HeaderValue::from(cloned_res.content_length));
+                        resp.headers_mut()
+                            .insert(ETAG, cloned_res.content_hash[..32].parse().unwrap());
+                        resp.headers_mut().insert(
+                            LAST_MODIFIED,
+                            ready.transformed_at.to_rfc2822().parse().unwrap(),
+                        );
 
                         save_to_cache(
                             max_age,

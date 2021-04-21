@@ -9,7 +9,7 @@ use dashmap::DashSet;
 use etag::EntityTag;
 use exogress_common::entities::AccountUniqueId;
 use exogress_server_common::crypto;
-use futures::{future::Either, Future, FutureExt, TryStreamExt};
+use futures::{future::Either, Future, TryStreamExt};
 use hashbrown::HashSet;
 use http::{
     header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY},
@@ -799,10 +799,6 @@ impl CacheResponse {
 
     pub fn has_conditional(&self) -> bool {
         self.conditional.is_some()
-    }
-
-    pub fn as_conditional_resp(&self) -> Option<&Response<hyper::Body>> {
-        self.conditional.as_ref()
     }
 
     pub fn as_full_resp(&self) -> &Response<hyper::Body> {

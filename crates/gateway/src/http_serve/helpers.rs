@@ -1,4 +1,4 @@
-use crate::http_serve::{cache::CacheResponse, tempfile_stream::save_stream};
+use crate::http_serve::tempfile_stream::save_stream;
 use bytes::Bytes;
 use exogress_server_common::ContentHash;
 use futures::{Future, Stream, TryStreamExt};
