@@ -1,6 +1,7 @@
 use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
+use exogress_common::common_utils::tls::load_native_certs_safe;
 use futures::{
     channel::{mpsc, oneshot},
     future::BoxFuture,
@@ -166,8 +167,7 @@ impl hyper::service::Service<Uri> for MeteredHttpConnector {
 
             let c = if dst.scheme_str() == Some("https") {
                 let mut tls_client_config = ClientConfig::new();
-                tls_client_config.root_store =
-                    rustls_native_certs::load_native_certs().expect("native certs error");
+                load_native_certs_safe(&mut tls_client_config);
 
                 if let Some(buf) = &maybe_identity {
                     let (key, certs) = {
