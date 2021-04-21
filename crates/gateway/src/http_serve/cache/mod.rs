@@ -1,5 +1,7 @@
 use crate::http_serve::{
-    identifier::RequestProcessingIdentifier, RequestsProcessor, ResolvedHandler,
+    helpers::{clone_response_through_tempfile, ClonedResponse},
+    identifier::RequestProcessingIdentifier,
+    RequestsProcessor, ResolvedHandler,
 };
 use byte_unit::Byte;
 use chrono::{DateTime, TimeZone, Utc};
@@ -7,7 +9,7 @@ use dashmap::DashSet;
 use etag::EntityTag;
 use exogress_common::entities::AccountUniqueId;
 use exogress_server_common::crypto;
-use futures::TryStreamExt;
+use futures::{future::Either, Future, FutureExt, TryStreamExt};
 use hashbrown::HashSet;
 use http::{
     header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY},
@@ -309,6 +311,24 @@ impl Cache {
         Ok(bytes_used)
     }
 
+    async fn get_overall_used(&self) -> anyhow::Result<Byte> {
+        let space_used = {
+            let ledb = self.ledb.read();
+            let files_collection = ledb.collection("files").unwrap();
+
+            ledb::query!(
+                find CacheItem in files_collection
+            )
+            .map_err(|e| anyhow!("{}", e))?
+            .try_fold(0, |acc, r| r.map(|item| acc + item.original_file_size))
+            .map_err(|e| anyhow!("{}", e))?
+        };
+
+        let bytes_used = Byte::from_bytes(space_used.into());
+
+        Ok(bytes_used)
+    }
+
     fn vary_hash(vary_headers_ordered_list: &BTreeSet<String>, req_headers: &HeaderMap) -> String {
         let mut hashsum = sha2::Sha224::default();
 
@@ -548,7 +568,7 @@ impl Cache {
         handler: &ResolvedHandler,
         processing_identifier: &RequestProcessingIdentifier,
         req: &Request<Body>,
-    ) -> anyhow::Result<Option<(Response<hyper::Body>, String)>> {
+    ) -> anyhow::Result<Option<CacheResponse>> {
         if handler.resolved_variant.is_cache_enabled() != Some(true) {
             return Ok(None);
         }
@@ -684,13 +704,6 @@ impl Cache {
                 }
             }
 
-            if conditional_response_matches {
-                let mut resp = Response::new(hyper::Body::empty());
-                info!("respond not-modified from cache o nconditional response");
-                *resp.status_mut() = StatusCode::NOT_MODIFIED;
-                return Ok(Some((resp, variation.content_hash)));
-            }
-
             let storage_path = self.storage_path(
                 account_unique_id,
                 file_name.as_ref(),
@@ -699,15 +712,28 @@ impl Cache {
 
             let reader = tokio::fs::File::open(&storage_path).await?;
 
-            let body = crypto::decrypt_reader(
+            let body = hyper::Body::wrap_stream(crypto::decrypt_reader(
                 reader,
                 xchacha20poly1305_secret_key,
                 &body_encryption_header,
-            )?;
+            )?);
 
-            let mut resp = Response::new(hyper::Body::wrap_stream(body));
+            let mut resp = Response::new(body);
             *resp.status_mut() = meta.status;
             *resp.headers_mut() = meta.headers;
+
+            if conditional_response_matches {
+                let mut conditional_resp = Response::new(hyper::Body::empty());
+                info!("respond not-modified from cache on conditional response");
+                *conditional_resp.status_mut() = StatusCode::NOT_MODIFIED;
+
+                return Ok(Some(CacheResponse {
+                    conditional: Some(conditional_resp),
+                    full: resp,
+                    full_content_hash: variation.content_hash,
+                    full_content_len: original_file_size as usize,
+                }));
+            }
 
             info!("served from cache!");
 
@@ -719,9 +745,67 @@ impl Cache {
                         original_file_size.into(),
                     ));
             }
-            Ok(Some((resp, variation.content_hash)))
+            Ok(Some(CacheResponse {
+                conditional: None,
+                full: resp,
+                full_content_hash: variation.content_hash,
+                full_content_len: original_file_size as usize,
+            }))
         } else {
             Ok(None)
         }
+    }
+}
+
+pub struct CacheResponse {
+    conditional: Option<Response<hyper::Body>>,
+    full: Response<hyper::Body>,
+    full_content_hash: String,
+    full_content_len: usize,
+}
+
+impl CacheResponse {
+    pub fn into_for_user(self) -> Response<Body> {
+        self.conditional.unwrap_or(self.full)
+    }
+
+    pub fn split_for_user_and_maybe_cloned(
+        self,
+    ) -> anyhow::Result<(
+        Response<Body>,
+        impl Future<Output = Option<ClonedResponse>> + Send,
+    )> {
+        if let Some(conditional) = self.conditional {
+            Ok((
+                conditional,
+                Either::Left(futures::future::ready(Some(ClonedResponse {
+                    content_length: self.full_content_len,
+                    content_hash: self.full_content_hash,
+                    response: self.full,
+                }))),
+            ))
+        } else {
+            let mut full = self.full;
+
+            let cloned_future = clone_response_through_tempfile(&mut full)?;
+
+            Ok((full, Either::Right(cloned_future)))
+        }
+    }
+
+    pub fn is_full_response_success(&self) -> bool {
+        self.full.status().is_success()
+    }
+
+    pub fn has_conditional(&self) -> bool {
+        self.conditional.is_some()
+    }
+
+    pub fn as_conditional_resp(&self) -> Option<&Response<hyper::Body>> {
+        self.conditional.as_ref()
+    }
+
+    pub fn as_full_resp(&self) -> &Response<hyper::Body> {
+        &self.full
     }
 }

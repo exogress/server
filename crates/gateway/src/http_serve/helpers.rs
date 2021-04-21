@@ -1,4 +1,4 @@
-use crate::http_serve::tempfile_stream::save_stream;
+use crate::http_serve::{cache::CacheResponse, tempfile_stream::save_stream};
 use bytes::Bytes;
 use exogress_server_common::ContentHash;
 use futures::{Future, Stream, TryStreamExt};
@@ -23,9 +23,15 @@ pub fn chunks(
     })
 }
 
+pub struct ClonedResponse {
+    pub content_length: usize,
+    pub content_hash: String,
+    pub response: Response<Body>,
+}
+
 pub fn clone_response_through_tempfile(
     res: &mut Response<Body>,
-) -> anyhow::Result<impl Future<Output = Option<(Response<Body>, usize, String)>> + Send> {
+) -> anyhow::Result<impl Future<Output = Option<ClonedResponse>> + Send> {
     let body = mem::replace(res.body_mut(), Body::empty())
         .into_stream()
         .map_err(|e| anyhow!("{}", e));
@@ -45,7 +51,11 @@ pub fn clone_response_through_tempfile(
             cloned_response
                 .headers_mut()
                 .insert(CONTENT_LENGTH, HeaderValue::from(content_length));
-            Some((cloned_response, content_length, content_hash))
+            Some(ClonedResponse {
+                content_length,
+                content_hash,
+                response: cloned_response,
+            })
         } else {
             None
         }

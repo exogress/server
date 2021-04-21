@@ -7,7 +7,7 @@ use crate::{
     http_serve::{
         auth::JwtEcdsa,
         cache::{Cache, HandlerChecksum},
-        helpers::clone_response_through_tempfile,
+        helpers::{clone_response_through_tempfile, ClonedResponse},
         identifier::RequestProcessingIdentifier,
         requests_processor::{
             modifications::{
@@ -234,22 +234,24 @@ impl RequestsProcessor {
                 .await;
 
             match cached_response {
-                Ok(Some((mut resp_from_cache, content_hash))) => {
-                    if resp_from_cache.status().is_success()
-                        || resp_from_cache.status() == StatusCode::NOT_MODIFIED
+                Ok(Some(mut resp_from_cache)) => {
+                    if resp_from_cache.is_full_response_success()
+                        || resp_from_cache.has_conditional()
                     {
                         if !self.is_transformations_limited
-                            && is_eligible_for_transformation(
-                                &resp_from_cache,
+                            && is_eligible_for_transformation_not_considering_status_code(
+                                resp_from_cache.as_full_resp(),
                                 handler.resolved_variant.post_processing(),
                             )
                         {
                             error!("After cache responded, it is eligible for transformation");
-                            if let Some(max_age) = cache_max_age(req, &resp_from_cache, handler) {
-                                // FIXME: This is inefficient: need body cloning support on cache response
+                            if let Some(max_age) =
+                                cache_max_age_without_checks(resp_from_cache.as_full_resp())
+                            {
+                                match resp_from_cache.split_for_user_and_maybe_cloned() {
+                                    Ok((for_user, on_response_finished)) => {
+                                        *res = for_user;
 
-                                match clone_response_through_tempfile(&mut resp_from_cache) {
-                                    Ok(on_response_finished) => {
                                         let transformer_client = self.transformer_client.clone();
                                         let account_secret_key =
                                             self.xchacha20poly1305_secret_key.clone();
@@ -273,23 +275,13 @@ impl RequestsProcessor {
                                         tokio::spawn(async move {
                                             error!("waiting for on_response_finished");
                                             match on_response_finished.await {
-                                                Some((
-                                                    cloned_resp,
-                                                    content_len,
-                                                    calculated_content_hash,
-                                                )) => {
-                                                    if calculated_content_hash != content_hash {
-                                                        error!("cloned response content_hash != content_hash from cache");
-                                                    }
-
+                                                Some(cloned_resp) => {
                                                     trigger_transformation_if_required(
                                                         max_age,
                                                         &req_headers,
                                                         req_method,
                                                         &req_uri,
                                                         cloned_resp,
-                                                        content_len,
-                                                        content_hash,
                                                         account_secret_key,
                                                         transformer_client,
                                                         cache,
@@ -312,15 +304,20 @@ impl RequestsProcessor {
                                     }
                                     Err(e) => {
                                         error!("Failed to clone response through tempfile: {}", e);
+
+                                        *res.body_mut() = Body::from("internal server error");
+                                        *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+
+                                        return;
                                     }
                                 }
+                            } else {
+                                *res = resp_from_cache.into_for_user();
                             };
                         } else {
+                            *res = resp_from_cache.into_for_user();
                             error!("after cache responded, it's not eligible for transformation");
                         }
-
-                        // respond from the cache only if success response
-                        *res = resp_from_cache;
 
                         res.headers_mut()
                             .insert("x-exg-edge-cached", "1".parse().unwrap());
@@ -403,12 +400,13 @@ impl RequestsProcessor {
             }
             Some(handler) => {
                 if !self.is_transformations_limited
-                    && is_eligible_for_transformation(
+                    && res.status().is_success()
+                    && is_eligible_for_transformation_not_considering_status_code(
                         res,
                         handler.resolved_variant.post_processing(),
                     )
                 {
-                    if let Some(max_age) = cache_max_age(req, res, handler) {
+                    if let Some(max_age) = cache_max_age_if_eligible(req, res, handler) {
                         match clone_response_through_tempfile(res) {
                             Ok(on_response_finished) => {
                                 let transformer_client = self.transformer_client.clone();
@@ -431,17 +429,13 @@ impl RequestsProcessor {
                                 let requested_url = requested_url.clone();
 
                                 tokio::spawn(async move {
-                                    if let Some((cloned_resp, content_len, content_hash)) =
-                                        on_response_finished.await
-                                    {
+                                    if let Some(cloned_resp) = on_response_finished.await {
                                         trigger_transformation_if_required(
                                             max_age,
                                             &req_headers,
                                             req_method,
                                             &req_uri,
                                             cloned_resp,
-                                            content_len,
-                                            content_hash,
                                             account_secret_key,
                                             transformer_client,
                                             cache,
@@ -481,7 +475,7 @@ impl RequestsProcessor {
                 res.headers_mut()
                     .insert("server", HeaderValue::from_static("exogress"));
 
-                if let Some(max_age) = cache_max_age(req, res, handler) {
+                if let Some(max_age) = cache_max_age_if_eligible(req, res, handler) {
                     let cache = self.cache.clone();
                     let account_unique_id = self.account_unique_id.clone();
                     let project_name = self.project_name.clone();
@@ -713,9 +707,7 @@ async fn trigger_transformation_if_required(
     req_headers: &HeaderMap,
     req_method: Method,
     req_uri: &http::Uri,
-    mut cloned_res: Response<Body>,
-    content_len: usize,
-    content_hash: String,
+    mut cloned_res: ClonedResponse,
     account_secret_key: xchacha20poly1305::Key,
     transformer_client: TransformerClient,
     cache: Cache,
@@ -732,6 +724,7 @@ async fn trigger_transformation_if_required(
         let maybe_accept = req_headers.typed_get::<typed_headers::Accept>()?;
 
         let maybe_content_type = cloned_res
+            .response
             .headers()
             .typed_get::<typed_headers::ContentType>()?;
 
@@ -740,7 +733,7 @@ async fn trigger_transformation_if_required(
 
             let transformer_result = transformer_client
                 .request_content(
-                    &content_hash,
+                    &cloned_res.content_hash,
                     &content_type.0,
                     &handler_name,
                     &project_name,
@@ -750,6 +743,7 @@ async fn trigger_transformation_if_required(
                 .await?;
 
             error!("TRANSFORMER: transformer_result = {:?}", transformer_result);
+            let mut resp = cloned_res.response;
 
             match transformer_result {
                 ProcessResponse::Ready(ready) => {
@@ -758,7 +752,11 @@ async fn trigger_transformation_if_required(
                         .await
                     {
                         let download_result = transformer_client
-                            .download_best_processed(best_format, &content_type, &content_hash)
+                            .download_best_processed(
+                                best_format,
+                                &content_type,
+                                &cloned_res.content_hash,
+                            )
                             .await?;
 
                         if let Some((transformed_body, encryption_header)) = download_result {
@@ -790,24 +788,22 @@ async fn trigger_transformation_if_required(
                                 transformed_content.len()
                             );
 
-                            cloned_res
-                                .headers_mut()
+                            resp.headers_mut()
                                 .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
-                            cloned_res
-                                .headers_mut()
+                            resp.headers_mut()
                                 .insert(CONTENT_TYPE, content_type.parse().unwrap());
-                            cloned_res
-                                .headers_mut()
-                                .insert(CONTENT_LENGTH, HeaderValue::from(content_len));
-                            cloned_res
-                                .headers_mut()
-                                .insert(ETAG, content_hash[..32].parse().unwrap());
-                            cloned_res.headers_mut().insert(
+                            resp.headers_mut().insert(
+                                CONTENT_LENGTH,
+                                HeaderValue::from(cloned_res.content_length),
+                            );
+                            resp.headers_mut()
+                                .insert(ETAG, cloned_res.content_hash[..32].parse().unwrap());
+                            resp.headers_mut().insert(
                                 LAST_MODIFIED,
                                 ready.transformed_at.to_rfc2822().parse().unwrap(),
                             );
 
-                            *cloned_res.body_mut() = Body::from(transformed_content);
+                            *resp.body_mut() = Body::from(transformed_content);
 
                             error!("Will saved transformed to cache");
 
@@ -816,7 +812,7 @@ async fn trigger_transformation_if_required(
                                 req_headers,
                                 req_method,
                                 req_uri,
-                                &mut cloned_res,
+                                &mut resp,
                                 cache,
                                 account_unique_id,
                                 project_name,
@@ -829,15 +825,14 @@ async fn trigger_transformation_if_required(
 
                             // FIXME: this is ugly, but we need to consume whole body stream in order
                             // to successfully complete cache saving
-                            let mut body_to_consume = cloned_res.into_body();
+                            let mut body_to_consume = resp.into_body();
                             while let Some(_) = body_to_consume.next().await {}
                         }
                     } else {
                         // no appropriate conversion is available to the provided Accept header.
                         // This is still treated as correctly transformed so that no more requests are made to transformer
 
-                        cloned_res
-                            .headers_mut()
+                        resp.headers_mut()
                             .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
 
                         save_to_cache(
@@ -845,7 +840,7 @@ async fn trigger_transformation_if_required(
                             req_headers,
                             req_method,
                             req_uri,
-                            &mut cloned_res,
+                            &mut resp,
                             cache,
                             account_unique_id,
                             project_name,
@@ -857,14 +852,14 @@ async fn trigger_transformation_if_required(
                         );
 
                         // FIXME: this is ugly, but we need to consume whole body stream in order to successfuly complete cache saving
-                        let mut body_to_consume = cloned_res.into_body();
+                        let mut body_to_consume = resp.into_body();
                         while let Some(_) = body_to_consume.next().await {}
                     }
                 }
                 ProcessResponse::PendingUpload { upload_id, .. } => {
                     error!("will upload");
                     transformer_client
-                        .upload(&upload_id, content_len, cloned_res.into_body())
+                        .upload(&upload_id, cloned_res.content_length, resp.into_body())
                         .await?;
                 }
                 ProcessResponse::Accepted => {
@@ -882,19 +877,12 @@ async fn trigger_transformation_if_required(
     if let Err(e) = r {
         error!("error in transformation: {}", e);
     }
-    // todo!("try_lock to ensure no parallel execution is performed");
-    // todo!("overwrite cache entry with the provided data");
 }
 
-fn is_eligible_for_transformation(
+fn is_eligible_for_transformation_not_considering_status_code(
     resp: &Response<Body>,
     maybe_post_processing: Option<&ResolvedPostProcessing>,
 ) -> bool {
-    if !resp.status().is_success() {
-        error!("Cache response is not success. Skip transformation");
-        return false;
-    }
-
     match maybe_post_processing {
         Some(post_processing) => {
             let is_from_transformer = resp.headers().get("x-exg-transformed").is_some();
@@ -988,7 +976,40 @@ impl Rebase {
     }
 }
 
-pub fn cache_max_age(
+pub fn cache_max_age_without_checks(res: &Response<Body>) -> Option<chrono::Duration> {
+    let cache_entries: Vec<_> = res
+        .headers()
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .map(|cache_control_header| {
+            let cache_control = cache_control_header.to_str().unwrap();
+            cache_control
+                .split(',')
+                .map(|item: &str| item.trim_matches(' '))
+        })
+        .flatten()
+        .collect();
+
+    let caching_allowed = cache_entries.iter().any(|&c| c == "public")
+        && !cache_entries
+            .iter()
+            .any(|&c| c == "no-cache" || c == "private" || c == "no-store");
+
+    let max_age = cache_entries
+        .iter()
+        .filter_map(|header| header.strip_prefix("max-age="))
+        .map(|h| Ok::<_, anyhow::Error>(chrono::Duration::seconds(h.parse()?)))
+        .flatten()
+        .next();
+
+    if !caching_allowed || max_age.is_none() {
+        return None;
+    }
+
+    Some(max_age.unwrap())
+}
+
+pub fn cache_max_age_if_eligible(
     req: &Request<Body>,
     res: &Response<Body>,
     handler: &ResolvedHandler,
@@ -1011,44 +1032,7 @@ pub fn cache_max_age(
         return None;
     }
 
-    let cache_entries: Vec<_> = res
-        .headers()
-        .get_all(CACHE_CONTROL)
-        .iter()
-        .map(|cache_control_header| {
-            let cache_control = cache_control_header.to_str().unwrap();
-            cache_control
-                .split(',')
-                .map(|item: &str| item.trim_matches(' '))
-        })
-        .flatten()
-        .collect();
-
-    error!("cache_control = {:?}", res.headers().get_all(CACHE_CONTROL));
-    error!("cache_entries = {:?}", cache_entries);
-
-    let caching_allowed = cache_entries.iter().any(|&c| c == "public")
-        && !cache_entries
-            .iter()
-            .any(|&c| c == "no-cache" || c == "private" || c == "no-store");
-
-    info!("caching_allowed = {:?}", caching_allowed);
-
-    let max_age = cache_entries
-        .iter()
-        .filter_map(|header| header.strip_prefix("max-age="))
-        .map(|h| Ok::<_, anyhow::Error>(chrono::Duration::seconds(h.parse()?)))
-        .flatten()
-        .next();
-
-    info!("max_age = {:?}", max_age);
-
-    if !caching_allowed || max_age.is_none() {
-        info!("exit from cache");
-        return None;
-    }
-
-    Some(max_age.unwrap())
+    cache_max_age_without_checks(res)
 }
 
 impl From<config_core::Rebase> for Rebase {
