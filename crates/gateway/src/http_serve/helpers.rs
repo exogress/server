@@ -29,13 +29,13 @@ pub struct ClonedResponse {
     pub response: Response<Body>,
 }
 
-pub fn clone_response_through_tempfile(
+pub async fn clone_response_through_tempfile(
     res: &mut Response<Body>,
 ) -> anyhow::Result<impl Future<Output = Option<ClonedResponse>> + Send> {
     let body = mem::replace(res.body_mut(), Body::empty())
         .into_stream()
         .map_err(|e| anyhow!("{}", e));
-    let (out_stream, saved_content) = save_stream::<ContentHash, _, _>(body)?;
+    let (out_stream, saved_content) = save_stream::<ContentHash, _, _>(body).await?;
 
     let original_headers = res.headers().clone();
     let original_status = res.status();
@@ -51,6 +51,7 @@ pub fn clone_response_through_tempfile(
             cloned_response
                 .headers_mut()
                 .insert(CONTENT_LENGTH, HeaderValue::from(content_length));
+
             Some(ClonedResponse {
                 content_length,
                 content_hash,

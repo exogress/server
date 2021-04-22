@@ -6,9 +6,10 @@ use std::{io, io::SeekFrom};
 use tokio::{
     io::{AsyncSeekExt, AsyncWriteExt},
     sync::oneshot,
+    task::spawn_blocking,
 };
 
-pub fn save_stream<
+pub async fn save_stream<
     H: sha2::Digest + Send,
     E: core::fmt::Debug + Send + Unpin + From<std::io::Error>,
     S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
@@ -23,7 +24,7 @@ pub fn save_stream<
 > {
     let mut digest = H::new();
 
-    let file = tempfile::tempfile()?;
+    let file = spawn_blocking(|| tempfile::tempfile()).await??;
     let mut tokio_file = tokio::fs::File::from_std(file);
     let (done_tx, done_rx) = oneshot::channel();
 
@@ -41,20 +42,26 @@ pub fn save_stream<
 
             {
                 let b = buf.clone();
+                info!("saved stream: write to tempfile");
                 tokio_file.write_all(&b).await?;
             }
 
             if peekable.as_mut().peek().await.is_none() {
+                info!("saved stream: finish!");
                 // that was the last element
                 tokio_file.seek(SeekFrom::Start(0)).await?;
+                info!("saved stream: seeked");
 
                 let reader = tokio_file;
                 let content_hash = bs58::encode(digest.finalize().as_ref()).into_string();
 
-                yield Ok(buf);
-
+                info!("saved stream: notify");
                 let _ = done_tx.send((reader, content_hash, len));
 
+                info!("saved stream: yield last buf");
+                yield Ok(buf);
+
+                info!("saved stream: done");
                 break;
             } else {
                 yield Ok(buf);

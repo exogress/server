@@ -29,6 +29,7 @@ pub use auth::{ResolvedGithubAuthDefinition, ResolvedGoogleAuthDefinition};
 use byte_unit::Byte;
 use chrono::{DateTime, Utc};
 use core::mem;
+use etag::EntityTag;
 use exogress_common::{
     common_utils::uri_ext::UriExt,
     config_core::{
@@ -248,7 +249,7 @@ impl RequestsProcessor {
                             if let Some(max_age) =
                                 cache_max_age_without_checks(resp_from_cache.as_full_resp())
                             {
-                                match resp_from_cache.split_for_user_and_maybe_cloned() {
+                                match resp_from_cache.split_for_user_and_maybe_cloned().await {
                                     Ok((for_user, on_response_finished)) => {
                                         *res = for_user;
 
@@ -407,7 +408,7 @@ impl RequestsProcessor {
                     )
                 {
                     if let Some(max_age) = cache_max_age_if_eligible(req, res, handler) {
-                        match clone_response_through_tempfile(res) {
+                        match clone_response_through_tempfile(res).await {
                             Ok(on_response_finished) => {
                                 let transformer_client = self.transformer_client.clone();
                                 let account_secret_key = self.xchacha20poly1305_secret_key.clone();
@@ -608,7 +609,7 @@ fn save_to_cache(
 
     let method = req_method.clone();
     let req_headers = req_headers.clone();
-    let res_headers = res.headers().clone();
+    let mut res_headers = res.headers().clone();
     let status = res.status().clone();
 
     let (mut resp_tx, resp_rx) = mpsc::channel(1);
@@ -670,7 +671,7 @@ fn save_to_cache(
                         processing_identifier,
                         &account_unique_id,
                         &req_headers,
-                        &res_headers,
+                        &mut res_headers,
                         status,
                         original_file_size.try_into().unwrap(),
                         header,
@@ -796,8 +797,13 @@ async fn trigger_transformation_if_required(
                                 CONTENT_LENGTH,
                                 HeaderValue::from(cloned_res.content_length),
                             );
-                            resp.headers_mut()
-                                .insert(ETAG, cloned_res.content_hash[..32].parse().unwrap());
+                            resp.headers_mut().insert(
+                                ETAG,
+                                EntityTag::from_hash(cloned_res.content_hash.as_ref())
+                                    .to_string()
+                                    .parse()
+                                    .unwrap(),
+                            );
                             resp.headers_mut().insert(
                                 LAST_MODIFIED,
                                 ready.transformed_at.to_rfc2822().parse().unwrap(),

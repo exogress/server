@@ -12,8 +12,11 @@ use exogress_server_common::crypto;
 use futures::{future::Either, Future, TryStreamExt};
 use hashbrown::HashSet;
 use http::{
-    header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY},
-    HeaderMap, Method, Request, Response, StatusCode,
+    header::{
+        HeaderName, ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, ETAG, IF_MODIFIED_SINCE,
+        IF_NONE_MATCH, LAST_MODIFIED, VARY,
+    },
+    HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 };
 use hyper::Body;
 use ledb::Primary;
@@ -348,7 +351,7 @@ impl Cache {
         &self,
         account_unique_id: &AccountUniqueId,
         req_headers: &HeaderMap,
-        res_headers: &HeaderMap,
+        res_headers: &mut HeaderMap,
         status: StatusCode,
         body_encryption_header: Header,
         content_hash: String,
@@ -380,6 +383,24 @@ impl Cache {
 
         let vary_json = serde_json::to_string(&vary_headers_ordered_list).unwrap();
         let vary_hash = Self::vary_hash(&vary_headers_ordered_list, req_headers);
+
+        if !res_headers.contains_key(CONTENT_LENGTH) {
+            res_headers.insert(CONTENT_LENGTH, HeaderValue::from(original_file_size));
+        }
+
+        if !res_headers.contains_key(LAST_MODIFIED) {
+            res_headers.insert(LAST_MODIFIED, Utc::now().to_rfc2822().parse().unwrap());
+        }
+
+        if !res_headers.contains_key(ETAG) {
+            res_headers.insert(
+                ETAG,
+                EntityTag::from_hash(content_hash.as_ref())
+                    .to_string()
+                    .parse()
+                    .unwrap(),
+            );
+        }
 
         let meta = Meta {
             headers: res_headers.clone(),
@@ -484,7 +505,7 @@ impl Cache {
         processing_identifier: RequestProcessingIdentifier,
         account_unique_id: &AccountUniqueId,
         req_headers: &HeaderMap,
-        res_headers: &HeaderMap,
+        res_headers: &mut HeaderMap,
         status: StatusCode,
         original_file_size: u32,
         encryption_header: Header,
@@ -625,6 +646,7 @@ impl Cache {
 
             // at this point we are sure that vary header math
             info!("found matched vary header. will serve from cache");
+            info!("variation = {:?}", variation);
 
             let id = variation
                 .id
@@ -673,37 +695,44 @@ impl Cache {
 
             self.mark_lru_used(id).await?;
 
+            error!("request_headers = {:?}", request_headers);
+
             let req_if_none_match: Vec<EntityTag> = request_headers
                 .get_all(IF_NONE_MATCH)
                 .iter()
                 .filter_map(|v| v.to_str().ok().and_then(|r| r.parse().ok()))
                 .collect();
 
+            error!("req_if_none_match = {:?}", req_if_none_match);
+
             let req_last_modified = request_headers
-                .get(LAST_MODIFIED)
+                .get(IF_MODIFIED_SINCE)
                 .and_then(|date| Some(DateTime::parse_from_rfc2822(date.to_str().ok()?).ok()?));
 
             let mut conditional_response_matches = false;
-            if let Some(stored_etag) = maybe_stored_etag {
-                if req_if_none_match.iter().any(|provided_etag| {
-                    info!(
-                        "Compare stored_etag {} with if_non_match {}",
-                        stored_etag, provided_etag
-                    );
-                    stored_etag.weak_eq(provided_etag)
-                }) {
-                    info!("etag matches the cached version - send non-modified");
-                    conditional_response_matches = true;
+            if !req_if_none_match.is_empty() {
+                if let Some(stored_etag) = maybe_stored_etag {
+                    if req_if_none_match.iter().any(|provided_etag| {
+                        info!(
+                            "Compare stored_etag {} with if_non_match {}",
+                            stored_etag, provided_etag
+                        );
+                        stored_etag.weak_eq(provided_etag)
+                    }) {
+                        info!("etag matches the cached version - send non-modified");
+                        conditional_response_matches = true;
+                    }
                 }
-            }
-            if let (Some(stored_cached_last_modified), Some(if_modified_since)) =
-                (maybe_stored_last_modified, req_last_modified)
-            {
-                // If user provided if-modified-since header, which is equal or in the future
-                // compared to our cache - respond with not-modified
-                if if_modified_since >= stored_cached_last_modified {
-                    info!("if-modified-since matches the cached version - send not-modified");
-                    conditional_response_matches = true;
+            } else {
+                if let (Some(stored_cached_last_modified), Some(if_modified_since)) =
+                    (maybe_stored_last_modified, req_last_modified)
+                {
+                    // If user provided if-modified-since header, which is equal or in the future
+                    // compared to our cache - respond with not-modified
+                    if if_modified_since >= stored_cached_last_modified {
+                        info!("if-modified-since matches the cached version - send not-modified");
+                        conditional_response_matches = true;
+                    }
                 }
             }
 
@@ -772,7 +801,7 @@ impl CacheResponse {
         self.conditional.unwrap_or(self.full)
     }
 
-    pub fn split_for_user_and_maybe_cloned(
+    pub async fn split_for_user_and_maybe_cloned(
         self,
     ) -> anyhow::Result<(
         Response<Body>,
@@ -788,9 +817,10 @@ impl CacheResponse {
                 }))),
             ))
         } else {
+            info!("The response from cache is full. Clone it thorugh the temp file");
             let mut full = self.full;
 
-            let cloned_future = clone_response_through_tempfile(&mut full)?;
+            let cloned_future = clone_response_through_tempfile(&mut full).await?;
 
             Ok((full, Either::Right(cloned_future)))
         }
