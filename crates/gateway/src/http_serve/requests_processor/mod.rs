@@ -834,16 +834,6 @@ async fn trigger_transformation_if_required(
 
                         resp.headers_mut()
                             .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
-                        resp.headers_mut()
-                            .insert(CONTENT_TYPE, content_type.to_string().parse().unwrap());
-                        resp.headers_mut()
-                            .insert(CONTENT_LENGTH, HeaderValue::from(cloned_res.content_length));
-                        resp.headers_mut()
-                            .insert(ETAG, cloned_res.content_hash[..32].parse().unwrap());
-                        resp.headers_mut().insert(
-                            LAST_MODIFIED,
-                            ready.transformed_at.to_rfc2822().parse().unwrap(),
-                        );
 
                         save_to_cache(
                             max_age,
