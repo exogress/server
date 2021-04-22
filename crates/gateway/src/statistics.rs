@@ -11,10 +11,17 @@ pub const CACHE_ACTION_READ: &str = "read";
 lazy_static! {
     pub static ref CACHE_ERRORS: IntCounterVec =
         register_int_counter_vec!("gw_cache_errors", "Local cache errors", &["action"]).unwrap();
+    pub static ref CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED: IntCounter = register_int_counter!(
+        "gw_cache_not_enough_space_save_skipped",
+        "Local cache didn't have enough of space to save content"
+    )
+    .unwrap();
     pub static ref CACHE_SERVED: IntCounter =
         register_int_counter!("gw_cache_served", "Local cache served bytes").unwrap();
     pub static ref CACHE_SAVED: IntCounter =
         register_int_counter!("gw_cache_saved", "Local cache saved bytes").unwrap();
+    pub static ref CACHE_SIZE: Gauge =
+        register_gauge!("gw_cache_size", "Local cache size in bytes").unwrap();
     pub static ref CONFIGS_CACHE_HIT: IntCounter =
         register_int_counter!("gw_configs_cache_hit", "Configs cache hit").unwrap();
     pub static ref CONFIGS_CACHE_MISS: IntCounter =

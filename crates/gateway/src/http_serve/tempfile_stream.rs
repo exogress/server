@@ -6,9 +6,10 @@ use std::{io, io::SeekFrom};
 use tokio::{
     io::{AsyncSeekExt, AsyncWriteExt},
     sync::oneshot,
+    task::spawn_blocking,
 };
 
-pub fn save_stream<
+pub async fn save_stream<
     H: sha2::Digest + Send,
     E: core::fmt::Debug + Send + Unpin + From<std::io::Error>,
     S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
@@ -23,7 +24,7 @@ pub fn save_stream<
 > {
     let mut digest = H::new();
 
-    let file = tempfile::tempfile()?;
+    let file = spawn_blocking(|| tempfile::tempfile()).await??;
     let mut tokio_file = tokio::fs::File::from_std(file);
     let (done_tx, done_rx) = oneshot::channel();
 
@@ -51,9 +52,9 @@ pub fn save_stream<
                 let reader = tokio_file;
                 let content_hash = bs58::encode(digest.finalize().as_ref()).into_string();
 
-                yield Ok(buf);
-
                 let _ = done_tx.send((reader, content_hash, len));
+
+                yield Ok(buf);
 
                 break;
             } else {

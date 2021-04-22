@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use clap::{Arg, ArgMatches};
+use exogress_common::common_utils::tls::load_native_certs_safe;
 use std::{
     future::Future,
     io::{Cursor, Seek, SeekFrom},
@@ -98,8 +99,7 @@ pub async fn handle<'a>(
                 .map_err(|e| anyhow!("TCP subscriber init error: {:?}", e))?
         } else {
             let mut config = tokio_rustls::rustls::ClientConfig::new();
-            config.root_store =
-                rustls_native_certs::load_native_certs().expect("native certs error");
+            load_native_certs_safe(&mut config);
             if let Some(cert) = maybe_int_client_cert {
                 println!("Use int access certificate for GELF logging");
                 let mut c = Cursor::new(&cert);

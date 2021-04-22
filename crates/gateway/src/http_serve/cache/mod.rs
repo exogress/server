@@ -1,5 +1,7 @@
 use crate::http_serve::{
-    identifier::RequestProcessingIdentifier, RequestsProcessor, ResolvedHandler,
+    helpers::{clone_response_through_tempfile, ClonedResponse},
+    identifier::RequestProcessingIdentifier,
+    RequestsProcessor, ResolvedHandler,
 };
 use byte_unit::Byte;
 use chrono::{DateTime, TimeZone, Utc};
@@ -7,11 +9,14 @@ use dashmap::DashSet;
 use etag::EntityTag;
 use exogress_common::entities::AccountUniqueId;
 use exogress_server_common::crypto;
-use futures::TryStreamExt;
+use futures::{future::Either, Future, TryStreamExt};
 use hashbrown::HashSet;
 use http::{
-    header::{HeaderName, ACCEPT, ACCEPT_ENCODING, ETAG, IF_NONE_MATCH, LAST_MODIFIED, VARY},
-    HeaderMap, Method, Request, Response, StatusCode,
+    header::{
+        HeaderName, ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, ETAG, IF_MODIFIED_SINCE,
+        IF_NONE_MATCH, LAST_MODIFIED, VARY,
+    },
+    HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 };
 use hyper::Body;
 use ledb::Primary;
@@ -19,8 +24,17 @@ use pin_utils::pin_mut;
 use sha2::Digest;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
 use std::{
-    collections::BTreeSet, convert::TryInto, io, io::Cursor, path::PathBuf, str::FromStr,
-    sync::Arc, time::Duration,
+    collections::BTreeSet,
+    convert::TryInto,
+    io,
+    io::Cursor,
+    path::PathBuf,
+    str::FromStr,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 use tokio::time::sleep;
 use typed_headers::HeaderMapExt;
@@ -30,6 +44,8 @@ pub struct Cache {
     ledb: Arc<parking_lot::RwLock<ledb::Storage>>,
     cache_files_dir: Arc<PathBuf>,
     in_flights: Arc<DashSet<(AccountUniqueId, String)>>,
+    space_used: Arc<AtomicU32>,
+    max_allowed_size: Byte,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -84,34 +100,34 @@ pub struct CacheItem {
 }
 
 impl Cache {
-    pub async fn new(cache_dir: PathBuf) -> Result<Cache, anyhow::Error> {
+    pub async fn new(cache_dir: PathBuf, max_size: Byte) -> Result<Cache, anyhow::Error> {
         let cache_dir = tokio::fs::canonicalize(&cache_dir).await?;
 
-        info!("use cache-dir: {:?}", cache_dir);
+        info!(
+            "use cache-dir: {:?} with max size: {}",
+            cache_dir,
+            max_size.get_appropriate_unit(true)
+        );
 
         let mut ledb_db_path = cache_dir.clone();
         ledb_db_path.push("db");
 
-        tokio::fs::create_dir_all(&ledb_db_path)
-            .await
-            .expect("Error initializing cache DB");
+        tokio::fs::create_dir_all(&ledb_db_path).await?;
         info!("ledb path: {:?}", ledb_db_path);
 
         let mut cache_files_dir = cache_dir.clone();
         cache_files_dir.push("files");
 
-        tokio::fs::create_dir_all(&cache_files_dir)
-            .await
-            .expect("Error initializing cache files directory");
+        tokio::fs::create_dir_all(&cache_files_dir).await?;
 
         info!("Use ledb at {}", ledb_db_path.as_os_str().to_str().unwrap());
 
         let ledb = ledb::Storage::new(&ledb_db_path, ledb::Options::default())
             .map_err(|e| anyhow!("{}", e))?;
 
-        let files_colllection = ledb.collection("files").unwrap();
+        let files_collection = ledb.collection("files").unwrap();
 
-        ledb::query!(index for files_colllection
+        ledb::query!(index for files_collection
             id int,
             account_unique_id str,
             request_hash str,
@@ -120,12 +136,23 @@ impl Cache {
             expires_at int,
             last_used_at int,
         )
-        .unwrap();
+        .map_err(|e| anyhow!("{}", e))?;
+
+        let bytes_used = ledb::query!(
+            find CacheItem in files_collection
+        )
+        .map_err(|e| anyhow!("{}", e))?
+        .try_fold(0, |acc, r| r.map(|item| acc + item.original_file_size))
+        .map_err(|e| anyhow!("{}", e))?;
+
+        let space_used = Arc::new(AtomicU32::from(bytes_used));
 
         let cache = Cache {
             ledb: Arc::new(parking_lot::RwLock::new(ledb)),
             cache_files_dir: Arc::new(cache_files_dir),
             in_flights: Arc::new(Default::default()),
+            space_used,
+            max_allowed_size: max_size,
         };
 
         tokio::spawn({
@@ -174,8 +201,17 @@ impl Cache {
                 let files_collection = ledb.collection("files").unwrap();
 
                 ledb::query!(
-                    remove from files_collection where account_unique_id == evicted.account_unique_id.to_string() && request_hash == evicted.request_hash.as_str()
-                ).map_err(|e| anyhow!("{}", e))?;
+                    remove from files_collection
+                    where
+                        account_unique_id == evicted.account_unique_id.to_string() &&
+                        request_hash == evicted.request_hash.as_str() &&
+                        vary == evicted.vary.as_str() &&
+                        vary_hash == evicted.vary_hash.as_str()
+                )
+                .map_err(|e| anyhow!("{}", e))?;
+
+                self.space_used
+                    .fetch_sub(evicted.original_file_size, Ordering::Relaxed);
             }
 
             let mut storage_path = self.storage_path(
@@ -301,12 +337,14 @@ impl Cache {
         };
 
         let bytes_used = Byte::from_bytes(space_used.into());
-        info!(
-            "account space used = {}",
-            bytes_used.get_appropriate_unit(true)
-        );
 
         Ok(bytes_used)
+    }
+
+    fn get_overall_used(&self) -> Byte {
+        let space_used = self.space_used.load(Ordering::Relaxed);
+        crate::statistics::CACHE_SIZE.set(space_used as f64);
+        Byte::from_bytes(space_used.into())
     }
 
     fn vary_hash(vary_headers_ordered_list: &BTreeSet<String>, req_headers: &HeaderMap) -> String {
@@ -328,7 +366,7 @@ impl Cache {
         &self,
         account_unique_id: &AccountUniqueId,
         req_headers: &HeaderMap,
-        res_headers: &HeaderMap,
+        res_headers: &mut HeaderMap,
         status: StatusCode,
         body_encryption_header: Header,
         content_hash: String,
@@ -360,6 +398,24 @@ impl Cache {
 
         let vary_json = serde_json::to_string(&vary_headers_ordered_list).unwrap();
         let vary_hash = Self::vary_hash(&vary_headers_ordered_list, req_headers);
+
+        if !res_headers.contains_key(CONTENT_LENGTH) {
+            res_headers.insert(CONTENT_LENGTH, HeaderValue::from(original_file_size));
+        }
+
+        if !res_headers.contains_key(LAST_MODIFIED) {
+            res_headers.insert(LAST_MODIFIED, Utc::now().to_rfc2822().parse().unwrap());
+        }
+
+        if !res_headers.contains_key(ETAG) {
+            res_headers.insert(
+                ETAG,
+                EntityTag::from_hash(content_hash.as_ref())
+                    .to_string()
+                    .parse()
+                    .unwrap(),
+            );
+        }
 
         let meta = Meta {
             headers: res_headers.clone(),
@@ -399,6 +455,18 @@ impl Cache {
             let ledb = self.ledb.write();
             let files_collection = ledb.collection("files").unwrap();
 
+            let used_size_by_existing_documents = ledb::query!(
+                find CacheItem in files_collection
+                where
+                    request_hash == file_name &&
+                    account_unique_id == account_unique_id.to_string() &&
+                    vary == vary_json.as_str() &&
+                    vary_hash == vary_hash.as_str()
+            )
+            .map_err(|e| anyhow!("{}", e))?
+            .try_fold(0, |acc, r| r.map(|item| acc + item.original_file_size))
+            .map_err(|e| anyhow!("{}", e))?;
+
             ledb::query!(
                 remove from files_collection
                 where
@@ -408,6 +476,11 @@ impl Cache {
                     vary_hash == vary_hash.as_str()
             )
             .map_err(|e| anyhow!("{}", e))?;
+
+            if used_size_by_existing_documents > 0 {
+                self.space_used
+                    .fetch_sub(used_size_by_existing_documents, Ordering::Relaxed);
+            }
 
             files_collection
                 .insert(&CacheItem {
@@ -430,6 +503,9 @@ impl Cache {
                     content_hash,
                 })
                 .map_err(|e| anyhow!("{}", e))?;
+
+            self.space_used
+                .fetch_add(original_file_size, Ordering::Relaxed);
         }
 
         let storage_path = self.storage_path(account_unique_id, file_name, vary_hash.as_ref());
@@ -459,12 +535,16 @@ impl Cache {
         Ok(())
     }
 
+    pub fn is_enough_space(&self) -> bool {
+        self.get_overall_used() < self.max_allowed_size
+    }
+
     pub async fn save_content_from_temp_file(
         &self,
         processing_identifier: RequestProcessingIdentifier,
         account_unique_id: &AccountUniqueId,
         req_headers: &HeaderMap,
-        res_headers: &HeaderMap,
+        res_headers: &mut HeaderMap,
         status: StatusCode,
         original_file_size: u32,
         encryption_header: Header,
@@ -548,7 +628,7 @@ impl Cache {
         handler: &ResolvedHandler,
         processing_identifier: &RequestProcessingIdentifier,
         req: &Request<Body>,
-    ) -> anyhow::Result<Option<(Response<hyper::Body>, String)>> {
+    ) -> anyhow::Result<Option<CacheResponse>> {
         if handler.resolved_variant.is_cache_enabled() != Some(true) {
             return Ok(None);
         }
@@ -605,6 +685,7 @@ impl Cache {
 
             // at this point we are sure that vary header math
             info!("found matched vary header. will serve from cache");
+            info!("variation = {:?}", variation);
 
             let id = variation
                 .id
@@ -653,42 +734,45 @@ impl Cache {
 
             self.mark_lru_used(id).await?;
 
+            error!("request_headers = {:?}", request_headers);
+
             let req_if_none_match: Vec<EntityTag> = request_headers
                 .get_all(IF_NONE_MATCH)
                 .iter()
                 .filter_map(|v| v.to_str().ok().and_then(|r| r.parse().ok()))
                 .collect();
 
+            error!("req_if_none_match = {:?}", req_if_none_match);
+
             let req_last_modified = request_headers
-                .get(LAST_MODIFIED)
+                .get(IF_MODIFIED_SINCE)
                 .and_then(|date| Some(DateTime::parse_from_rfc2822(date.to_str().ok()?).ok()?));
 
             let mut conditional_response_matches = false;
-            if let Some(stored_etag) = maybe_stored_etag {
-                if req_if_none_match
-                    .iter()
-                    .filter(|&provided_etag| stored_etag.weak_eq(provided_etag))
-                    .next()
-                    .is_some()
+            if !req_if_none_match.is_empty() {
+                if let Some(stored_etag) = maybe_stored_etag {
+                    if req_if_none_match.iter().any(|provided_etag| {
+                        info!(
+                            "Compare stored_etag {} with if_non_match {}",
+                            stored_etag, provided_etag
+                        );
+                        stored_etag.weak_eq(provided_etag)
+                    }) {
+                        info!("etag matches the cached version - send non-modified");
+                        conditional_response_matches = true;
+                    }
+                }
+            } else {
+                if let (Some(stored_cached_last_modified), Some(if_modified_since)) =
+                    (maybe_stored_last_modified, req_last_modified)
                 {
-                    info!("etag matches the cached version - send non-modified");
-                    conditional_response_matches = true;
+                    // If user provided if-modified-since header, which is equal or in the future
+                    // compared to our cache - respond with not-modified
+                    if if_modified_since >= stored_cached_last_modified {
+                        info!("if-modified-since matches the cached version - send not-modified");
+                        conditional_response_matches = true;
+                    }
                 }
-            }
-            if let (Some(stored_last_modified), Some(provided_last_modified)) =
-                (maybe_stored_last_modified, req_last_modified)
-            {
-                if stored_last_modified < provided_last_modified {
-                    info!("last-modified matches the cached version - send not-modified");
-                    conditional_response_matches = true;
-                }
-            }
-
-            if conditional_response_matches {
-                let mut resp = Response::new(hyper::Body::empty());
-                info!("respond not-modified from cache o nconditional response");
-                *resp.status_mut() = StatusCode::NOT_MODIFIED;
-                return Ok(Some((resp, variation.content_hash)));
             }
 
             let storage_path = self.storage_path(
@@ -699,15 +783,28 @@ impl Cache {
 
             let reader = tokio::fs::File::open(&storage_path).await?;
 
-            let body = crypto::decrypt_reader(
+            let body = hyper::Body::wrap_stream(crypto::decrypt_reader(
                 reader,
                 xchacha20poly1305_secret_key,
                 &body_encryption_header,
-            )?;
+            )?);
 
-            let mut resp = Response::new(hyper::Body::wrap_stream(body));
+            let mut resp = Response::new(body);
             *resp.status_mut() = meta.status;
             *resp.headers_mut() = meta.headers;
+
+            if conditional_response_matches {
+                let mut conditional_resp = Response::new(hyper::Body::empty());
+                info!("respond not-modified from cache on conditional response");
+                *conditional_resp.status_mut() = StatusCode::NOT_MODIFIED;
+
+                return Ok(Some(CacheResponse {
+                    conditional: Some(conditional_resp),
+                    full: resp,
+                    full_content_hash: variation.content_hash,
+                    full_content_len: original_file_size as usize,
+                }));
+            }
 
             info!("served from cache!");
 
@@ -719,9 +816,64 @@ impl Cache {
                         original_file_size.into(),
                     ));
             }
-            Ok(Some((resp, variation.content_hash)))
+            Ok(Some(CacheResponse {
+                conditional: None,
+                full: resp,
+                full_content_hash: variation.content_hash,
+                full_content_len: original_file_size as usize,
+            }))
         } else {
             Ok(None)
         }
+    }
+}
+
+pub struct CacheResponse {
+    conditional: Option<Response<hyper::Body>>,
+    full: Response<hyper::Body>,
+    full_content_hash: String,
+    full_content_len: usize,
+}
+
+impl CacheResponse {
+    pub fn into_for_user(self) -> Response<Body> {
+        self.conditional.unwrap_or(self.full)
+    }
+
+    pub async fn split_for_user_and_maybe_cloned(
+        self,
+    ) -> anyhow::Result<(
+        Response<Body>,
+        impl Future<Output = Option<ClonedResponse>> + Send,
+    )> {
+        if let Some(conditional) = self.conditional {
+            Ok((
+                conditional,
+                Either::Left(futures::future::ready(Some(ClonedResponse {
+                    content_length: self.full_content_len,
+                    content_hash: self.full_content_hash,
+                    response: self.full,
+                }))),
+            ))
+        } else {
+            info!("The response from cache is full. Clone it thorugh the temp file");
+            let mut full = self.full;
+
+            let cloned_future = clone_response_through_tempfile(&mut full).await?;
+
+            Ok((full, Either::Right(cloned_future)))
+        }
+    }
+
+    pub fn is_full_response_success(&self) -> bool {
+        self.full.status().is_success()
+    }
+
+    pub fn has_conditional(&self) -> bool {
+        self.conditional.is_some()
+    }
+
+    pub fn as_full_resp(&self) -> &Response<hyper::Body> {
+        &self.full
     }
 }
