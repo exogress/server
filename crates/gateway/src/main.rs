@@ -14,16 +14,16 @@ extern crate prometheus;
 extern crate anyhow;
 
 use async_compression::futures::write::GzipDecoder;
+use byte_unit::Byte;
 use clap::{crate_version, App, Arg};
 use futures::io::BufWriter;
 use futures_util::io::AsyncWriteExt;
 use mimalloc::MiMalloc;
-use rules_counter::AccountCounters;
-use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
-
 use progress_bar::progress_bar::ProgressBar;
 use reqwest::header;
+use rules_counter::AccountCounters;
 use smol_str::SmolStr;
+use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use stop_handle::stop_handle;
 use tempfile::NamedTempFile;
 use url::Url;
@@ -230,6 +230,15 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("disk_cache_max_size")
+                .long("disk-cache-max-size")
+                .value_name("BYTES")
+                .required(true)
+                .default_value("1 GB") // 10 minutes
+                .help("Maximum size of all cached files")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name("download_dbip")
                 .long("download-dbip")
                 .help("Perform DBIP download")
@@ -427,6 +436,12 @@ fn main() {
             .expect("bad TTL value"),
     );
 
+    let disk_cache_max_size: Byte = matches
+        .value_of("disk_cache_max_size")
+        .unwrap()
+        .parse()
+        .expect("bad bytes value value");
+
     let individual_tls_cert_path = matches.value_of("individual_tls_cert_path").unwrap();
     let individual_tls_key_path = matches.value_of("individual_tls_key_path").unwrap();
 
@@ -592,7 +607,7 @@ fn main() {
             dbip
         });
 
-        let cache = Cache::new(cache_dir)
+        let cache = Cache::new(cache_dir, disk_cache_max_size)
             .await
             .expect("Failed to initialize cache");
 

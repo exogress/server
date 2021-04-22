@@ -42,26 +42,20 @@ pub async fn save_stream<
 
             {
                 let b = buf.clone();
-                info!("saved stream: write to tempfile");
                 tokio_file.write_all(&b).await?;
             }
 
             if peekable.as_mut().peek().await.is_none() {
-                info!("saved stream: finish!");
                 // that was the last element
                 tokio_file.seek(SeekFrom::Start(0)).await?;
-                info!("saved stream: seeked");
 
                 let reader = tokio_file;
                 let content_hash = bs58::encode(digest.finalize().as_ref()).into_string();
 
-                info!("saved stream: notify");
                 let _ = done_tx.send((reader, content_hash, len));
 
-                info!("saved stream: yield last buf");
                 yield Ok(buf);
 
-                info!("saved stream: done");
                 break;
             } else {
                 yield Ok(buf);

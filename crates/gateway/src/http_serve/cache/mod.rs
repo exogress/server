@@ -24,8 +24,17 @@ use pin_utils::pin_mut;
 use sha2::Digest;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
 use std::{
-    collections::BTreeSet, convert::TryInto, io, io::Cursor, path::PathBuf, str::FromStr,
-    sync::Arc, time::Duration,
+    collections::BTreeSet,
+    convert::TryInto,
+    io,
+    io::Cursor,
+    path::PathBuf,
+    str::FromStr,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 use tokio::time::sleep;
 use typed_headers::HeaderMapExt;
@@ -35,6 +44,8 @@ pub struct Cache {
     ledb: Arc<parking_lot::RwLock<ledb::Storage>>,
     cache_files_dir: Arc<PathBuf>,
     in_flights: Arc<DashSet<(AccountUniqueId, String)>>,
+    space_used: Arc<AtomicU32>,
+    max_allowed_size: Byte,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -89,34 +100,34 @@ pub struct CacheItem {
 }
 
 impl Cache {
-    pub async fn new(cache_dir: PathBuf) -> Result<Cache, anyhow::Error> {
+    pub async fn new(cache_dir: PathBuf, max_size: Byte) -> Result<Cache, anyhow::Error> {
         let cache_dir = tokio::fs::canonicalize(&cache_dir).await?;
 
-        info!("use cache-dir: {:?}", cache_dir);
+        info!(
+            "use cache-dir: {:?} with max size: {}",
+            cache_dir,
+            max_size.get_appropriate_unit(true)
+        );
 
         let mut ledb_db_path = cache_dir.clone();
         ledb_db_path.push("db");
 
-        tokio::fs::create_dir_all(&ledb_db_path)
-            .await
-            .expect("Error initializing cache DB");
+        tokio::fs::create_dir_all(&ledb_db_path).await?;
         info!("ledb path: {:?}", ledb_db_path);
 
         let mut cache_files_dir = cache_dir.clone();
         cache_files_dir.push("files");
 
-        tokio::fs::create_dir_all(&cache_files_dir)
-            .await
-            .expect("Error initializing cache files directory");
+        tokio::fs::create_dir_all(&cache_files_dir).await?;
 
         info!("Use ledb at {}", ledb_db_path.as_os_str().to_str().unwrap());
 
         let ledb = ledb::Storage::new(&ledb_db_path, ledb::Options::default())
             .map_err(|e| anyhow!("{}", e))?;
 
-        let files_colllection = ledb.collection("files").unwrap();
+        let files_collection = ledb.collection("files").unwrap();
 
-        ledb::query!(index for files_colllection
+        ledb::query!(index for files_collection
             id int,
             account_unique_id str,
             request_hash str,
@@ -125,12 +136,23 @@ impl Cache {
             expires_at int,
             last_used_at int,
         )
-        .unwrap();
+        .map_err(|e| anyhow!("{}", e))?;
+
+        let bytes_used = ledb::query!(
+            find CacheItem in files_collection
+        )
+        .map_err(|e| anyhow!("{}", e))?
+        .try_fold(0, |acc, r| r.map(|item| acc + item.original_file_size))
+        .map_err(|e| anyhow!("{}", e))?;
+
+        let space_used = Arc::new(AtomicU32::from(bytes_used));
 
         let cache = Cache {
             ledb: Arc::new(parking_lot::RwLock::new(ledb)),
             cache_files_dir: Arc::new(cache_files_dir),
             in_flights: Arc::new(Default::default()),
+            space_used,
+            max_allowed_size: max_size,
         };
 
         tokio::spawn({
@@ -179,8 +201,17 @@ impl Cache {
                 let files_collection = ledb.collection("files").unwrap();
 
                 ledb::query!(
-                    remove from files_collection where account_unique_id == evicted.account_unique_id.to_string() && request_hash == evicted.request_hash.as_str()
-                ).map_err(|e| anyhow!("{}", e))?;
+                    remove from files_collection
+                    where
+                        account_unique_id == evicted.account_unique_id.to_string() &&
+                        request_hash == evicted.request_hash.as_str() &&
+                        vary == evicted.vary.as_str() &&
+                        vary_hash == evicted.vary_hash.as_str()
+                )
+                .map_err(|e| anyhow!("{}", e))?;
+
+                self.space_used
+                    .fetch_sub(evicted.original_file_size, Ordering::Relaxed);
             }
 
             let mut storage_path = self.storage_path(
@@ -306,30 +337,14 @@ impl Cache {
         };
 
         let bytes_used = Byte::from_bytes(space_used.into());
-        info!(
-            "account space used = {}",
-            bytes_used.get_appropriate_unit(true)
-        );
 
         Ok(bytes_used)
     }
 
-    async fn get_overall_used(&self) -> anyhow::Result<Byte> {
-        let space_used = {
-            let ledb = self.ledb.read();
-            let files_collection = ledb.collection("files").unwrap();
-
-            ledb::query!(
-                find CacheItem in files_collection
-            )
-            .map_err(|e| anyhow!("{}", e))?
-            .try_fold(0, |acc, r| r.map(|item| acc + item.original_file_size))
-            .map_err(|e| anyhow!("{}", e))?
-        };
-
-        let bytes_used = Byte::from_bytes(space_used.into());
-
-        Ok(bytes_used)
+    fn get_overall_used(&self) -> Byte {
+        let space_used = self.space_used.load(Ordering::Relaxed);
+        crate::statistics::CACHE_SIZE.set(space_used as f64);
+        Byte::from_bytes(space_used.into())
     }
 
     fn vary_hash(vary_headers_ordered_list: &BTreeSet<String>, req_headers: &HeaderMap) -> String {
@@ -440,6 +455,18 @@ impl Cache {
             let ledb = self.ledb.write();
             let files_collection = ledb.collection("files").unwrap();
 
+            let used_size_by_existing_documents = ledb::query!(
+                find CacheItem in files_collection
+                where
+                    request_hash == file_name &&
+                    account_unique_id == account_unique_id.to_string() &&
+                    vary == vary_json.as_str() &&
+                    vary_hash == vary_hash.as_str()
+            )
+            .map_err(|e| anyhow!("{}", e))?
+            .try_fold(0, |acc, r| r.map(|item| acc + item.original_file_size))
+            .map_err(|e| anyhow!("{}", e))?;
+
             ledb::query!(
                 remove from files_collection
                 where
@@ -449,6 +476,11 @@ impl Cache {
                     vary_hash == vary_hash.as_str()
             )
             .map_err(|e| anyhow!("{}", e))?;
+
+            if used_size_by_existing_documents > 0 {
+                self.space_used
+                    .fetch_sub(used_size_by_existing_documents, Ordering::Relaxed);
+            }
 
             files_collection
                 .insert(&CacheItem {
@@ -471,6 +503,9 @@ impl Cache {
                     content_hash,
                 })
                 .map_err(|e| anyhow!("{}", e))?;
+
+            self.space_used
+                .fetch_add(original_file_size, Ordering::Relaxed);
         }
 
         let storage_path = self.storage_path(account_unique_id, file_name, vary_hash.as_ref());
@@ -498,6 +533,10 @@ impl Cache {
         .map_err(|e| anyhow!("{}", e))?;
 
         Ok(())
+    }
+
+    pub fn is_enough_space(&self) -> bool {
+        self.get_overall_used() < self.max_allowed_size
     }
 
     pub async fn save_content_from_temp_file(
