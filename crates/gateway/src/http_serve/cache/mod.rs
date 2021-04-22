@@ -685,21 +685,24 @@ impl Cache {
 
             let mut conditional_response_matches = false;
             if let Some(stored_etag) = maybe_stored_etag {
-                if req_if_none_match
-                    .iter()
-                    .filter(|&provided_etag| stored_etag.weak_eq(provided_etag))
-                    .next()
-                    .is_some()
-                {
+                if req_if_none_match.iter().any(|provided_etag| {
+                    info!(
+                        "Compare stored_etag {} with if_non_match {}",
+                        stored_etag, provided_etag
+                    );
+                    stored_etag.weak_eq(provided_etag)
+                }) {
                     info!("etag matches the cached version - send non-modified");
                     conditional_response_matches = true;
                 }
             }
-            if let (Some(stored_last_modified), Some(provided_last_modified)) =
+            if let (Some(stored_cached_last_modified), Some(if_modified_since)) =
                 (maybe_stored_last_modified, req_last_modified)
             {
-                if stored_last_modified < provided_last_modified {
-                    info!("last-modified matches the cached version - send not-modified");
+                // If user provided if-modified-since header, which is equal or in the future
+                // compared to our cache - respond with not-modified
+                if if_modified_since >= stored_cached_last_modified {
+                    info!("if-modified-since matches the cached version - send not-modified");
                     conditional_response_matches = true;
                 }
             }
