@@ -49,8 +49,8 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 lazy_static! {
     static ref UPLOAD_TTL: chrono::Duration = chrono::Duration::seconds(30);
-    static ref PROCESSING_MAX_TIME_HARD: chrono::Duration = chrono::Duration::minutes(2);
-    static ref PROCESSING_MAX_TIME_SOFT: chrono::Duration = chrono::Duration::minutes(1);
+    static ref PROCESSING_MAX_TIME_HARD: chrono::Duration = chrono::Duration::minutes(32);
+    static ref PROCESSING_MAX_TIME_SOFT: chrono::Duration = chrono::Duration::minutes(30);
 }
 
 fn main() {
