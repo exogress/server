@@ -58,6 +58,11 @@ fn main() {
         ALL_LOCATIONS.iter().map(|loc| loc.to_string()).collect();
     let spawn_args = App::new("spawn")
         .arg(
+            Arg::with_name("no_conversion")
+                .long("no-conversion")
+                .help("Prevent conversions on this instance (only web server)"),
+        )
+        .arg(
             Arg::with_name("mongodb_url")
                 .long("mongodb-url")
                 .value_name("URL")
@@ -161,6 +166,8 @@ fn main() {
     let matches = matches
         .subcommand_matches("spawn")
         .expect("Unknown subcommand");
+
+    let is_no_conversion = matches.is_present("no_conversion");
 
     let mongodb_url = matches
         .value_of("mongodb_url")
@@ -306,6 +313,11 @@ fn main() {
             shadow_clone!(app_stop_handle);
 
             async move {
+                if is_no_conversion {
+                    info!("Not running conversions processor");
+                    return Ok(());
+                }
+
                 let res = Processor::new(
                     conversion_threads,
                     conversion_memory,
@@ -338,6 +350,7 @@ fn main() {
         let server_res = server_handle.await;
         info!("web server stopped: {:?}", server_res);
 
+        info!("ensure processor has stopped...");
         let processor_res = processor_handle.await;
         info!("processor stopped: {:?}", processor_res);
 
