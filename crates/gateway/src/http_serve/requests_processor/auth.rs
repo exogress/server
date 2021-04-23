@@ -4,7 +4,7 @@ use crate::http_serve::{
         AuthFinalizer, JwtEcdsa, Oauth2Provider,
     },
     requests_processor::HandlerInvocationResult,
-    templates::respond_with_login,
+    templates::{render_access_denied, respond_with_login},
 };
 use chrono::Utc;
 use cookie::Cookie;
@@ -250,6 +250,11 @@ impl ResolvedAuth {
                                                 &acl.0,
                                             );
 
+                                            let redirect_to = retrieved_flow_data
+                                                .oauth2_flow_data
+                                                .requested_url
+                                                .to_string();
+
                                             if let (Some(allowed_identity), _) = acl_allow_to {
                                                 res.headers_mut().insert(
                                                     CACHE_CONTROL,
@@ -258,12 +263,7 @@ impl ResolvedAuth {
 
                                                 res.headers_mut().insert(
                                                     LOCATION,
-                                                    retrieved_flow_data
-                                                        .oauth2_flow_data
-                                                        .requested_url
-                                                        .to_string()
-                                                        .try_into()
-                                                        .unwrap(),
+                                                    redirect_to.try_into().unwrap(),
                                                 );
 
                                                 *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
@@ -315,7 +315,8 @@ impl ResolvedAuth {
                                                 );
                                             } else {
                                                 *res.status_mut() = StatusCode::FORBIDDEN;
-                                                *res.body_mut() = Body::from("Access Denied");
+                                                *res.body_mut() =
+                                                    Body::from(render_access_denied(redirect_to));
                                             }
                                         }
                                         None => {

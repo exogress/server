@@ -239,7 +239,7 @@ async fn forwarder(
                                             let (_, mut buf2) = reusable_buf2.detach();
 
                                             is_any_gw_connected = true;
-                                            crate::statistics::NUM_PROXIED_REQUESTS
+                                            crate::statistics::NUM_PROXIED_CONNECTIONS
                                                 .with_label_values(&[
                                                     retry.to_string().as_str(),
                                                     max_retries.to_string().as_str(),
@@ -282,7 +282,7 @@ async fn forwarder(
                         }
 
                         if !is_any_gw_connected {
-                            crate::statistics::NUM_PROXIED_REQUESTS
+                            crate::statistics::NUM_PROXIED_CONNECTIONS
                                 .with_label_values(&[
                                     "",
                                     max_retries.to_string().as_str(),

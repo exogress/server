@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-assistant"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bson",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-director"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-gateway"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-server-common"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-signaler"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1126,7 +1126,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-transformer"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2673,16 +2673,16 @@ checksum = "59fd305ac950550fa06771dc93b43670190dd1befc73b1367f5d4246bf48c2dc"
 
 [[package]]
 name = "prometheus"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8425533e7122f0c3cc7a37e6244b16ad3a2cc32ae7ac6276e2a75da0d9c200d"
+checksum = "5986aa8d62380092d2f50f8b1cdba9cb9b6731ffd4b25b51fd126b6c3e05b99c"
 dependencies = [
  "cfg-if 1.0.0",
  "fnv",
  "lazy_static",
+ "memchr",
  "parking_lot 0.11.1",
  "protobuf",
- "regex",
  "thiserror",
 ]
 
@@ -3036,9 +3036,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.4.5"
+version = "1.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "957056ecddbeba1b26965114e191d2e8589ce74db242b6ea25fc4062427a5c19"
+checksum = "2a26af418b574bd56588335b3a3659a65725d4e636eb1016c2f9e3b38c7cc759"
 dependencies = [
  "aho-corasick",
  "memchr",

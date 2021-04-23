@@ -264,6 +264,7 @@ impl RequestsProcessor {
                                         let cache = self.cache.clone();
                                         let account_unique_id = self.account_unique_id.clone();
                                         let project_name = self.project_name.clone();
+                                        let project_unique_id = self.project_unique_id.clone();
                                         let mount_point_name = self.mount_point_name.clone();
                                         let max_pop_cache_size_bytes =
                                             self.max_pop_cache_size_bytes.clone();
@@ -288,6 +289,7 @@ impl RequestsProcessor {
                                                         cache,
                                                         account_unique_id,
                                                         project_name,
+                                                        project_unique_id,
                                                         mount_point_name,
                                                         max_pop_cache_size_bytes,
                                                         xchacha20poly1305_secret_key,
@@ -336,7 +338,7 @@ impl RequestsProcessor {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    crate::statistics::CACHE_ERRORS
+                    crate::statistics::EDGE_CACHE_ERRORS
                         .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
                         .inc();
                     warn!("Error reading data from cache: {}", e);
@@ -427,6 +429,7 @@ impl RequestsProcessor {
                                     let cache = self.cache.clone();
                                     let account_unique_id = self.account_unique_id.clone();
                                     let project_name = self.project_name.clone();
+                                    let project_unique_id = self.project_unique_id.clone();
                                     let mount_point_name = self.mount_point_name.clone();
                                     let max_pop_cache_size_bytes =
                                         self.max_pop_cache_size_bytes.clone();
@@ -449,6 +452,7 @@ impl RequestsProcessor {
                                                 cache,
                                                 account_unique_id,
                                                 project_name,
+                                                project_unique_id,
                                                 mount_point_name,
                                                 max_pop_cache_size_bytes,
                                                 xchacha20poly1305_secret_key,
@@ -703,7 +707,7 @@ fn save_to_cache(
                     .await;
 
                 if let Err(e) = cached_response {
-                    crate::statistics::CACHE_ERRORS
+                    crate::statistics::EDGE_CACHE_ERRORS
                         .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
                         .inc();
                     error!("error saving to cache: {}", e);
@@ -733,6 +737,7 @@ async fn trigger_transformation_if_required(
     cache: Cache,
     account_unique_id: AccountUniqueId,
     project_name: ProjectName,
+    project_unique_id: ProjectUniqueId,
     mount_point_name: MountPointName,
     max_pop_cache_size_bytes: Byte,
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
@@ -761,6 +766,7 @@ async fn trigger_transformation_if_required(
                         &content_type.0,
                         &handler_name,
                         &project_name,
+                        &project_unique_id,
                         &mount_point_name,
                         &requested_url,
                     )

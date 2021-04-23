@@ -30,7 +30,7 @@ lazy_static! {
     )
     .unwrap();
     pub static ref ACCOUNT_LOGS_SAVE: IntCounterVec = register_int_counter_vec!(
-        "assistant_accounts_logs_save",
+        "assistant_account_logs_saved",
         "Number of account logs saved",
         &["error"]
     )

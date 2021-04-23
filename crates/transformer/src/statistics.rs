@@ -1,12 +1,13 @@
 use lazy_static::lazy_static;
 use prometheus::{
-    register_histogram, register_int_gauge, Encoder, Histogram, IntGauge, TextEncoder,
+    register_histogram_vec, register_int_gauge, Encoder, HistogramVec, IntGauge, TextEncoder,
 };
 
 lazy_static! {
-    pub static ref CONVERSION_TIME: Histogram = register_histogram!(
+    pub static ref CONVERSION_TIME: HistogramVec = register_histogram_vec!(
         "transformer_conversion_time",
         "Time taken for conversions",
+        &["format"],
         vec![
             0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0,
             50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0, 100.0, 120.0, 140.0, 160.0,

@@ -126,6 +126,7 @@ pub fn api_handler(
                                     &body.content_type,
                                     &body.handler_name.as_str(),
                                     &body.project_name.as_str(),
+                                    body.project_unique_id.to_string(),
                                     &body.mount_point_name.as_str(),
                                     &body.url.as_str(),
                                 )

@@ -17,12 +17,26 @@ use url::Url;
 
 const LOGIN_TEMPLATE: &str = include_str!("../../templates/login.html.handlebars");
 const LIMIT_REACHED_TEMPLATE: &str = include_str!("../../templates/limit-reached.html.handlebars");
+pub const ACCESS_DENIED_TEMPLATE: &str =
+    include_str!("../../templates/access-denied.html.handlebars");
 
 #[derive(Serialize, Clone, Debug)]
 struct ProviderInfo {
     name: String,
     display_name: String,
     link: String,
+}
+
+pub fn render_access_denied(redirect_to: String) -> String {
+    let handlebars = Handlebars::new();
+
+    let rendering_data = json!({
+        "try_again_link": redirect_to,
+    });
+
+    handlebars
+        .render_template(ACCESS_DENIED_TEMPLATE, &rendering_data)
+        .unwrap()
 }
 
 pub fn render_limit_reached() -> String {
