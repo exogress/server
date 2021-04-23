@@ -516,7 +516,7 @@ impl Cache {
 
         tokio::fs::copy(temp_file_path, storage_path).await?;
 
-        crate::statistics::EDGE_CACHE_REQUESTS_SAVED.inc_by(original_file_size.into());
+        crate::statistics::EDGE_CACHE_REQUESTS_SAVED_BYTES.inc_by(original_file_size.into());
 
         Ok(())
     }
@@ -683,9 +683,7 @@ impl Cache {
         if let Some(variation_result) = maybe_variation {
             let variation: CacheItem = variation_result.map_err(|e| anyhow!("{}", e))?;
 
-            // at this point we are sure that vary header math
-            info!("found matched vary header. will serve from cache");
-            info!("variation = {:?}", variation);
+            // at this point we are sure that vary header match
 
             let id = variation
                 .id
@@ -751,14 +749,10 @@ impl Cache {
             let mut conditional_response_matches = false;
             if !req_if_none_match.is_empty() {
                 if let Some(stored_etag) = maybe_stored_etag {
-                    if req_if_none_match.iter().any(|provided_etag| {
-                        info!(
-                            "Compare stored_etag {} with if_non_match {}",
-                            stored_etag, provided_etag
-                        );
-                        stored_etag.weak_eq(provided_etag)
-                    }) {
-                        info!("etag matches the cached version - send non-modified");
+                    if req_if_none_match
+                        .iter()
+                        .any(|provided_etag| stored_etag.weak_eq(provided_etag))
+                    {
                         conditional_response_matches = true;
                     }
                 }
@@ -795,8 +789,11 @@ impl Cache {
 
             if conditional_response_matches {
                 let mut conditional_resp = Response::new(hyper::Body::empty());
-                info!("respond not-modified from cache on conditional response");
                 *conditional_resp.status_mut() = StatusCode::NOT_MODIFIED;
+
+                crate::statistics::EDGE_CACHE_HIT
+                    .with_label_values(&["not_modified"])
+                    .inc();
 
                 return Ok(Some(CacheResponse {
                     conditional: Some(conditional_resp),
@@ -806,9 +803,10 @@ impl Cache {
                 }));
             }
 
-            info!("served from cache!");
-
-            crate::statistics::EDGE_CACHE_REQUESTS_SERVED.inc_by(original_file_size.into());
+            crate::statistics::EDGE_CACHE_REQUESTS_SERVED_BYTES.inc_by(original_file_size.into());
+            crate::statistics::EDGE_CACHE_HIT
+                .with_label_values(&["full"])
+                .inc();
 
             if original_file_size > 0 {
                 resp.headers_mut()
@@ -823,6 +821,8 @@ impl Cache {
                 full_content_len: original_file_size as usize,
             }))
         } else {
+            crate::statistics::EDGE_CACHE_MISS.inc();
+
             Ok(None)
         }
     }

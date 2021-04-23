@@ -20,10 +20,20 @@ lazy_static! {
         "Local cache didn't have enough of space to save content"
     )
     .unwrap();
-    pub static ref EDGE_CACHE_REQUESTS_SERVED: IntCounter =
-        register_int_counter!("gw_edge_cache_requests_served", "Local cache served bytes").unwrap();
-    pub static ref EDGE_CACHE_REQUESTS_SAVED: IntCounter =
-        register_int_counter!("gw_edge_cache_requests_saved", "Local cache saved bytes").unwrap();
+    pub static ref EDGE_CACHE_REQUESTS_SERVED_BYTES: IntCounter = register_int_counter!(
+        "gw_edge_cache_requests_served_bytes",
+        "Local cache served bytes"
+    )
+    .unwrap();
+    pub static ref EDGE_CACHE_REQUESTS_SAVED_BYTES: IntCounter = register_int_counter!(
+        "gw_edge_cache_requests_saved_bytes",
+        "Local cache saved bytes"
+    )
+    .unwrap();
+    pub static ref EDGE_CACHE_HIT: IntCounterVec =
+        register_int_counter_vec!("gw_edge_cache_hit", "Local cache hit", &["response"]).unwrap();
+    pub static ref EDGE_CACHE_MISS: IntCounter =
+        register_int_counter!("gw_edge_cache_miss", "Local cache hit").unwrap();
     pub static ref EDGE_CACHE_SIZE: Gauge =
         register_gauge!("gw_edge_cache_size", "Local cache size in bytes").unwrap();
     pub static ref EDGE_CACHE_MAX_SIZE: Gauge =
