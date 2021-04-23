@@ -328,6 +328,7 @@ impl MongoDbClient {
         content_type: &str,
         handler_name: &str,
         project_name: &str,
+        project_unique_id: String,
         mount_point_name: &str,
         url: &str,
     ) -> anyhow::Result<ProcessResponse> {
@@ -354,6 +355,7 @@ impl MongoDbClient {
                         "content_type": content_type.clone(),
                         "handler_name": handler_name.to_string(),
                         "project_name": project_name.to_string(),
+                        "project_unique_id": project_unique_id,
                         "mount_point_name": mount_point_name.to_string(),
                         "url":  url.to_string(),
                     },
