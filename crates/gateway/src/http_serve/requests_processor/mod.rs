@@ -338,7 +338,7 @@ impl RequestsProcessor {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    crate::statistics::CACHE_ERRORS
+                    crate::statistics::EDGE_CACHE_ERRORS
                         .with_label_values(&[crate::statistics::CACHE_ACTION_READ])
                         .inc();
                     warn!("Error reading data from cache: {}", e);
@@ -707,7 +707,7 @@ fn save_to_cache(
                     .await;
 
                 if let Err(e) = cached_response {
-                    crate::statistics::CACHE_ERRORS
+                    crate::statistics::EDGE_CACHE_ERRORS
                         .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
                         .inc();
                     error!("error saving to cache: {}", e);

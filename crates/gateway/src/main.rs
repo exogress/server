@@ -442,6 +442,8 @@ fn main() {
         .parse()
         .expect("bad bytes value value");
 
+    crate::statistics::EDGE_CACHE_MAX_SIZE.set(disk_cache_max_size.get_bytes() as f64);
+
     let individual_tls_cert_path = matches.value_of("individual_tls_cert_path").unwrap();
     let individual_tls_key_path = matches.value_of("individual_tls_key_path").unwrap();
 

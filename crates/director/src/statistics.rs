@@ -13,9 +13,9 @@ lazy_static! {
         linear_buckets(50.0, 50.0, 30).unwrap()
     )
     .unwrap();
-    pub static ref NUM_PROXIED_REQUESTS: IntCounterVec = register_int_counter_vec!(
-        "director_requests",
-        "Number of requests processed",
+    pub static ref NUM_PROXIED_CONNECTIONS: IntCounterVec = register_int_counter_vec!(
+        "director_proxied_connections",
+        "Number of connections proxied",
         &["successful_retry", "max_retries", "retries"]
     )
     .unwrap();

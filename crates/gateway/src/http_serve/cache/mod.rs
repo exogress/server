@@ -343,7 +343,7 @@ impl Cache {
 
     fn get_overall_used(&self) -> Byte {
         let space_used = self.space_used.load(Ordering::Relaxed);
-        crate::statistics::CACHE_SIZE.set(space_used as f64);
+        crate::statistics::EDGE_CACHE_SIZE.set(space_used as f64);
         Byte::from_bytes(space_used.into())
     }
 
@@ -516,7 +516,7 @@ impl Cache {
 
         tokio::fs::copy(temp_file_path, storage_path).await?;
 
-        crate::statistics::CACHE_SAVED.inc_by(original_file_size.into());
+        crate::statistics::EDGE_CACHE_REQUESTS_SAVED.inc_by(original_file_size.into());
 
         Ok(())
     }
@@ -808,7 +808,7 @@ impl Cache {
 
             info!("served from cache!");
 
-            crate::statistics::CACHE_SERVED.inc_by(original_file_size.into());
+            crate::statistics::EDGE_CACHE_REQUESTS_SERVED.inc_by(original_file_size.into());
 
             if original_file_size > 0 {
                 resp.headers_mut()
