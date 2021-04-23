@@ -3,7 +3,9 @@ use crate::{
 };
 use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
-use exogress_common::entities::{AccountUniqueId, HandlerName, MountPointName, ProjectName, Ulid};
+use exogress_common::entities::{
+    AccountUniqueId, HandlerName, MountPointName, ProjectName, ProjectUniqueId, Ulid,
+};
 use exogress_server_common::transformer::{
     BucketProcessedStored, ProcessResponse, ProcessedFormat, ProcessedFormatResult,
     ProcessedFormatSucceeded,
@@ -75,6 +77,7 @@ pub struct QueuedRequest {
     pub url: String,
     pub mount_point_name: MountPointName,
     pub project_name: ProjectName,
+    pub project_unique_id: ProjectUniqueId,
     pub handler_name: HandlerName,
 
     #[serde(default)]
@@ -103,6 +106,7 @@ pub struct Processed {
     pub url: String,
     pub mount_point_name: MountPointName,
     pub project_name: ProjectName,
+    pub project_unique_id: ProjectUniqueId,
     pub handler_name: HandlerName,
 
     pub account_unique_id: AccountUniqueId,
@@ -412,6 +416,7 @@ impl MongoDbClient {
             url: queued.url.clone(),
             mount_point_name: queued.mount_point_name.clone(),
             project_name: queued.project_name.clone(),
+            project_unique_id: queued.project_unique_id.clone(),
             handler_name: queued.handler_name.clone(),
             content_hash: queued.content_hash.clone(),
             account_unique_id: queued.account_unique_id,
