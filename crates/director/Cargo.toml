@@ -31,7 +31,7 @@ itertools = "0.10.0"
 tls-parser = "0.10"
 nom = { version = "^6.1", features = ["funty"] }
 seahash = "4.1"
-prometheus = "0.11.0"
+prometheus = "0.12.0"
 lazy_static = "1.4.0"
 trust-dns-resolver = "0.20"
 trust-dns-server = { version = "0.20", features = ["dnssec-ring"] }

@@ -134,7 +134,9 @@ impl Processor {
 
                     info!("start conversion");
 
-                    let started_at = crate::statistics::CONVERSION_TIME.start_timer();
+                    let started_at = crate::statistics::CONVERSION_TIME
+                        .with_label_values(&["webp"])
+                        .start_timer();
 
                     // convert the body
                     let webp_result = crate::magick::convert(
@@ -146,6 +148,13 @@ impl Processor {
                         "image/webp",
                     )
                     .await;
+
+                    started_at.observe_duration();
+
+                    let started_at = crate::statistics::CONVERSION_TIME
+                        .with_label_values(&["avif"])
+                        .start_timer();
+
                     let avif_result = crate::magick::convert(
                         conversion_threads,
                         conversion_memory,
@@ -155,7 +164,6 @@ impl Processor {
                         "image/avif",
                     )
                     .await;
-
                     started_at.observe_duration();
 
                     info!("finish conversion");
