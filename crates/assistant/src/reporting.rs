@@ -1,3 +1,4 @@
+use chrono::Timelike;
 use core::cmp;
 use exogress_server_common::assistant::StatisticsReport;
 use itertools::Itertools;
@@ -48,7 +49,6 @@ impl MongoDbClient {
         gw_location: &str,
     ) -> Result<(), mongodb::error::Error> {
         let usage_counters = self.db.collection::<bson::Document>("usage_counters");
-        let usage_counters_daily = self.db.collection::<bson::Document>("usage_counters_daily");
         let accounts = self.db.collection::<bson::Document>("accounts");
 
         match &report {
@@ -56,12 +56,16 @@ impl MongoDbClient {
                 let grouped = records
                     .iter()
                     .map(|rec| {
+                        let start_of_hour = rec
+                            .flushed_at
+                            .with_minute(0)
+                            .unwrap()
+                            .with_second(0)
+                            .unwrap()
+                            .with_nanosecond(0)
+                            .unwrap();
                         (
-                            (
-                                rec.account_unique_id,
-                                rec.project_unique_id,
-                                rec.flushed_at.date(),
-                            ),
+                            (rec.account_unique_id, rec.project_unique_id, start_of_hour),
                             (
                                 rec.flushed_at,
                                 rec.tunnel_bytes_gw_tx,
@@ -89,7 +93,7 @@ impl MongoDbClient {
                     );
 
                 for (
-                    (account_unique_id, project_unique_id, date),
+                    (account_unique_id, project_unique_id, start_of_hour),
                     (
                         max_time,
                         tunnel_bytes_gw_tx,
@@ -104,7 +108,9 @@ impl MongoDbClient {
                     let query = bson::doc! {
                         "account_unique_id": account_unique_id.to_string(),
                         "project_unique_id": project_unique_id.to_string(),
-                        "date": date.and_hms(0,0,0),
+                        "gw_hostname": gw_hostname.to_string(),
+                        "gw_location": gw_location.to_string(),
+                        "start_of_period": start_of_hour,
                     };
                     let op = bson::doc! {
                         "$inc": {
@@ -117,7 +123,7 @@ impl MongoDbClient {
                         }
                     };
 
-                    usage_counters_daily
+                    usage_counters
                         .update_one(
                             query,
                             op,
@@ -144,12 +150,17 @@ impl MongoDbClient {
                 let grouped = records
                     .iter()
                     .map(|rec| {
+                        let start_of_hour = rec
+                            .flushed_at
+                            .with_minute(0)
+                            .unwrap()
+                            .with_second(0)
+                            .unwrap()
+                            .with_nanosecond(0)
+                            .unwrap();
+
                         (
-                            (
-                                rec.account_unique_id,
-                                rec.project_unique_id,
-                                rec.flushed_at.date(),
-                            ),
+                            (rec.account_unique_id, rec.project_unique_id, start_of_hour),
                             (rec.rules_processed, rec.requests_processed),
                         )
                     })
@@ -157,14 +168,16 @@ impl MongoDbClient {
                     .fold_first(|(a1, a2), _k, (v1, v2)| (a1 + v1, a2 + v2));
 
                 for (
-                    (account_unique_id, project_unique_id, date),
+                    (account_unique_id, project_unique_id, start_of_hour),
                     (rules_processed, requests_processed),
                 ) in grouped
                 {
                     let query = bson::doc! {
                         "account_unique_id": account_unique_id.to_string(),
                         "project_unique_id": project_unique_id.to_string(),
-                        "date": date.and_hms(0,0,0),
+                        "gw_hostname": gw_hostname.to_string(),
+                        "gw_location": gw_location.to_string(),
+                        "start_of_period": start_of_hour,
                     };
                     let op = bson::doc! {
                         "$inc": {
@@ -173,7 +186,7 @@ impl MongoDbClient {
                         }
                     };
 
-                    usage_counters_daily
+                    usage_counters
                         .update_one(
                             query,
                             op,
@@ -184,45 +197,6 @@ impl MongoDbClient {
             }
             _ => unimplemented!(),
         };
-
-        let datas = match &report {
-            StatisticsReport::Traffic { records } => records
-                .iter()
-                .map(|rec| {
-                    bson::doc! {
-                        "account_unique_id": rec.account_unique_id.to_string(),
-                        "project_unique_id": rec.project_unique_id.to_string(),
-                        "gw_hostname": gw_hostname,
-                        "gw_location": gw_location,
-                        "start_of_period": rec.flushed_at,
-                        "tunnel_bytes_gw_tx": rec.tunnel_bytes_gw_tx,
-                        "tunnel_bytes_gw_rx": rec.tunnel_bytes_gw_rx,
-                        "public_bytes_gw_tx": rec.public_bytes_gw_tx,
-                        "public_bytes_gw_rx": rec.public_bytes_gw_rx,
-                        "https_bytes_gw_tx": rec.https_bytes_gw_tx,
-                        "https_bytes_gw_rx": rec.https_bytes_gw_rx
-                    }
-                })
-                .collect::<Vec<_>>(),
-            StatisticsReport::Rules { records } => records
-                .iter()
-                .map(|rec| {
-                    bson::doc! {
-                        "account_unique_id": rec.account_unique_id.to_string(),
-                        "project_unique_id": rec.project_unique_id.to_string(),
-                        "gw_hostname": gw_hostname,
-                        "gw_location": gw_location,
-                        "start_of_period": rec.flushed_at,
-                        "rules_processed": rec.rules_processed,
-                        "requests_processed": rec.requests_processed
-                    }
-                })
-                .collect::<Vec<_>>(),
-            _ => unimplemented!(),
-        };
-
-        usage_counters.insert_many(datas, None).await?;
-
         Ok(())
     }
 }

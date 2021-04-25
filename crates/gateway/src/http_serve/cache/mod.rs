@@ -732,15 +732,11 @@ impl Cache {
 
             self.mark_lru_used(id).await?;
 
-            error!("request_headers = {:?}", request_headers);
-
             let req_if_none_match: Vec<EntityTag> = request_headers
                 .get_all(IF_NONE_MATCH)
                 .iter()
                 .filter_map(|v| v.to_str().ok().and_then(|r| r.parse().ok()))
                 .collect();
-
-            error!("req_if_none_match = {:?}", req_if_none_match);
 
             let req_last_modified = request_headers
                 .get(IF_MODIFIED_SINCE)
@@ -763,7 +759,6 @@ impl Cache {
                     // If user provided if-modified-since header, which is equal or in the future
                     // compared to our cache - respond with not-modified
                     if if_modified_since >= stored_cached_last_modified {
-                        info!("if-modified-since matches the cached version - send not-modified");
                         conditional_response_matches = true;
                     }
                 }
