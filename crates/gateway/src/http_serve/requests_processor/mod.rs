@@ -65,7 +65,7 @@ use hashbrown::HashMap;
 use http::{
     header::{
         HeaderName, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, LOCATION,
-        RANGE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
+        RANGE, SET_COOKIE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
     },
     HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 };
@@ -1066,8 +1066,13 @@ pub fn cache_max_age_if_eligible(
         return None;
     }
 
-    if req.headers().get(RANGE).is_some() {
+    if req.headers().contains_key(RANGE) {
         info!("range set!");
+        return None;
+    }
+
+    if res.headers().contains_key(SET_COOKIE) {
+        info!("set-cookie set. skip caching!");
         return None;
     }
 
