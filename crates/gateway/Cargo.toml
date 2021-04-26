@@ -25,7 +25,7 @@ futures-intrusive = "0.4"
 futures-util = { version = "0.3", features = ["io"] }
 globset = { version = "0.4.5", features = ["serde1"] }
 handlebars = "3.5.0"
-hashbrown = { version = "0.9", features = ["serde"] }
+hashbrown = { version = "0.11", features = ["serde"] }
 hex = "0.4.2"
 http = "0.2.1"
 http-serde = "1.0.1"

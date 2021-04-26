@@ -11,7 +11,7 @@ chrono = "0.4.11"
 clap = "2.33.3"
 futures = "0.3"
 futures-util = { version = "0.3", features = ["io"] }
-hashbrown = { version = "0.9", features = ["serde"] }
+hashbrown = { version = "0.11", features = ["serde"] }
 itertools = "0.10.0"
 lazy_static = "1.4.0"
 maplit = "1.0.2"
