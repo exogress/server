@@ -145,6 +145,7 @@ pub async fn server(
     app_stop_wait: AppStopWait,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
     public_gw_base_url: Url,
+    gw_location: SmolStr,
     individual_hostname: SmolStr,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
@@ -391,25 +392,27 @@ pub async fn server(
     });
 
     let http_make_service = make_service_fn::<_, AcceptedIo<_>, _>({
-        shadow_clone!(webapp_client);
+        shadow_clone!(webapp_client, gw_location);
 
         move |socket| {
-            shadow_clone!(webapp_client);
+            shadow_clone!(webapp_client, gw_location);
 
             let _local_addr = socket.local_addr();
             let _remote_addr = socket.remote_addr();
 
             async move {
                 Ok::<_, hyper::Error>(service_fn({
-                    shadow_clone!(webapp_client);
+                    shadow_clone!(webapp_client, gw_location);
 
                     move |req: Request<Body>| {
-                        shadow_clone!(webapp_client);
+                        shadow_clone!(webapp_client, gw_location);
 
                         async move {
                             let mut res = Response::new(Body::empty());
                             res.headers_mut()
                                 .insert("server", "exogress".parse().unwrap());
+                            res.headers_mut()
+                                .insert("x-exg-location", gw_location.parse().unwrap());
 
                             if req.uri().path() == "/_exg/health" {
                                 *res.body_mut() = hyper::Body::from("Healthy");

@@ -211,9 +211,6 @@ impl RequestsProcessor {
         self.rules_counter
             .register_request(&self.account_unique_id, &self.project_unique_id);
 
-        res.headers_mut()
-            .insert("x-exg-location", self.gw_location.parse().unwrap());
-
         let mut processed_by = None;
         let original_req_headers = req.headers().clone();
         for handler in &self.ordered_handlers {
@@ -490,6 +487,8 @@ impl RequestsProcessor {
 
                 res.headers_mut()
                     .insert("server", HeaderValue::from_static("exogress"));
+                res.headers_mut()
+                    .insert("x-exg-location", self.gw_location.parse().unwrap());
 
                 if !self.cache.is_enough_space() {
                     crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
@@ -605,6 +604,8 @@ impl RequestsProcessor {
                 headers.insert(CONTENT_TYPE, TEXT_HTML_UTF_8.to_string().parse().unwrap());
                 headers.insert(CONTENT_LENGTH, body.len().into());
                 headers.insert("server", HeaderValue::from_static("exogress"));
+                res.headers_mut()
+                    .insert("x-exg-location", self.gw_location.parse().unwrap());
             }
             *res.body_mut() = Body::from(body);
         }

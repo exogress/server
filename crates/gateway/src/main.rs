@@ -909,6 +909,7 @@ fn main() {
             app_stop_wait,
             tls_gw_common,
             public_base_url,
+            gw_location.clone(),
             individual_hostname.into(),
             google_oauth2_client,
             github_oauth2_client,
