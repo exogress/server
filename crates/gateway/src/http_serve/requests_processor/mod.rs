@@ -211,6 +211,9 @@ impl RequestsProcessor {
         self.rules_counter
             .register_request(&self.account_unique_id, &self.project_unique_id);
 
+        res.headers_mut()
+            .insert("x-exg-location", self.gw_location.parse().unwrap());
+
         let mut processed_by = None;
         let original_req_headers = req.headers().clone();
         for handler in &self.ordered_handlers {
