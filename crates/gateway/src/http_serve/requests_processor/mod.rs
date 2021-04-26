@@ -833,7 +833,7 @@ async fn trigger_transformation_if_required(
                                 );
                                 resp.headers_mut().insert(
                                     ETAG,
-                                    EntityTag::from_hash(cloned_res.content_hash.as_ref())
+                                    EntityTag::from_data(cloned_res.content_hash.as_ref())
                                         .to_string()
                                         .parse()
                                         .unwrap(),

@@ -410,7 +410,7 @@ impl Cache {
         if !res_headers.contains_key(ETAG) {
             res_headers.insert(
                 ETAG,
-                EntityTag::from_hash(content_hash.as_ref())
+                EntityTag::from_data(content_hash.as_ref())
                     .to_string()
                     .parse()
                     .unwrap(),
