@@ -609,7 +609,13 @@ fn main() {
             dbip
         });
 
-        let cache = Cache::new(cache_dir, disk_cache_max_size)
+        let gw_location: SmolStr = matches
+            .value_of("location")
+            .expect("Please provide --location")
+            .to_string()
+            .into();
+
+        let cache = Cache::new(cache_dir, disk_cache_max_size, gw_location.clone())
             .await
             .expect("Failed to initialize cache");
 
@@ -675,12 +681,6 @@ fn main() {
         );
 
         let account_rules_counters = AccountCounters::new();
-
-        let gw_location: SmolStr = matches
-            .value_of("location")
-            .expect("Please provide --location")
-            .to_string()
-            .into();
 
         let api_client = Client::new(
             cache_ttl,

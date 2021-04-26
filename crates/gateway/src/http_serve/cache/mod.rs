@@ -22,6 +22,7 @@ use hyper::Body;
 use ledb::Primary;
 use pin_utils::pin_mut;
 use sha2::Digest;
+use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
 use std::{
     collections::BTreeSet,
@@ -46,6 +47,7 @@ pub struct Cache {
     in_flights: Arc<DashSet<(AccountUniqueId, String)>>,
     space_used: Arc<AtomicU32>,
     max_allowed_size: Byte,
+    gw_location: SmolStr,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -100,7 +102,11 @@ pub struct CacheItem {
 }
 
 impl Cache {
-    pub async fn new(cache_dir: PathBuf, max_size: Byte) -> Result<Cache, anyhow::Error> {
+    pub async fn new(
+        cache_dir: PathBuf,
+        max_size: Byte,
+        gw_location: SmolStr,
+    ) -> Result<Cache, anyhow::Error> {
         let cache_dir = tokio::fs::canonicalize(&cache_dir).await?;
 
         info!(
@@ -153,6 +159,7 @@ impl Cache {
             in_flights: Arc::new(Default::default()),
             space_used,
             max_allowed_size: max_size,
+            gw_location,
         };
 
         tokio::spawn({
@@ -781,6 +788,11 @@ impl Cache {
             let mut resp = Response::new(body);
             *resp.status_mut() = meta.status;
             *resp.headers_mut() = meta.headers;
+
+            resp.headers_mut()
+                .insert("server", "exogress".parse().unwrap());
+            resp.headers_mut()
+                .insert("x-exg-location", self.gw_location.parse().unwrap());
 
             if conditional_response_matches {
                 let mut conditional_resp = Response::new(hyper::Body::empty());
