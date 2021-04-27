@@ -4,7 +4,7 @@ use exogress_server_common::logging::{BodyLog, BodyStatusLog, HttpBodyLog, LogMe
 use futures::StreamExt;
 use std::{sync::Arc, time::Duration};
 
-pub fn save_body_state(
+pub fn save_body_info_to_log_message(
     body: hyper::Body,
     shared_log_message: Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     body_entry: HttpBodyLog,
@@ -123,6 +123,7 @@ impl Drop for LogMessageSendOnDrop {
                     .to_std()
                     .unwrap_or_else(|_| Duration::from_secs(0)),
             );
+            msg.set_message_string();
 
             let _ = self.send_tx.unbounded_send(msg);
         }
@@ -222,7 +223,8 @@ mod test {
 
         let body = hyper::Body::wrap_stream(chunks_stream);
 
-        let mut wrapped_body = save_body_state(body, shared_log_message.clone(), response_body);
+        let mut wrapped_body =
+            save_body_info_to_log_message(body, shared_log_message.clone(), response_body);
         mem::drop(shared_log_message);
 
         while let Some(_) = wrapped_body.next().await {}
@@ -281,7 +283,8 @@ mod test {
 
         let body = hyper::Body::wrap_stream(chunks_stream);
 
-        let mut wrapped_body = save_body_state(body, shared_log_message.clone(), response_body);
+        let mut wrapped_body =
+            save_body_info_to_log_message(body, shared_log_message.clone(), response_body);
         mem::drop(shared_log_message);
 
         while let Some(_) = wrapped_body.next().await {}

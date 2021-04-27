@@ -1,7 +1,7 @@
 use crate::{
     clients::{ClientTunnels, HttpConnector},
     http_serve::{
-        logging::{save_body_state, LogMessageSendOnDrop},
+        logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
         requests_processor::{
             helpers::{
                 add_forwarded_headers, copy_headers_from_proxy_res_to_res,
@@ -156,7 +156,7 @@ impl ResolvedStaticDir {
             .append("x-exg-proxied", "1".parse().unwrap());
         *res.status_mut() = proxy_res.status();
 
-        let instrumented_response = save_body_state(
+        let instrumented_response = save_body_info_to_log_message(
             proxy_res.into_body(),
             log_message_container.clone(),
             proxy_response_body,

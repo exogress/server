@@ -9,7 +9,7 @@ use crate::{
         cache::{Cache, HandlerChecksum},
         helpers::{clone_response_through_tempfile, ClonedResponse},
         identifier::RequestProcessingIdentifier,
-        logging::{save_body_state, LogMessageSendOnDrop},
+        logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
         requests_processor::{
             modifications::{
                 substitute_str_with_filter_matches, Replaced, ResolvedPathSegmentModify,
@@ -610,19 +610,17 @@ impl RequestsProcessor {
                 let mut log_message = log_message_container.lock();
 
                 log_message.as_mut().status_code = Some(res.status().as_u16());
-
-                log_message.as_mut().set_message_string();
             };
 
             let original_response_body = mem::replace(res.body_mut(), Body::empty());
-            *res.body_mut() = save_body_state(
+            *res.body_mut() = save_body_info_to_log_message(
                 original_response_body,
                 log_message_container.clone(),
                 response_body_log,
             );
 
             let original_request_body = mem::replace(req.body_mut(), Body::empty());
-            *req.body_mut() = save_body_state(
+            *req.body_mut() = save_body_info_to_log_message(
                 original_request_body,
                 log_message_container.clone(),
                 request_body_log,

@@ -1,6 +1,6 @@
 use crate::{
     http_serve::{
-        logging::{save_body_state, LogMessageSendOnDrop},
+        logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
         requests_processor::{
             helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
             s3_bucket, HandlerInvocationResult,
@@ -100,7 +100,7 @@ impl ResolvedS3Bucket {
 
         *res.status_mut() = proxy_resp.status();
 
-        let instrumented_response = save_body_state(
+        let instrumented_response = save_body_info_to_log_message(
             mem::replace(proxy_resp.body_mut(), Body::empty()),
             log_message_container.clone(),
             proxy_response_body,

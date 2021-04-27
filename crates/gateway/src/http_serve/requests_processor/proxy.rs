@@ -28,7 +28,7 @@ use super::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
 use crate::http_serve::{
-    logging::{save_body_state, LogMessageSendOnDrop},
+    logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
     requests_processor::post_processing::ResolvedPostProcessing,
 };
 use chrono::Utc;
@@ -283,7 +283,7 @@ impl ResolvedProxy {
 
                         hyper_res
                     } else {
-                        let instrumented_request_body = save_body_state(
+                        let instrumented_request_body = save_body_info_to_log_message(
                             mem::replace(req.body_mut(), Body::empty()),
                             log_message_container.clone(),
                             proxy_request_body,
@@ -335,7 +335,7 @@ impl ResolvedProxy {
 
                     *res.status_mut() = proxy_res.status();
 
-                    let instrumented_response_body = save_body_state(
+                    let instrumented_response_body = save_body_info_to_log_message(
                         proxy_res.into_body(),
                         log_message_container.clone(),
                         proxy_response_body,

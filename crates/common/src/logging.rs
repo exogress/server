@@ -67,14 +67,14 @@ pub struct LogMessage {
 impl LogMessage {
     pub fn set_message_string(&mut self) {
         self.str = Some(format!(
-            "[{}] {} {} {} \"{} {} {}\" {} \"{}\"",
-            self.date.format("%d/%b/%Y:%H:%M:%S %z"),
-            self.mount_point,
+            "{} {} {} {} {} {} {} {} \"{}\"",
+            self.date.to_rfc3339(),
             self.gw_location,
+            self.mount_point,
             self.remote_addr,
+            self.protocol,
             self.method,
             self.url,
-            self.protocol,
             self.status_code
                 .as_ref()
                 .map(|s| s.to_string())
