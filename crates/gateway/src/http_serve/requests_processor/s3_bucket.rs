@@ -1,7 +1,10 @@
 use crate::{
-    http_serve::requests_processor::{
-        helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
-        s3_bucket, HandlerInvocationResult,
+    http_serve::{
+        logging::{save_body_state, LogMessageSendOnDrop},
+        requests_processor::{
+            helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
+            s3_bucket, HandlerInvocationResult,
+        },
     },
     public_hyper_client::MeteredHttpConnector,
 };
@@ -11,7 +14,7 @@ use exogress_common::{
     entities::{exceptions, Exception},
 };
 use exogress_server_common::logging::{
-    HandlerProcessingStep, LogMessage, ProcessingStep, S3BucketHandlerLogMessage,
+    HandlerProcessingStep, HttpBodyLog, ProcessingStep, S3BucketHandlerLogMessage,
 };
 use hashbrown::HashMap;
 use http::{Method, Request, Response};
@@ -19,7 +22,7 @@ use hyper::Body;
 use langtag::LanguageTagBuf;
 use rusty_s3::S3Action;
 use smol_str::SmolStr;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, thiserror::Error, Clone)]
 pub enum BucketError {
@@ -57,7 +60,7 @@ impl ResolvedS3Bucket {
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
             return HandlerInvocationResult::ToNextHandler;
@@ -65,12 +68,17 @@ impl ResolvedS3Bucket {
 
         let bucket = try_or_to_exception!(self.bucket.as_ref());
 
-        log_message
+        let proxy_response_body = HttpBodyLog::default();
+
+        log_message_container
+            .lock()
+            .as_mut()
             .steps
             .push(ProcessingStep::Invoked(HandlerProcessingStep::S3Bucket(
                 S3BucketHandlerLogMessage {
                     region: bucket.region().into(),
                     language: language.clone(),
+                    proxy_response_body: proxy_response_body.clone(),
                 },
             )));
 
@@ -92,7 +100,13 @@ impl ResolvedS3Bucket {
 
         *res.status_mut() = proxy_resp.status();
 
-        *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
+        let instrumented_response = save_body_state(
+            mem::replace(proxy_resp.body_mut(), Body::empty()),
+            log_message_container.clone(),
+            proxy_response_body,
+        );
+
+        *res.body_mut() = instrumented_response;
 
         HandlerInvocationResult::Responded
     }

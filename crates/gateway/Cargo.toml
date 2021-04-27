@@ -70,6 +70,7 @@ smallvec = { version = "1.6", features = ["serde"] }
 smol_str = { version = "0.1.17", features = ["serde"] }
 sodiumoxide = "0.2.6"
 stop-handle = "0.1"
+tap = "1.0.1"
 tame-gcs = "0.10"
 tame-oauth = "0.4.5"
 tempfile = "3.1.0"

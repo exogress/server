@@ -9,6 +9,7 @@ use crate::{
         cache::{Cache, HandlerChecksum},
         helpers::{clone_response_through_tempfile, ClonedResponse},
         identifier::RequestProcessingIdentifier,
+        logging::{save_body_state, LogMessageSendOnDrop},
         requests_processor::{
             modifications::{
                 substitute_str_with_filter_matches, Replaced, ResolvedPathSegmentModify,
@@ -51,7 +52,10 @@ use exogress_common::{
 use exogress_server_common::{
     crypto,
     crypto::decrypt_reader,
-    logging::{ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep},
+    logging::{
+        ExceptionProcessingStep, HttpBodyLog, LogMessage, ProcessingStep,
+        StaticResponseProcessingStep,
+    },
     presence,
     transformer::{ProcessResponse, MAX_SIZE_FOR_TRANSFORMATION},
     ContentHash,
@@ -93,7 +97,6 @@ use std::{
     io,
     net::SocketAddr,
     sync::Arc,
-    time::Instant,
 };
 use tokio::io::AsyncWriteExt;
 use trust_dns_resolver::TokioAsyncResolver;
@@ -137,7 +140,7 @@ pub struct RequestsProcessor {
     max_pop_cache_size_bytes: Byte,
     gw_location: SmolStr,
     transformer_client: TransformerClient,
-    log_messages_tx: mpsc::Sender<LogMessage>,
+    log_messages_tx: mpsc::UnboundedSender<LogMessage>,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
 }
 
@@ -150,7 +153,7 @@ impl RequestsProcessor {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         facts: Arc<Mutex<serde_json::Value>>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) {
         if let Some(db) = self.dbip.as_ref() {
             if let Ok(loc) = db.lookup::<LocationAndIsp>(remote_addr.ip()) {
@@ -328,10 +331,14 @@ impl RequestsProcessor {
                         if let Ok(Some(len)) =
                             res.headers().typed_get::<typed_headers::ContentLength>()
                         {
-                            log_message.content_len = Some(len.0);
+                            log_message_container.lock().as_mut().content_len = Some(len.0);
                         }
 
-                        log_message.steps.push(ProcessingStep::ServedFromCache);
+                        log_message_container
+                            .lock()
+                            .as_mut()
+                            .steps
+                            .push(ProcessingStep::ServedFromCache);
 
                         return;
                     }
@@ -379,7 +386,7 @@ impl RequestsProcessor {
                         local_addr,
                         remote_addr,
                         &best_language,
-                        log_message,
+                        log_message_container,
                     )
                     .await;
 
@@ -479,7 +486,7 @@ impl RequestsProcessor {
                             .resolved_variant
                             .post_processing()
                             .map(|pp| &pp.encoding),
-                        log_message,
+                        log_message_container,
                     ) {
                         warn!("Error compressing: {}", e);
                     }
@@ -530,7 +537,7 @@ impl RequestsProcessor {
         }
 
         if let Ok(Some(len)) = res.headers().typed_get::<typed_headers::ContentLength>() {
-            log_message.content_len = Some(len.0);
+            log_message_container.lock().as_mut().content_len = Some(len.0);
         }
 
         if let Some(strict_transport_security) = &self.strict_transport_security {
@@ -552,10 +559,12 @@ impl RequestsProcessor {
         remote_addr: &SocketAddr,
     ) {
         if self.is_active {
-            let started_at = Instant::now();
             let facts = Arc::new(Mutex::new(json!({})));
 
-            let mut log_message = LogMessage {
+            let response_body_log = HttpBodyLog::default();
+            let request_body_log = HttpBodyLog::default();
+
+            let log_message = LogMessage {
                 gw_location: self.gw_location.clone(),
                 project_unique_id: self.project_unique_id.clone(),
                 date: Utc::now(),
@@ -571,12 +580,21 @@ impl RequestsProcessor {
                     .get(USER_AGENT)
                     .map(|v| v.to_str().unwrap_or_default().into()),
                 status_code: None,
-                time_taken: None,
                 content_len: None,
                 steps: vec![],
                 facts: facts.clone(),
                 str: None,
+                request_body: request_body_log.clone(),
+                response_body: response_body_log.clone(),
+                started_at: Utc::now(),
+                ended_at: None,
+                time_taken_ms: None,
             };
+
+            let log_message_container = Arc::new(parking_lot::Mutex::new(
+                LogMessageSendOnDrop::new(log_message, self.log_messages_tx.clone()),
+            ));
+
             self.do_process(
                 req,
                 res,
@@ -584,19 +602,31 @@ impl RequestsProcessor {
                 local_addr,
                 remote_addr,
                 facts,
-                &mut log_message,
+                &log_message_container,
             )
             .await;
-            log_message.time_taken = Some(started_at.elapsed());
-            log_message.status_code = Some(res.status().as_u16());
 
-            log_message.set_message_string();
+            {
+                let mut log_message = log_message_container.lock();
 
-            self.log_messages_tx
-                .clone()
-                .send(log_message)
-                .await
-                .unwrap();
+                log_message.as_mut().status_code = Some(res.status().as_u16());
+
+                log_message.as_mut().set_message_string();
+            };
+
+            let original_response_body = mem::replace(res.body_mut(), Body::empty());
+            *res.body_mut() = save_body_state(
+                original_response_body,
+                log_message_container.clone(),
+                response_body_log,
+            );
+
+            let original_request_body = mem::replace(req.body_mut(), Body::empty());
+            *req.body_mut() = save_body_state(
+                original_request_body,
+                log_message_container.clone(),
+                request_body_log,
+            );
         } else {
             let body = render_limit_reached();
             {
@@ -1146,12 +1176,18 @@ impl ResolvedHandlerVariant {
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> Option<HandlerInvocationResult> {
         match self {
             ResolvedHandlerVariant::Auth(handler) => {
                 handler
-                    .try_handle_service_paths(req, res, requested_url, language, log_message)
+                    .try_handle_service_paths(
+                        req,
+                        res,
+                        requested_url,
+                        language,
+                        log_message_container,
+                    )
                     .await
             }
             _ => None,
@@ -1167,7 +1203,7 @@ impl ResolvedHandlerVariant {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         match self {
             ResolvedHandlerVariant::Proxy(proxy) => {
@@ -1180,7 +1216,7 @@ impl ResolvedHandlerVariant {
                         local_addr,
                         remote_addr,
                         language,
-                        log_message,
+                        log_message_container,
                     )
                     .await
             }
@@ -1194,22 +1230,36 @@ impl ResolvedHandlerVariant {
                         local_addr,
                         remote_addr,
                         language,
-                        log_message,
+                        log_message_container,
                     )
                     .await
             }
             ResolvedHandlerVariant::Auth(auth) => {
-                auth.invoke(req, res, requested_url, language, log_message)
+                auth.invoke(req, res, requested_url, language, log_message_container)
                     .await
             }
             ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
                 s3_bucket
-                    .invoke(req, res, requested_url, modified_url, language, log_message)
+                    .invoke(
+                        req,
+                        res,
+                        requested_url,
+                        modified_url,
+                        language,
+                        log_message_container,
+                    )
                     .await
             }
             ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
                 gcs_bucket
-                    .invoke(req, res, requested_url, modified_url, language, log_message)
+                    .invoke(
+                        req,
+                        res,
+                        requested_url,
+                        modified_url,
+                        language,
+                        log_message_container,
+                    )
                     .await
             }
             // ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
@@ -1219,7 +1269,7 @@ impl ResolvedHandlerVariant {
             // }
             ResolvedHandlerVariant::PassThrough(pass_through) => {
                 pass_through
-                    .invoke(req, res, requested_url, modified_url, log_message)
+                    .invoke(req, res, requested_url, modified_url, log_message_container)
                     .await
             }
         }
@@ -1270,9 +1320,9 @@ impl ResolvedStaticResponseAction {
         matches: Option<&HashMap<SmolStr, Matched>>,
         is_in_exception: bool,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
-        let facts = log_message.facts.clone();
+        let facts = log_message_container.lock().as_mut().facts.clone();
 
         *res = Response::new(Body::empty());
 
@@ -1295,7 +1345,7 @@ impl ResolvedStaticResponseAction {
                     true,
                     &self.rescue,
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
             Ok(static_response) => {
@@ -1308,13 +1358,17 @@ impl ResolvedStaticResponseAction {
                     data.insert(k.clone(), v.clone());
                 }
 
-                log_message.steps.push(ProcessingStep::StaticResponse(
-                    StaticResponseProcessingStep {
-                        data: static_response.data.clone(),
-                        config_name: handler.config_name.clone(),
-                        language: language.clone(),
-                    },
-                ));
+                log_message_container
+                    .lock()
+                    .as_mut()
+                    .steps
+                    .push(ProcessingStep::StaticResponse(
+                        StaticResponseProcessingStep {
+                            data: static_response.data.clone(),
+                            config_name: handler.config_name.clone(),
+                            language: language.clone(),
+                        },
+                    ));
 
                 match static_response.invoke(
                     req,
@@ -1342,7 +1396,7 @@ impl ResolvedStaticResponseAction {
                                 false,
                                 &self.rescue,
                                 &language,
-                                log_message,
+                                log_message_container,
                             )
                         } else {
                             *res.body_mut() = Body::from("Internal server error");
@@ -2055,10 +2109,12 @@ impl ResolvedHandler {
         is_in_exception: bool,
         rescues: &Vec<ResolvedRescueItem>,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
         if let &Rescueable::Exception { exception, data } = rescueable {
-            log_message
+            log_message_container
+                .lock()
+                .as_mut()
                 .steps
                 .push(ProcessingStep::Exception(ExceptionProcessingStep {
                     exception: exception.clone(),
@@ -2147,7 +2203,7 @@ impl ResolvedHandler {
                 None,
                 is_in_exception,
                 &language,
-                log_message,
+                log_message_container,
             ),
             RescueableHandleResult::NextHandler => ResolvedHandlerProcessingResult::NextHandler,
             RescueableHandleResult::UnhandledException { .. } => {
@@ -2192,7 +2248,7 @@ impl ResolvedHandler {
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
         filter_matches: HashMap<SmolStr, Matched>,
         rescues: &Vec<ResolvedRescueItem>,
         on_response: &Vec<OnResponse>,
@@ -2221,7 +2277,7 @@ impl ResolvedHandler {
                                     false,
                                     rescues,
                                     &language,
-                                    log_message,
+                                    log_message_container,
                                 );
                             }
                         }
@@ -2238,7 +2294,7 @@ impl ResolvedHandler {
                     false,
                     rescues,
                     &language,
-                    log_message,
+                    log_message_container,
                 )
             }
             HandlerInvocationResult::ToNextHandler => ResolvedHandlerProcessingResult::NextHandler,
@@ -2255,7 +2311,7 @@ impl ResolvedHandler {
                     false,
                     rescues,
                     &language,
-                    log_message,
+                    log_message_container,
                 )
             }
         }
@@ -2271,11 +2327,11 @@ impl ResolvedHandler {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
         if let Some(invocation_result) = self
             .resolved_variant
-            .try_handle_service_paths(req, res, requested_url, language, log_message)
+            .try_handle_service_paths(req, res, requested_url, language, log_message_container)
             .await
         {
             return self.resolve_handler_invocation_result(
@@ -2284,7 +2340,7 @@ impl ResolvedHandler {
                 res,
                 requested_url,
                 language,
-                log_message,
+                log_message_container,
                 Default::default(),
                 &self.catches,
                 &Default::default(),
@@ -2327,7 +2383,7 @@ impl ResolvedHandler {
                             false,
                             &action.rescues(),
                             &language,
-                            log_message,
+                            log_message_container,
                         );
                     }
                     Ok(replaced) => replaced,
@@ -2376,7 +2432,7 @@ impl ResolvedHandler {
                     false,
                     &action.rescues(),
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
         }
@@ -2404,7 +2460,7 @@ impl ResolvedHandler {
                     false,
                     &action.rescues(),
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
         }
@@ -2421,7 +2477,7 @@ impl ResolvedHandler {
                         local_addr,
                         remote_addr,
                         language,
-                        log_message,
+                        log_message_container,
                     )
                     .await;
 
@@ -2431,7 +2487,7 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     language,
-                    log_message,
+                    log_message_container,
                     filter_matches,
                     rescue,
                     response_modification,
@@ -2450,7 +2506,7 @@ impl ResolvedHandler {
                     false,
                     &self.catches,
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
             ResolvedRuleAction::Respond(action) => {
@@ -2463,7 +2519,7 @@ impl ResolvedHandler {
                     Some(&filter_matches),
                     false,
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
         }
@@ -2676,7 +2732,7 @@ impl RequestsProcessor {
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
         public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
-        log_messages_tx: mpsc::Sender<LogMessage>,
+        log_messages_tx: mpsc::UnboundedSender<LogMessage>,
         gw_location: &str,
         cache: Cache,
         presence_client: presence::Client,
@@ -2723,7 +2779,7 @@ impl RequestsProcessor {
             .map(move |(config_name, configs)| {
                 let entry: &ConfigData = &configs
                     .into_iter()
-                    .map(|entry| (entry.instance_ids.len(), entry))
+                    .map(|entry| (entry.instances.len(), entry))
                     .sorted_by(|(left, _), (right, _)| left.cmp(&right).reverse())
                     .into_iter()
                     .next() //keep only revision with largest number of instances
@@ -2732,7 +2788,7 @@ impl RequestsProcessor {
 
                 let config = &entry.config;
                 let config_revision = &entry.revision;
-                let instance_ids = entry.instance_ids.clone();
+                let instances = entry.instances.clone();
                 let active_profile = entry.active_profile.clone();
 
                 let upstreams = &config.upstreams;
@@ -2753,7 +2809,7 @@ impl RequestsProcessor {
                                 Some(config_name.clone()),
                                 Some(config_revision.clone()),
                                 Some(upstreams.clone()),
-                                Some(instance_ids.clone()),
+                                Some(instances.clone()),
                                 Some(active_profile.clone()),
                                 mp,
                             ),
@@ -2795,13 +2851,11 @@ impl RequestsProcessor {
             maybe_identity: maybe_identity.clone(),
         });
 
-        for (
-            _mp_name,
-            (config_name, config_revision, upstreams, instance_ids, active_profile, mp),
-        ) in grouped_mount_points.into_iter()
+        for (_mp_name, (config_name, config_revision, upstreams, instances, active_profile, mp)) in
+            grouped_mount_points.into_iter()
         {
             shadow_clone!(
-                instance_ids,
+                instances,
                 project_rescue,
                 jwt_ecdsa,
                 mount_point_fqdn,
@@ -2913,12 +2967,22 @@ impl RequestsProcessor {
                                         },
                                         config: static_dir,
                                         handler_name: handler_name.clone(),
-                                        instance_ids: {
+                                        instances: instances
+                                            .as_ref()
+                                            .expect("try to access instances on project-level config")
+                                            .iter()
+                                            .map(|(instance_id, instance_info)| {
+                                                (instance_id.clone(), instance_info.labels.clone())
+                                            })
+                                            .collect(),
+                                        balancer: {
                                             let mut balancer = SmoothWeight::<InstanceId>::new();
-                                            let instance_ids = instance_ids
+
+                                            let instance_ids = instances
                                                 .as_ref()
                                                 .expect("[BUG] try to access instance_ids on project-level config")
                                                 .keys();
+
                                             for instance_id in instance_ids {
                                                 balancer.add(instance_id.clone(), 1);
                                             }
@@ -2966,15 +3030,22 @@ impl RequestsProcessor {
                                             )
                                             .get(&proxy.upstream)
                                             .cloned()?,
-                                        instance_is: instance_ids.as_ref().map(|ids| ids.keys().cloned().collect()).unwrap_or_default(),
+                                        instances: instances
+                                            .as_ref()
+                                            .expect("[BUG] try to access instances on project-level config")
+                                            .iter()
+                                            .map(|(instance_id, instance_info)| {
+                                                (*instance_id, instance_info.labels.clone())
+                                            })
+                                            .collect(),
                                         balancer: {
                                             let mut balancer = SmoothWeight::<InstanceId>::new();
-                                            let instance_ids = instance_ids
+                                            let instances = instances
                                                 .as_ref()
                                                 .expect("[BUG] try to access instance_ids on project-level config")
                                                 .iter();
-                                            for (instance_id, health_status) in instance_ids {
-                                                if health_status.get(&proxy.upstream) == Some(&true) {
+                                            for (instance_id, instance_info) in instances {
+                                                if instance_info.upstreams.get(&proxy.upstream) == Some(&true) {
                                                     balancer.add(instance_id.clone(), 1);
                                                 }
                                             }

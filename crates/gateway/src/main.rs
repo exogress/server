@@ -657,7 +657,7 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
-        let (log_messages_tx, log_messages_rx) = mpsc::channel(16536);
+        let (log_messages_tx, log_messages_rx) = mpsc::unbounded();
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (public_counters_tx, public_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);

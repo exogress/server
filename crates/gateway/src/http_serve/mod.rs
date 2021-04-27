@@ -5,6 +5,7 @@ mod director;
 pub mod handle;
 mod helpers;
 mod identifier;
+mod logging;
 mod requests_processor;
 mod tempfile_stream;
 mod templates;

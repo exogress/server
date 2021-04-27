@@ -1,20 +1,33 @@
-use chrono::serde::ts_milliseconds;
+use chrono::{serde::ts_milliseconds, DateTime, Utc};
 use exogress_common::entities::{
-    AccountUniqueId, ConfigName, Exception, InstanceId, MountPointName, ProjectName,
-    ProjectUniqueId, SmolStr, Upstream,
+    AccountUniqueId, ConfigName, Exception, InstanceId, LabelName, LabelValue, MountPointName,
+    ProjectName, ProjectUniqueId, SmolStr, Upstream,
 };
 use hashbrown::HashMap;
 use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
-use serde_with::{serde_as, DurationSecondsWithFrac};
+use serde_with::{serde_as, DurationMilliSecondsWithFrac};
 use std::{net::IpAddr, sync::Arc, time::Duration};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct HttpBodyLog(pub Arc<parking_lot::Mutex<Option<BodyLog>>>);
+
+impl HttpBodyLog {
+    pub fn is_none(&self) -> bool {
+        self.0.lock().is_none()
+    }
+}
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogMessage {
     pub gw_location: SmolStr,
+
+    // Date is a system fields. This format should be kept
     #[serde(with = "ts_milliseconds")]
     pub date: chrono::DateTime<chrono::Utc>,
+
     pub remote_addr: IpAddr,
 
     pub account_unique_id: AccountUniqueId,
@@ -30,9 +43,6 @@ pub struct LogMessage {
 
     pub status_code: Option<u16>,
 
-    #[serde_as(as = "Option<DurationSecondsWithFrac>")]
-    pub time_taken: Option<Duration>,
-
     pub content_len: Option<u64>,
 
     pub steps: Vec<ProcessingStep>,
@@ -40,6 +50,18 @@ pub struct LogMessage {
     pub facts: Arc<Mutex<serde_json::Value>>,
 
     pub str: Option<String>,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub request_body: HttpBodyLog,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub response_body: HttpBodyLog,
+
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+
+    #[serde_as(as = "Option<DurationMilliSecondsWithFrac>")]
+    pub time_taken_ms: Option<Duration>,
 }
 
 impl LogMessage {
@@ -148,30 +170,94 @@ pub enum HandlerProcessingStep {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StaticDirHandlerLogMessage {
-    pub instance_id: InstanceId,
     pub config_name: ConfigName,
     pub language: Option<LanguageTagBuf>,
+
+    pub attempts: Vec<ProxyAttemptLogMessage>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InstanceLog {
+    pub instance_id: InstanceId,
+    pub labels: HashMap<LabelName, LabelValue>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProxyAttemptLogMessage {
+    pub attempt: u8,
+
+    pub attempted_at: DateTime<Utc>,
+
+    pub instance: InstanceLog,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub proxy_request_body: HttpBodyLog,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub proxy_response_body: HttpBodyLog,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum ProtocolUpgrade {
+    #[serde(rename = "websocket")]
+    WebSocket,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProxyHandlerLogMessage {
     pub upstream: Upstream,
-    pub instance_id: InstanceId,
     pub config_name: ConfigName,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<ProtocolUpgrade>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<LanguageTagBuf>,
+
+    pub attempts: Vec<ProxyAttemptLogMessage>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+#[serde(tag = "status")]
+pub enum BodyStatusLog {
+    #[serde(rename = "transferred")]
+    Transferred,
+    #[serde(rename = "cancelled")]
+    Cancelled { error: String },
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BodyLog {
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+
+    #[serde_as(as = "DurationMilliSecondsWithFrac")]
+    pub time_taken_ms: Duration,
+    pub transferred_bytes: u32,
+
+    pub bytes_per_sec: f32,
+
+    #[serde(flatten)]
+    pub status: BodyStatusLog,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct S3BucketHandlerLogMessage {
     pub region: SmolStr,
     pub language: Option<LanguageTagBuf>,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub proxy_response_body: HttpBodyLog,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GcsBucketHandlerLogMessage {
     pub bucket: SmolStr,
     pub language: Option<LanguageTagBuf>,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub proxy_response_body: HttpBodyLog,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

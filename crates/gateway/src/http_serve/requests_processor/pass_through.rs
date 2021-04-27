@@ -1,7 +1,9 @@
-use crate::http_serve::requests_processor::HandlerInvocationResult;
-use exogress_server_common::logging::LogMessage;
+use crate::http_serve::{
+    logging::LogMessageSendOnDrop, requests_processor::HandlerInvocationResult,
+};
 use http::{Request, Response};
 use hyper::Body;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct ResolvedPassThrough {}
@@ -13,7 +15,7 @@ impl ResolvedPassThrough {
         _res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
         _rebased_url: &http::uri::Uri,
-        _log_message: &mut LogMessage,
+        _log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         HandlerInvocationResult::ToNextHandler
     }

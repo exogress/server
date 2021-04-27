@@ -41,7 +41,11 @@ bytes = "1.0.1"
 rand = "0.8.3"
 mime = "0.3.16"
 
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "config-core", "signaling"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "config-core", "signaling", "common-utils"], default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "test-util"] }
+
 
 [features]
 crypto = ["sodiumoxide", "tokio-util", "tokio", "async-stream"]

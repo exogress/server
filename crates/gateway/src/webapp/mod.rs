@@ -16,8 +16,8 @@ use exogress_common::{
         ClientConfig, ClientConfigRevision, ProjectConfig, Scope,
     },
     entities::{
-        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
-        ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
+        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, LabelName, LabelValue,
+        MountPointName, ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
     },
 };
 use exogress_server_common::{logging::LogMessage, presence};
@@ -61,7 +61,7 @@ pub struct Client {
     gw_location: SmolStr,
 
     public_gw_base_url: Url,
-    log_messages_tx: mpsc::Sender<LogMessage>,
+    log_messages_tx: mpsc::UnboundedSender<LogMessage>,
 
     rules_counters: AccountCounters,
 
@@ -183,8 +183,14 @@ pub struct AcmeHttpChallengeVerificationQueryParams {
 // }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct InstanceInfo {
+    pub upstreams: HashMap<Upstream, bool>,
+    pub labels: HashMap<LabelName, LabelValue>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct ConfigData {
-    pub instance_ids: HashMap<InstanceId, HashMap<Upstream, bool>>,
+    pub instances: HashMap<InstanceId, InstanceInfo>,
     pub config: ClientConfig,
     pub revision: ClientConfigRevision,
     pub config_name: ConfigName,
@@ -343,7 +349,7 @@ impl Client {
         public_gw_base_url: &Url,
         gw_location: SmolStr,
         gcs_credentials_file: String,
-        log_messages_tx: mpsc::Sender<LogMessage>,
+        log_messages_tx: mpsc::UnboundedSender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
         dbip: Option<Arc<maxminddb::Reader<Mmap>>>,

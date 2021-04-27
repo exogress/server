@@ -1,13 +1,13 @@
-use crate::http_serve::RequestsProcessor;
+use crate::http_serve::{logging::LogMessageSendOnDrop, RequestsProcessor};
 use exogress_common::config_core::referenced;
-use exogress_server_common::logging::{CompressProcessingStep, LogMessage, ProcessingStep};
+use exogress_server_common::logging::{CompressProcessingStep, ProcessingStep};
 use futures::TryStreamExt;
 use hashbrown::HashSet;
 use http::{HeaderValue, Request, Response};
 use hyper::Body;
 use itertools::Itertools;
 use smol_str::SmolStr;
-use std::{convert::TryFrom, io, mem};
+use std::{convert::TryFrom, io, mem, sync::Arc};
 use tokio_util::either::Either;
 use typed_headers::{ContentCoding, HeaderMapExt};
 
@@ -68,7 +68,7 @@ impl RequestsProcessor {
         req: &Request<Body>,
         res: &mut Response<Body>,
         encoding: Option<&ResolvedEncoding>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> Result<(), anyhow::Error> {
         let encoding = match encoding {
             None => return Ok(()),
@@ -130,7 +130,9 @@ impl RequestsProcessor {
         let processed_stream = match compression {
             SupportedContentEncoding::Brotli => {
                 let header = typed_headers::ContentCoding::BROTLI;
-                log_message
+                log_message_container
+                    .lock()
+                    .as_mut()
                     .steps
                     .push(ProcessingStep::Compress(CompressProcessingStep {
                         encoding: header.as_str().into(),
@@ -149,7 +151,9 @@ impl RequestsProcessor {
             SupportedContentEncoding::Gzip => {
                 let header = typed_headers::ContentCoding::GZIP;
 
-                log_message
+                log_message_container
+                    .lock()
+                    .as_mut()
                     .steps
                     .push(ProcessingStep::Compress(CompressProcessingStep {
                         encoding: header.as_str().into(),
@@ -167,7 +171,9 @@ impl RequestsProcessor {
             SupportedContentEncoding::Deflate => {
                 let header = typed_headers::ContentCoding::DEFLATE;
 
-                log_message
+                log_message_container
+                    .lock()
+                    .as_mut()
                     .steps
                     .push(ProcessingStep::Compress(CompressProcessingStep {
                         encoding: header.as_str().into(),

@@ -1,7 +1,10 @@
 use crate::{
-    http_serve::requests_processor::{
-        helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
-        HandlerInvocationResult,
+    http_serve::{
+        logging::{save_body_state, LogMessageSendOnDrop},
+        requests_processor::{
+            helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
+            HandlerInvocationResult,
+        },
     },
     public_hyper_client::MeteredHttpConnector,
 };
@@ -11,7 +14,7 @@ use exogress_common::{
     entities::{exceptions, Exception},
 };
 use exogress_server_common::logging::{
-    GcsBucketHandlerLogMessage, HandlerProcessingStep, LogMessage, ProcessingStep,
+    GcsBucketHandlerLogMessage, HandlerProcessingStep, HttpBodyLog, ProcessingStep,
 };
 use futures::TryStreamExt;
 use hashbrown::HashMap;
@@ -19,7 +22,10 @@ use http::{header::CONTENT_DISPOSITION, HeaderValue, Method, Request, Response};
 use hyper::Body;
 use langtag::LanguageTagBuf;
 use smol_str::SmolStr;
-use std::convert::{TryFrom, TryInto};
+use std::{
+    convert::{TryFrom, TryInto},
+    sync::Arc,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -68,7 +74,7 @@ impl ResolvedGcsBucket {
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
             return HandlerInvocationResult::ToNextHandler;
@@ -77,12 +83,17 @@ impl ResolvedGcsBucket {
         let auth = try_or_to_exception!(self.auth.as_ref());
         let bucket_name = try_or_to_exception!(self.bucket_name.as_ref());
 
-        log_message
+        let proxy_response_body = HttpBodyLog::default();
+
+        log_message_container
+            .lock()
+            .as_mut()
             .steps
             .push(ProcessingStep::Invoked(HandlerProcessingStep::GcsBucket(
                 GcsBucketHandlerLogMessage {
                     bucket: bucket_name.name.clone(),
                     language: language.clone(),
+                    proxy_response_body: proxy_response_body.clone(),
                 },
             )));
 
@@ -172,7 +183,13 @@ impl ResolvedGcsBucket {
             HeaderValue::try_from("inline").unwrap(),
         );
 
-        *res.body_mut() = mem::replace(proxy_resp.body_mut(), Body::empty());
+        let instrumented_response = save_body_state(
+            mem::replace(proxy_resp.body_mut(), Body::empty()),
+            log_message_container.clone(),
+            proxy_response_body,
+        );
+
+        *res.body_mut() = instrumented_response;
 
         HandlerInvocationResult::Responded
     }
