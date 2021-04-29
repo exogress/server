@@ -1,6 +1,7 @@
 [workspace]
 members = [
  "common",
+ "api",
  "gateway",
  "signaler",
  "assistant",

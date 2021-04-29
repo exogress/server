@@ -9,16 +9,17 @@ use byte_unit::Byte;
 use chrono::{serde::ts_milliseconds, DateTime, Utc};
 use dashmap::DashMap;
 use exogress_common::{
-    common_utils::jwt::{jwt_token, JwtError},
+    access_tokens::{generate_jwt_token, JwtError},
     config_core::{
         referenced::Parameter,
         refinable::{Refinable, RefinableSet},
         ClientConfig, ClientConfigRevision, ProjectConfig, Scope,
     },
     entities::{
-        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, LabelName, LabelValue,
+        AccountName, AccountUniqueId, ConfigName, InstanceId, LabelName, LabelValue,
         MountPointName, ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
     },
+    tunnel::TunnelHello,
 };
 use exogress_server_common::{logging::LogMessage, presence};
 use futures::channel::mpsc;
@@ -780,10 +781,7 @@ impl Client {
 
     pub async fn authorize_tunnel(
         &self,
-        project_name: &ProjectName,
-        instance_id: &InstanceId,
-        access_key_id: &AccessKeyId,
-        secret_access_key: &str,
+        tunnel_hello: &TunnelHello,
     ) -> Result<AuthorizeTunnelResponse, Error> {
         let mut url = self.webapp_base_url.clone();
         url.path_segments_mut()
@@ -794,10 +792,19 @@ impl Client {
             .push("auth");
 
         url.query_pairs_mut()
-            .append_pair("project", project_name.as_str())
-            .append_pair("instance_id", &instance_id.to_string());
+            .append_pair("project", tunnel_hello.project_name.as_str())
+            .append_pair("instance_id", &tunnel_hello.instance_id.to_string());
 
-        let token = jwt_token(access_key_id, secret_access_key)?;
+        let token = if let Some(token) = &tunnel_hello.jwt_token {
+            token.clone()
+        } else {
+            error!("insecure tunnel authorization is used!");
+            generate_jwt_token(
+                tunnel_hello.secret_access_key.as_ref(),
+                &tunnel_hello.access_key_id,
+            )?
+            .into()
+        };
 
         let res = self
             .reqwest

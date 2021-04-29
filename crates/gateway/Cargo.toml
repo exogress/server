@@ -92,5 +92,5 @@ ttl_cache = "0.5.1"
 rw-stream-sink = "0.2.1"
 
 exogress-server-common = { path = "../common", features = ["crypto"] }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client", "ledb"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client", "ledb", "access-tokens"], default-features = false }
 

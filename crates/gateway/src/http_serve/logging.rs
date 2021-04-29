@@ -134,6 +134,7 @@ impl Drop for LogMessageSendOnDrop {
 mod test {
     use super::*;
     use chrono::Utc;
+    use exogress_common::entities::Ulid;
     use exogress_server_common::logging::BodyStatusLog;
     use futures::{channel::mpsc, StreamExt};
     use std::{io, mem, sync::Arc};
@@ -141,6 +142,7 @@ mod test {
     #[tokio::test]
     async fn test_send_on_drop() {
         let msg = LogMessage {
+            request_id: Ulid::new(),
             gw_location: Default::default(),
             date: Utc::now(),
             remote_addr: "127.0.0.1".parse().unwrap(),
@@ -183,6 +185,7 @@ mod test {
         let response_body = HttpBodyLog::default();
 
         let msg = LogMessage {
+            request_id: Ulid::new(),
             gw_location: Default::default(),
             date: Utc::now(),
             remote_addr: "127.0.0.1".parse().unwrap(),
@@ -243,6 +246,7 @@ mod test {
         let response_body = HttpBodyLog::default();
 
         let msg = LogMessage {
+            request_id: Ulid::new(),
             gw_location: Default::default(),
             date: Utc::now(),
             remote_addr: "127.0.0.1".parse().unwrap(),

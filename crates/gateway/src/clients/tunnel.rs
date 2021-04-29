@@ -212,14 +212,7 @@ pub async fn tunnels_acceptor(
                                 let AuthorizeTunnelResponse {
                                     account_unique_id,
                                     project_unique_id,
-                                } = webapp
-                                    .authorize_tunnel(
-                                        &tunnel_hello.project_name,
-                                        &tunnel_hello.instance_id,
-                                        &tunnel_hello.access_key_id,
-                                        &tunnel_hello.secret_access_key,
-                                    )
-                                    .await?;
+                                } = webapp.authorize_tunnel(&tunnel_hello).await?;
 
                                 info!(
                                     "Accepted tunnel from instance {}. Params: {}",

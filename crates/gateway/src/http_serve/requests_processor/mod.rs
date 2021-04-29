@@ -46,7 +46,7 @@ use exogress_common::{
     entities::{
         exceptions, exceptions::MODIFICATION_ERROR, serde::Serializer, AccountUniqueId, ConfigId,
         ConfigName, Exception, HandlerName, InstanceId, MountPointName, ParameterName, ProjectName,
-        ProjectUniqueId, StaticResponseName,
+        ProjectUniqueId, StaticResponseName, Ulid,
     },
 };
 use exogress_server_common::{
@@ -561,10 +561,13 @@ impl RequestsProcessor {
         if self.is_active {
             let facts = Arc::new(Mutex::new(json!({})));
 
+            let request_id = Ulid::new();
+
             let response_body_log = HttpBodyLog::default();
             let request_body_log = HttpBodyLog::default();
 
             let log_message = LogMessage {
+                request_id,
                 gw_location: self.gw_location.clone(),
                 project_unique_id: self.project_unique_id.clone(),
                 date: Utc::now(),
@@ -624,6 +627,11 @@ impl RequestsProcessor {
                 original_request_body,
                 log_message_container.clone(),
                 request_body_log,
+            );
+
+            res.headers_mut().insert(
+                "x-exg-request-id",
+                HeaderValue::try_from(request_id.to_string()).unwrap(),
             );
         } else {
             let body = render_limit_reached();

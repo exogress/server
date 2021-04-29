@@ -1,7 +1,7 @@
 use chrono::{serde::ts_milliseconds, DateTime, Utc};
 use exogress_common::entities::{
     AccountUniqueId, ConfigName, Exception, InstanceId, LabelName, LabelValue, MountPointName,
-    ProjectName, ProjectUniqueId, SmolStr, Upstream,
+    ProjectName, ProjectUniqueId, SmolStr, Ulid, Upstream,
 };
 use hashbrown::HashMap;
 use langtag::LanguageTagBuf;
@@ -22,6 +22,7 @@ impl HttpBodyLog {
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LogMessage {
+    pub request_id: Ulid,
     pub gw_location: SmolStr,
 
     // Date is a system fields. This format should be kept
