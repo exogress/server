@@ -290,7 +290,6 @@ mod test {
             max_main_gateways.into(),
             max_reserved_gateways.into(),
             Duration::from_secs(10),
-            Duration::from_secs(10),
         );
 
         if policy_result.is_err() && max_main_gateways == 0 {
