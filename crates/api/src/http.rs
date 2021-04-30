@@ -20,7 +20,7 @@ pub async fn run_http_server(
     stop_wait: StopWait<crate::termination::StopReason>,
 ) {
     let request_info = warp::path!(
-        "api" / "v0" / "accounts" / AccountName / "projects" / ProjectName / "requests" / Ulid
+        "api" / "v1" / "accounts" / AccountName / "projects" / ProjectName / "requests" / Ulid
     )
     .and(warp::filters::method::get())
     .and(warp::filters::cookie::optional("session"))
