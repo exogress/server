@@ -11,10 +11,11 @@ use crate::{
 use core::mem;
 use exogress_common::{
     config_core::referenced,
-    entities::{exceptions, Exception},
+    entities::{exceptions, Exception, HandlerName},
 };
 use exogress_server_common::logging::{
-    HandlerProcessingStep, HttpBodyLog, ProcessingStep, S3BucketHandlerLogMessage,
+    HandlerProcessingStep, HandlerProcessingStepVariant, HttpBodyLog, ProcessingStep,
+    S3BucketHandlerLogMessage,
 };
 use hashbrown::HashMap;
 use http::{Method, Request, Response};
@@ -45,6 +46,7 @@ impl BucketError {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedS3Bucket {
+    pub handler_name: HandlerName,
     pub client: hyper::Client<MeteredHttpConnector, hyper::Body>,
     pub credentials: Option<Result<rusty_s3::Credentials, referenced::Error>>,
     pub bucket: Result<rusty_s3::Bucket, s3_bucket::BucketError>,
@@ -74,13 +76,14 @@ impl ResolvedS3Bucket {
             .lock()
             .as_mut()
             .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep::S3Bucket(
-                S3BucketHandlerLogMessage {
+            .push(ProcessingStep::Invoked(HandlerProcessingStep {
+                variant: HandlerProcessingStepVariant::S3Bucket(S3BucketHandlerLogMessage {
+                    handler_name: self.handler_name.clone(),
                     region: bucket.region().into(),
                     language: language.clone(),
                     proxy_response_body: proxy_response_body.clone(),
-                },
-            )));
+                }),
+            }));
 
         let credentials = if let Some(creds) = &self.credentials {
             Some(try_or_to_exception!(creds))

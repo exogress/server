@@ -1,6 +1,6 @@
 use crate::http_serve::{logging::LogMessageSendOnDrop, RequestsProcessor};
 use exogress_common::config_core::referenced;
-use exogress_server_common::logging::{CompressProcessingStep, ProcessingStep};
+use exogress_server_common::logging::ProcessingStep;
 use futures::TryStreamExt;
 use hashbrown::HashSet;
 use http::{HeaderValue, Request, Response};
@@ -130,13 +130,7 @@ impl RequestsProcessor {
         let processed_stream = match compression {
             SupportedContentEncoding::Brotli => {
                 let header = typed_headers::ContentCoding::BROTLI;
-                log_message_container
-                    .lock()
-                    .as_mut()
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
+                log_message_container.lock().as_mut().compression = Some(SmolStr::from("br"));
 
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(header));
@@ -151,13 +145,7 @@ impl RequestsProcessor {
             SupportedContentEncoding::Gzip => {
                 let header = typed_headers::ContentCoding::GZIP;
 
-                log_message_container
-                    .lock()
-                    .as_mut()
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
+                log_message_container.lock().as_mut().compression = Some(SmolStr::from("gzip"));
 
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(header));
@@ -171,13 +159,7 @@ impl RequestsProcessor {
             SupportedContentEncoding::Deflate => {
                 let header = typed_headers::ContentCoding::DEFLATE;
 
-                log_message_container
-                    .lock()
-                    .as_mut()
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
+                log_message_container.lock().as_mut().compression = Some(SmolStr::from("deflate"));
 
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(header));

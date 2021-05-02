@@ -53,8 +53,8 @@ use exogress_server_common::{
     crypto,
     crypto::decrypt_reader,
     logging::{
-        ExceptionProcessingStep, HttpBodyLog, LogMessage, ProcessingStep,
-        StaticResponseProcessingStep,
+        CatchProcessingStep, CatchProcessingVariantStep, ExceptionProcessingStep, HttpBodyLog,
+        LogMessage, ProcessingStep, ProcessingStep::Catch, ScopeLog, StaticResponseProcessingStep,
     },
     presence,
     transformer::{ProcessResponse, MAX_SIZE_FOR_TRANSFORMATION},
@@ -338,7 +338,7 @@ impl RequestsProcessor {
                             .lock()
                             .as_mut()
                             .steps
-                            .push(ProcessingStep::ServedFromCache);
+                            .push(ProcessingStep::ServeFromCache);
 
                         return;
                     }
@@ -591,6 +591,7 @@ impl RequestsProcessor {
                 response_body: response_body_log.clone(),
                 started_at: Utc::now(),
                 ended_at: None,
+                compression: None,
                 time_taken_ms: None,
             };
 
@@ -1285,7 +1286,8 @@ impl ResolvedHandlerVariant {
 #[derive(Debug)]
 enum ResolvedRuleAction {
     Invoke {
-        rescue: Vec<ResolvedRescueItem>,
+        rescues: Vec<ResolvedRescueItem>,
+        scope: Scope,
     },
     NextHandler,
     Throw {
@@ -1298,12 +1300,12 @@ enum ResolvedRuleAction {
 impl ResolvedRuleAction {
     pub fn rescues(&self) -> Vec<ResolvedRescueItem> {
         match self {
-            ResolvedRuleAction::Invoke { rescue } => rescue.clone(),
+            ResolvedRuleAction::Invoke { rescues, .. } => rescues.clone(),
             ResolvedRuleAction::NextHandler => Default::default(),
             ResolvedRuleAction::Throw { .. } => Default::default(),
-            ResolvedRuleAction::Respond(ResolvedStaticResponseAction { rescue, .. }) => {
-                rescue.clone()
-            }
+            ResolvedRuleAction::Respond(ResolvedStaticResponseAction {
+                rescues: rescue, ..
+            }) => rescue.clone(),
         }
     }
 }
@@ -1312,7 +1314,7 @@ impl ResolvedRuleAction {
 struct ResolvedStaticResponseAction {
     // static_response_name: StaticResponseName,
     pub static_response: Result<ResolvedStaticResponse, referenced::Error>,
-    pub rescue: Vec<ResolvedRescueItem>,
+    pub rescues: Vec<ResolvedRescueItem>,
 }
 
 impl ResolvedStaticResponseAction {
@@ -1338,18 +1340,18 @@ impl ResolvedStaticResponseAction {
 
                 data.insert(SmolStr::from("error"), SmolStr::from(e.to_string()));
 
-                let rescueable = Rescueable::Exception {
-                    exception: &*exceptions::STATIC_RESPONSE_NOT_DEFINED,
-                    data: &data,
+                let rescuable = Rescuable::Exception {
+                    exception: exceptions::STATIC_RESPONSE_NOT_DEFINED.clone(),
+                    data,
                 };
 
-                return handler.handle_rescueable(
+                return handler.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable.clone(),
                     true,
-                    &self.rescue,
+                    &self.rescues,
                     &language,
                     log_message_container,
                 );
@@ -1389,18 +1391,15 @@ impl ResolvedStaticResponseAction {
                     Err((exception, data)) => {
                         *res = Response::new(Body::empty());
                         if !is_in_exception {
-                            let rescueable = Rescueable::Exception {
-                                exception: &exception,
-                                data: &data,
-                            };
-                            error!("could not invoke static resp; call handle_rescueable. rescue handlers: {:?}", self.rescue);
-                            handler.handle_rescueable(
+                            let rescuable = Rescuable::Exception { exception, data };
+                            error!("could not invoke static resp; call handle_rescuable. rescue handlers: {:?}", self.rescues);
+                            handler.handle_rescuable(
                                 req,
                                 res,
                                 requested_url,
-                                &rescueable,
+                                rescuable.clone(),
                                 false,
-                                &self.rescue,
+                                &self.rescues,
                                 &language,
                                 log_message_container,
                             )
@@ -1425,8 +1424,20 @@ enum ResolvedCatchAction {
         data: HashMap<SmolStr, SmolStr>,
         rescues: Vec<ResolvedRescueItem>,
     },
-    NextHandler,
+    NextHandler {
+        scope: Scope,
+    },
 }
+
+// impl ResolvedCatchAction {
+//     pub fn scope(&self) -> &Scope {
+//         match self {
+//             ResolvedCatchAction::StaticResponse(resp) => &resp.scope,
+//             ResolvedCatchAction::Throw {  .. } => &scope,
+//             ResolvedCatchAction::NextHandler { scope } => scope,
+//         }
+//     }
+// }
 
 #[derive(Debug)]
 pub struct ResolvedFilter {
@@ -2013,7 +2024,8 @@ pub struct ResolvedHandler {
 
     priority: u16,
 
-    catches: Vec<ResolvedRescueItem>,
+    rescues: Vec<ResolvedRescueItem>,
+    scope: Scope,
 
     resolved_rules: Vec<ResolvedRule>,
 
@@ -2024,20 +2036,20 @@ pub struct ResolvedHandler {
     languages: Option<Vec<langtag::LanguageTagBuf>>,
 }
 
-#[derive(Debug)]
-enum Rescueable<'a> {
+#[derive(Clone, Debug)]
+enum Rescuable {
     Exception {
-        exception: &'a Exception,
-        data: &'a HashMap<SmolStr, SmolStr>,
+        exception: Exception,
+        data: HashMap<SmolStr, SmolStr>,
     },
     StatusCode(StatusCode),
 }
 
-impl<'a> Rescueable<'a> {
-    fn data(&'a self) -> Option<&'a HashMap<SmolStr, SmolStr>> {
+impl Rescuable {
+    fn data(&self) -> Option<&HashMap<SmolStr, SmolStr>> {
         match self {
-            Rescueable::Exception { data, .. } => Some(data),
-            Rescueable::StatusCode(_) => None,
+            Rescuable::Exception { data, .. } => Some(data),
+            Rescuable::StatusCode(_) => None,
         }
     }
 }
@@ -2048,6 +2060,68 @@ enum ResolvedHandlerProcessingResult {
     Processed,
     FiltersNotMatched,
     NextHandler,
+}
+
+fn scope_to_log(scope: &Scope) -> ScopeLog {
+    match scope {
+        Scope::ProjectConfig => ScopeLog::ProjectConfig,
+        Scope::ClientConfig { config, revision } => ScopeLog::ClientConfig {
+            config_name: config.clone(),
+            revision: revision.clone(),
+        },
+        Scope::ProjectMount { mount_point } => ScopeLog::ProjectMount {
+            mount_point: mount_point.clone(),
+        },
+        Scope::ClientMount {
+            config,
+            revision,
+            mount_point,
+        } => ScopeLog::ClientMount {
+            config_name: config.clone(),
+            revision: revision.clone(),
+            mount_point: mount_point.clone(),
+        },
+        Scope::ProjectHandler {
+            mount_point,
+            handler,
+        } => ScopeLog::ProjectHandler {
+            mount_point: mount_point.clone(),
+            handler_name: handler.clone(),
+        },
+        Scope::ClientHandler {
+            config,
+            revision,
+            mount_point,
+            handler,
+        } => ScopeLog::ClientHandler {
+            config_name: config.clone(),
+            revision: revision.clone(),
+            mount_point: mount_point.clone(),
+            handler_name: handler.clone(),
+        },
+        Scope::ProjectRule {
+            mount_point,
+            handler,
+            rule_num,
+        } => ScopeLog::ProjectRule {
+            mount_point: mount_point.clone(),
+            handler_name: handler.clone(),
+            rule_num: *rule_num,
+        },
+        Scope::ClientRule {
+            config,
+            revision,
+            mount_point,
+            handler,
+            rule_num,
+        } => ScopeLog::ClientRule {
+            config_name: config.clone(),
+            revision: revision.clone(),
+            mount_point: mount_point.clone(),
+            handler_name: handler.clone(),
+            rule_num: *rule_num,
+        },
+    }
 }
 
 impl ResolvedHandler {
@@ -2082,23 +2156,27 @@ impl ResolvedHandler {
 
     fn find_exception_handler(
         rescues: &Vec<ResolvedRescueItem>,
-        rescueable: &Rescueable<'_>,
-    ) -> Option<ResolvedCatchAction> {
+        rescuable: &Rescuable,
+    ) -> Option<ResolvedRescueItem> {
+        error!("find_exception_handler {:?} => {:?}", rescues, rescuable);
+
         for rescue_item in rescues.iter() {
-            match (rescueable, &rescue_item.catch) {
+            match (rescuable, &rescue_item.catch) {
                 (
-                    Rescueable::Exception { exception, .. },
+                    Rescuable::Exception { exception, .. },
                     ResolvedCatchMatcher::Exception(exception_matcher),
                 ) if Self::is_exception_matches(exception_matcher, exception) => {
-                    return Some(rescue_item.handle.clone())
+                    return Some(rescue_item.clone())
                 }
                 (
-                    Rescueable::StatusCode(status_code),
-                    ResolvedCatchMatcher::StatusCode(status_code_rande),
-                ) if Self::is_status_code_matches(status_code_rande, status_code) => {
-                    return Some(rescue_item.handle.clone())
+                    Rescuable::StatusCode(status_code),
+                    ResolvedCatchMatcher::StatusCode(status_code_range),
+                ) if Self::is_status_code_matches(status_code_range, status_code) => {
+                    return Some(rescue_item.clone())
                 }
-                _ => {}
+                _ => {
+                    error!("unmatched!!");
+                }
             }
         }
 
@@ -2106,101 +2184,162 @@ impl ResolvedHandler {
     }
 
     /// Handle exception in the right order
-    fn handle_rescueable(
+    fn handle_rescuable(
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
-        rescueable: &Rescueable<'_>,
+        mut rescuable: Rescuable,
         is_in_exception: bool,
         rescues: &Vec<ResolvedRescueItem>,
         language: &Option<LanguageTagBuf>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
-        if let &Rescueable::Exception { exception, data } = rescueable {
+        if let Rescuable::Exception { exception, data } = &rescuable {
             log_message_container
                 .lock()
                 .as_mut()
                 .steps
                 .push(ProcessingStep::Exception(ExceptionProcessingStep {
                     exception: exception.clone(),
+                    handler_name: Some(SmolStr::from(&self.handler_name)),
                     data: data.clone(),
                 }));
         }
 
-        let mut maybe_resolved_exception = Self::find_exception_handler(rescues, &rescueable);
-        let mut collected_data: HashMap<SmolStr, SmolStr> = if let Some(d) = rescueable.data() {
+        let mut maybe_resolved_rescue_item = Self::find_exception_handler(rescues, &rescuable);
+        let mut collected_data: HashMap<SmolStr, SmolStr> = if let Some(d) = rescuable.data() {
             d.clone()
         } else {
             Default::default()
         };
 
         let result = loop {
-            match maybe_resolved_exception {
-                None => match rescueable {
-                    &Rescueable::Exception { exception, data } => {
+            // iterate over the chain of exceptions
+
+            error!(
+                "maybe_resolved_rescue_item = {:?}",
+                maybe_resolved_rescue_item
+            );
+
+            if let Some(rescue_item) = maybe_resolved_rescue_item {
+                // some catch block is found
+
+                let catch_step = match (&rescuable, &rescue_item.catch) {
+                    (
+                        Rescuable::Exception { exception, data },
+                        ResolvedCatchMatcher::Exception(exception_matcher),
+                    ) => CatchProcessingStep {
+                        catch_matcher: exception_matcher.to_string(),
+                        variant: CatchProcessingVariantStep::Exception {
+                            exception: exception.to_string().into(),
+                        },
+                        scope: scope_to_log(&rescue_item.scope),
+                    },
+                    (
+                        Rescuable::StatusCode(status_code),
+                        ResolvedCatchMatcher::StatusCode(status_code_range),
+                    ) => CatchProcessingStep {
+                        catch_matcher: status_code_range.to_string(),
+                        variant: CatchProcessingVariantStep::StatusCode {
+                            status_code: status_code.clone(),
+                        },
+                        scope: scope_to_log(&rescue_item.scope),
+                    },
+                    r => {
+                        unreachable!("BAD rescuable matching => {:?}", r)
+                    }
+                };
+
+                log_message_container
+                    .lock()
+                    .as_mut()
+                    .steps
+                    .push(ProcessingStep::Catch(catch_step));
+
+                match rescue_item.handle {
+                    ResolvedCatchAction::Throw {
+                        exception,
+                        data: rethrow_data,
+                        rescues,
+                    } => {
+                        collected_data
+                            .extend(rethrow_data.iter().map(|(a, b)| (a.clone(), b.clone())));
+
+                        let rethrow = Rescuable::Exception {
+                            exception: exception.clone(),
+                            data: rethrow_data.clone(),
+                        };
+
+                        rescuable = rethrow;
+
+                        log_message_container.lock().as_mut().steps.push(
+                            ProcessingStep::Exception(ExceptionProcessingStep {
+                                exception: exception.clone(),
+                                // FIXME
+                                handler_name: None,
+                                data: collected_data.clone(),
+                            }),
+                        );
+
+                        maybe_resolved_rescue_item =
+                            Self::find_exception_handler(&rescues, &rescuable);
+
+                        match maybe_resolved_rescue_item {
+                            Some(_) => {
+                                continue;
+                            }
+                            None => match &rescuable {
+                                Rescuable::Exception { .. } => {
+                                    break RescuableHandleResult::UnhandledException {
+                                        exception_name: exception,
+                                        data: collected_data.clone(),
+                                    };
+                                }
+                                Rescuable::StatusCode(_) => {
+                                    break RescuableHandleResult::FinishProcessing
+                                }
+                            },
+                        }
+                    }
+                    ResolvedCatchAction::StaticResponse(ResolvedStaticResponseAction {
+                        static_response,
+                        rescues,
+                    }) => {
+                        if let Ok(resp) = &static_response {
+                            collected_data
+                                .extend(resp.data.iter().map(|(a, b)| (a.clone(), b.clone())));
+                        }
+
+                        // FIXME: this will probably break data merging if static-resp is involved
+                        // FIXME: merged data should be stored to the container, so that on exception new exception queue is processed
+                        break RescuableHandleResult::StaticResponse(
+                            ResolvedStaticResponseAction {
+                                static_response: static_response.clone(),
+                                rescues,
+                            },
+                        );
+                    }
+                    ResolvedCatchAction::NextHandler { scope } => {
+                        break RescuableHandleResult::NextHandler { scope }
+                    }
+                }
+            } else {
+                match &rescuable {
+                    Rescuable::Exception { exception, data } => {
                         collected_data.extend(data.iter().map(|(a, b)| (a.clone(), b.clone())));
-                        break RescueableHandleResult::UnhandledException {
+                        break RescuableHandleResult::UnhandledException {
                             exception_name: exception.clone(),
                             data: collected_data.clone(),
                         };
                     }
-                    Rescueable::StatusCode(_) => break RescueableHandleResult::FinishProcessing,
-                },
-                Some(ResolvedCatchAction::Throw {
-                    exception,
-                    data: rethrow_data,
-                    rescues,
-                }) => {
-                    collected_data.extend(rethrow_data.iter().map(|(a, b)| (a.clone(), b.clone())));
-
-                    let rethrow = Rescueable::Exception {
-                        exception: &exception,
-                        data: &collected_data,
-                    };
-                    maybe_resolved_exception = Self::find_exception_handler(&rescues, &rethrow);
-
-                    match maybe_resolved_exception {
-                        Some(_) => {
-                            continue;
-                        }
-                        None => match &rescueable {
-                            Rescueable::Exception { .. } => {
-                                break RescueableHandleResult::UnhandledException {
-                                    exception_name: exception.clone(),
-                                    data: collected_data.clone(),
-                                };
-                            }
-                            Rescueable::StatusCode(_) => {
-                                break RescueableHandleResult::FinishProcessing
-                            }
-                        },
-                    }
-                }
-                Some(ResolvedCatchAction::StaticResponse(ResolvedStaticResponseAction {
-                    static_response,
-                    rescue,
-                })) => {
-                    if let Ok(resp) = &static_response {
-                        collected_data
-                            .extend(resp.data.iter().map(|(a, b)| (a.clone(), b.clone())));
-                    }
-
-                    // FIXME: this will probably break data merging if static-resp is innvolvedd
-                    // FIXME: merged data shouldd be store to the cotaiier, so that onn exception nnew exception queue is processed
-                    break RescueableHandleResult::StaticResponse(ResolvedStaticResponseAction {
-                        static_response: static_response.clone(),
-                        rescue,
-                    });
-                }
-                Some(ResolvedCatchAction::NextHandler) => {
-                    break RescueableHandleResult::NextHandler
+                    Rescuable::StatusCode(_) => break RescuableHandleResult::FinishProcessing,
                 }
             }
         };
 
         match result {
-            RescueableHandleResult::StaticResponse(action) => action.handle_static_response(
+            RescuableHandleResult::StaticResponse(action) => action.handle_static_response(
                 self,
                 req,
                 res,
@@ -2211,12 +2350,14 @@ impl ResolvedHandler {
                 &language,
                 log_message_container,
             ),
-            RescueableHandleResult::NextHandler => ResolvedHandlerProcessingResult::NextHandler,
-            RescueableHandleResult::UnhandledException { .. } => {
+            RescuableHandleResult::NextHandler { .. } => {
+                ResolvedHandlerProcessingResult::NextHandler
+            }
+            RescuableHandleResult::UnhandledException { .. } => {
                 self.respond_server_error(res);
                 ResolvedHandlerProcessingResult::Processed
             }
-            RescueableHandleResult::FinishProcessing => ResolvedHandlerProcessingResult::Processed,
+            RescuableHandleResult::FinishProcessing => ResolvedHandlerProcessingResult::Processed,
         }
     }
 
@@ -2270,16 +2411,16 @@ impl ResolvedHandler {
                         ) {
                             Ok(_) => {}
                             Err(ex) => {
-                                let rescueable = Rescueable::Exception {
-                                    exception: &ex,
-                                    data: &Default::default(),
+                                let rescuable = Rescuable::Exception {
+                                    exception: ex,
+                                    data: Default::default(),
                                 };
 
-                                return self.handle_rescueable(
+                                return self.handle_rescuable(
                                     req,
                                     res,
                                     requested_url,
-                                    &rescueable,
+                                    rescuable.clone(),
                                     false,
                                     rescues,
                                     &language,
@@ -2290,13 +2431,13 @@ impl ResolvedHandler {
                     }
                 }
 
-                let rescueable = Rescueable::StatusCode(res.status());
+                let rescuable = Rescuable::StatusCode(res.status());
 
-                self.handle_rescueable(
+                self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable.clone(),
                     false,
                     rescues,
                     &language,
@@ -2305,15 +2446,15 @@ impl ResolvedHandler {
             }
             HandlerInvocationResult::ToNextHandler => ResolvedHandlerProcessingResult::NextHandler,
             HandlerInvocationResult::Exception { name, data } => {
-                let rescueable = Rescueable::Exception {
-                    exception: &name,
-                    data: &data,
+                let rescuable = Rescuable::Exception {
+                    exception: name,
+                    data,
                 };
-                self.handle_rescueable(
+                self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable.clone(),
                     false,
                     rescues,
                     &language,
@@ -2348,7 +2489,7 @@ impl ResolvedHandler {
                 language,
                 log_message_container,
                 Default::default(),
-                &self.catches,
+                &self.rescues,
                 &Default::default(),
             );
         }
@@ -2376,16 +2517,16 @@ impl ResolvedHandler {
                         let mut data = HashMap::new();
                         data.insert("error".into(), e.to_string().into());
 
-                        let rescueable = Rescueable::Exception {
-                            exception: &*MODIFICATION_ERROR,
-                            data: &data,
+                        let rescuable = Rescuable::Exception {
+                            exception: MODIFICATION_ERROR.clone(),
+                            data,
                         };
 
-                        return self.handle_rescueable(
+                        return self.handle_rescuable(
                             req,
                             res,
                             requested_url,
-                            &rescueable,
+                            rescuable.clone(),
                             false,
                             &action.rescues(),
                             &language,
@@ -2426,15 +2567,15 @@ impl ResolvedHandler {
         ) {
             Ok(()) => {}
             Err(ex) => {
-                let rescueable = Rescueable::Exception {
-                    exception: &ex,
-                    data: &Default::default(),
+                let rescuable = Rescuable::Exception {
+                    exception: ex,
+                    data: Default::default(),
                 };
-                return self.handle_rescueable(
+                return self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable.clone(),
                     false,
                     &action.rescues(),
                     &language,
@@ -2453,16 +2594,16 @@ impl ResolvedHandler {
                 let mut data: HashMap<SmolStr, SmolStr> = Default::default();
                 data.insert("error".into(), ex.to_string().into());
 
-                let rescueable = Rescueable::Exception {
-                    exception: &*MODIFICATION_ERROR,
-                    data: &data,
+                let rescuable = Rescuable::Exception {
+                    exception: MODIFICATION_ERROR.clone(),
+                    data,
                 };
 
-                return self.handle_rescueable(
+                return self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable.clone(),
                     false,
                     &action.rescues(),
                     &language,
@@ -2472,7 +2613,7 @@ impl ResolvedHandler {
         }
 
         match action {
-            ResolvedRuleAction::Invoke { rescue } => {
+            ResolvedRuleAction::Invoke { rescues, scope } => {
                 let invocation_result = self
                     .resolved_variant
                     .invoke(
@@ -2495,7 +2636,7 @@ impl ResolvedHandler {
                     language,
                     log_message_container,
                     filter_matches,
-                    rescue,
+                    rescues,
                     response_modification,
                 )
             }
@@ -2503,14 +2644,17 @@ impl ResolvedHandler {
                 return ResolvedHandlerProcessingResult::NextHandler;
             }
             ResolvedRuleAction::Throw { exception, data } => {
-                let rescueable = Rescueable::Exception { exception, data };
-                return self.handle_rescueable(
+                let rescuable = Rescuable::Exception {
+                    exception: exception.clone(),
+                    data: data.clone(),
+                };
+                return self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable.clone(),
                     false,
-                    &self.catches,
+                    &self.rescues,
                     &language,
                     log_message_container,
                 );
@@ -2566,11 +2710,11 @@ fn apply_headers(
 
 #[derive(Debug)]
 #[must_use]
-enum RescueableHandleResult {
+enum RescuableHandleResult {
     /// Respond with static response
     StaticResponse(ResolvedStaticResponseAction),
     /// Move on to next handler
-    NextHandler,
+    NextHandler { scope: Scope },
     /// Exception hasn't been handled by ant of handlers
     UnhandledException {
         exception_name: Exception,
@@ -2586,9 +2730,10 @@ fn resolve_static_response(
     data: &BTreeMap<SmolStr, SmolStr>,
     params: &HashMap<ParameterName, Parameter>,
     refined: &RefinableSet,
-    scope: &Scope,
+    current_scope: &Scope,
 ) -> Result<ResolvedStaticResponse, referenced::Error> {
-    let static_response = static_response_container.resolve(params, refined, scope)?;
+    let (static_response, maybe_static_response_scope) =
+        static_response_container.resolve(params, refined, current_scope)?;
 
     let static_response_status_code = match &static_response {
         StaticResponse::Redirect(redirect) => redirect.redirect_type.status_code(),
@@ -2648,6 +2793,8 @@ fn resolve_static_response(
             }),
             StaticResponse::Raw(_) => None,
         },
+
+        maybe_scope: maybe_static_response_scope,
     };
 
     Ok(resolved)
@@ -2658,7 +2805,8 @@ fn resolve_catch_action(
     params: &HashMap<ParameterName, Parameter>,
     catch_action: &CatchAction,
     refinable_set: &RefinableSet,
-    scope: &Scope,
+    rescue_item_scope: &Scope,
+    current_scope: &Scope,
 ) -> Option<ResolvedCatchAction> {
     Some(match catch_action {
         CatchAction::StaticResponse {
@@ -2672,9 +2820,9 @@ fn resolve_catch_action(
                 data,
                 params,
                 refinable_set,
-                scope,
+                rescue_item_scope,
             ),
-            rescue: if let Some(prev_scope) = scope.prev(client_config_info) {
+            rescues: if let Some(prev_scope) = current_scope.prev(client_config_info) {
                 resolve_rescue_items(client_config_info, &params, &refinable_set, &prev_scope)?
             } else {
                 Default::default()
@@ -2683,13 +2831,15 @@ fn resolve_catch_action(
         CatchAction::Throw { exception, data } => ResolvedCatchAction::Throw {
             exception: exception.clone(),
             data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            rescues: if let Some(prev_scope) = scope.prev(client_config_info) {
+            rescues: if let Some(prev_scope) = current_scope.prev(client_config_info) {
                 resolve_rescue_items(client_config_info, &params, &refinable_set, &prev_scope)?
             } else {
                 Default::default()
             },
         },
-        CatchAction::NextHandler => ResolvedCatchAction::NextHandler,
+        CatchAction::NextHandler => ResolvedCatchAction::NextHandler {
+            scope: rescue_item_scope.clone(),
+        },
     })
 }
 
@@ -2697,14 +2847,14 @@ fn resolve_rescue_items(
     client_config_info: &Option<(ConfigName, ClientConfigRevision)>,
     params: &HashMap<ParameterName, Parameter>,
     refinable_set: &RefinableSet,
-    scope: &Scope,
+    current_scope: &Scope,
 ) -> Option<Vec<ResolvedRescueItem>> {
-    let available_exception_handlers = refinable_set.joined_for_scope(scope);
+    let available_exception_handlers = refinable_set.joined_for_scope(current_scope);
 
     available_exception_handlers
         .rescue
         .iter()
-        .map(|(rescue_item, _)| {
+        .map(|(rescue_item, rescue_item_scope)| {
             Some(ResolvedRescueItem {
                 catch: match &rescue_item.catch {
                     CatchMatcher::StatusCode(status_code) => {
@@ -2719,8 +2869,10 @@ fn resolve_rescue_items(
                     params,
                     &rescue_item.handle,
                     refinable_set,
-                    scope,
+                    rescue_item_scope,
+                    current_scope,
                 )?,
+                scope: rescue_item_scope.clone(),
             })
         })
         .collect::<Option<_>>()
@@ -3008,6 +3160,7 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::Proxy(proxy) => {
                                     ResolvedHandlerVariant::Proxy(proxy::ResolvedProxy {
+                                        handler_name: handler_name.clone(),
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: proxy
@@ -3074,6 +3227,7 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {
                                     ResolvedHandlerVariant::S3Bucket(s3_bucket::ResolvedS3Bucket {
+                                        handler_name: handler_name.clone(),
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: s3_bucket
@@ -3130,6 +3284,7 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::GcsBucket(gcs_bucket) => {
                                     let bucket = gcs_bucket::ResolvedGcsBucket {
+                                        handler_name: handler_name.clone(),
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: gcs_bucket
@@ -3187,12 +3342,13 @@ impl RequestsProcessor {
                                 }
                             },
                             priority: handler.priority,
-                            catches: resolve_rescue_items(
+                            rescues: resolve_rescue_items(
                                 &client_config_info,
                                 &params,
                                 &refinable,
                                 &handler_scope,
                             )?,
+                            scope: handler_scope.clone(),
                             resolved_rules: handler
                                 .rules
                                 .into_iter()
@@ -3242,7 +3398,7 @@ impl RequestsProcessor {
                                             .collect(),
                                         action: match rule.action {
                                             Action::Invoke {  .. } => ResolvedRuleAction::Invoke {
-                                                rescue: {
+                                                rescues: {
                                                     let rescue = resolve_rescue_items(
                                                         &client_config_info,
                                                         &params,
@@ -3252,6 +3408,7 @@ impl RequestsProcessor {
 
                                                     rescue
                                                 },
+                                                scope: handler_scope.clone(),
                                             },
                                             Action::NextHandler => ResolvedRuleAction::NextHandler,
                                             Action::Throw { exception, data } => ResolvedRuleAction::Throw {
@@ -3269,7 +3426,7 @@ impl RequestsProcessor {
                                                     &refinable,
                                                     &handler_scope
                                                 ),
-                                                rescue: resolve_rescue_items(
+                                                rescues: resolve_rescue_items(
                                                     &client_config_info,
                                                     &params,
                                                     &refinable,
@@ -3420,6 +3577,7 @@ struct ResolvedStaticResponse {
     headers: HeaderMap,
     data: HashMap<SmolStr, SmolStr>,
     maybe_redirect: Option<ResolvedRedirectResponse>,
+    maybe_scope: Option<Scope>,
 }
 
 impl ResolvedStaticResponse {
@@ -3560,6 +3718,7 @@ pub enum ResolvedCatchMatcher {
 pub struct ResolvedRescueItem {
     catch: ResolvedCatchMatcher,
     handle: ResolvedCatchAction,
+    scope: Scope,
 }
 
 #[derive(Debug)]

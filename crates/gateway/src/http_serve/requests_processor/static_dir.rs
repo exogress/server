@@ -20,8 +20,8 @@ use exogress_common::{
     tunnel::ConnectTarget,
 };
 use exogress_server_common::logging::{
-    HandlerProcessingStep, HttpBodyLog, InstanceLog, ProcessingStep, ProxyAttemptLogMessage,
-    StaticDirHandlerLogMessage,
+    HandlerProcessingStep, HandlerProcessingStepVariant, HttpBodyLog, InstanceLog, ProcessingStep,
+    ProxyAttemptLogMessage, StaticDirHandlerLogMessage,
 };
 use hashbrown::HashMap;
 use http::{Method, Request, Response};
@@ -94,8 +94,9 @@ impl ResolvedStaticDir {
             .lock()
             .as_mut()
             .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep::StaticDir(
-                StaticDirHandlerLogMessage {
+            .push(ProcessingStep::Invoked(HandlerProcessingStep {
+                variant: HandlerProcessingStepVariant::StaticDir(StaticDirHandlerLogMessage {
+                    handler_name: self.handler_name.clone(),
                     config_name: self.config_id.config_name.clone(),
                     language: language.clone(),
                     attempts: vec![ProxyAttemptLogMessage {
@@ -108,8 +109,8 @@ impl ResolvedStaticDir {
                         proxy_request_body: Default::default(),
                         proxy_response_body: proxy_response_body.clone(),
                     }],
-                },
-            )));
+                }),
+            }));
 
         let mut proxy_to = rebased_url.clone();
 

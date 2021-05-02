@@ -11,10 +11,11 @@ use crate::{
 use core::{fmt, mem};
 use exogress_common::{
     config_core::{referenced, referenced::google::bucket::GcsBucket},
-    entities::{exceptions, Exception},
+    entities::{exceptions, Exception, HandlerName},
 };
 use exogress_server_common::logging::{
-    GcsBucketHandlerLogMessage, HandlerProcessingStep, HttpBodyLog, ProcessingStep,
+    GcsBucketHandlerLogMessage, HandlerProcessingStep, HandlerProcessingStepVariant, HttpBodyLog,
+    ProcessingStep,
 };
 use futures::TryStreamExt;
 use hashbrown::HashMap;
@@ -50,6 +51,7 @@ impl AuthError {
 }
 
 pub struct ResolvedGcsBucket {
+    pub handler_name: HandlerName,
     pub client: hyper::Client<MeteredHttpConnector, hyper::Body>,
     pub bucket_name: Result<GcsBucket, referenced::Error>,
     pub auth: Result<tame_oauth::gcp::ServiceAccountAccess, AuthError>,
@@ -89,13 +91,14 @@ impl ResolvedGcsBucket {
             .lock()
             .as_mut()
             .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep::GcsBucket(
-                GcsBucketHandlerLogMessage {
+            .push(ProcessingStep::Invoked(HandlerProcessingStep {
+                variant: HandlerProcessingStepVariant::GcsBucket(GcsBucketHandlerLogMessage {
+                    handler_name: self.handler_name.clone(),
                     bucket: bucket_name.name.clone(),
                     language: language.clone(),
                     proxy_response_body: proxy_response_body.clone(),
-                },
-            )));
+                }),
+            }));
 
         let token_or_req = try_or_exception!(
             auth.get_token(&[tame_gcs::Scopes::ReadOnly]),

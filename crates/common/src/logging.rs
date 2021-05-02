@@ -1,7 +1,10 @@
 use chrono::{serde::ts_milliseconds, DateTime, Utc};
-use exogress_common::entities::{
-    AccountUniqueId, ConfigName, Exception, InstanceId, LabelName, LabelValue, MountPointName,
-    ProjectName, ProjectUniqueId, SmolStr, Ulid, Upstream,
+use exogress_common::{
+    config_core::ClientConfigRevision,
+    entities::{
+        AccountUniqueId, ConfigName, Exception, HandlerName, InstanceId, LabelName, LabelValue,
+        MountPointName, ProjectName, ProjectUniqueId, SmolStr, Ulid, Upstream,
+    },
 };
 use hashbrown::HashMap;
 use langtag::LanguageTagBuf;
@@ -61,6 +64,9 @@ pub struct LogMessage {
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compression: Option<SmolStr>,
+
     #[serde_as(as = "Option<DurationMilliSecondsWithFrac>")]
     pub time_taken_ms: Option<Duration>,
 }
@@ -97,17 +103,14 @@ pub enum ProcessingStep {
     #[serde(rename = "exception")]
     Exception(ExceptionProcessingStep),
 
+    #[serde(rename = "catch")]
+    Catch(CatchProcessingStep),
+
     #[serde(rename = "static_response")]
     StaticResponse(StaticResponseProcessingStep),
 
-    #[serde(rename = "served_from_cache")]
-    ServedFromCache,
-
-    #[serde(rename = "optimize")]
-    Optimize(OptimizeProcessingStep),
-
-    #[serde(rename = "compress")]
-    Compress(CompressProcessingStep),
+    #[serde(rename = "serve_from_cache")]
+    ServeFromCache,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -118,27 +121,101 @@ pub struct OptimizeProcessingStep {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct CompressProcessingStep {
-    pub encoding: SmolStr,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StaticResponseProcessingStep {
     // pub static_response: StaticResponseName,
     pub data: HashMap<SmolStr, SmolStr>,
     pub config_name: Option<ConfigName>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<LanguageTagBuf>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ExceptionProcessingStep {
     pub exception: Exception,
+    pub handler_name: Option<SmolStr>,
     pub data: HashMap<SmolStr, SmolStr>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "handler")]
-pub enum HandlerProcessingStep {
+#[serde(tag = "rescuable")]
+pub enum CatchProcessingVariantStep {
+    #[serde(rename = "exception")]
+    Exception { exception: String },
+
+    #[serde(rename = "status_code")]
+    StatusCode {
+        #[serde(with = "http_serde::status_code")]
+        status_code: http::StatusCode,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CatchProcessingStep {
+    #[serde(flatten)]
+    pub variant: CatchProcessingVariantStep,
+
+    pub catch_matcher: String,
+
+    pub scope: ScopeLog,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "level")]
+pub enum ScopeLog {
+    #[serde(rename = "project_config")]
+    ProjectConfig,
+
+    #[serde(rename = "config_name")]
+    ClientConfig {
+        config_name: ConfigName,
+        revision: ClientConfigRevision,
+    },
+
+    #[serde(rename = "project_mount")]
+    ProjectMount { mount_point: MountPointName },
+
+    #[serde(rename = "client_mount")]
+    ClientMount {
+        config_name: ConfigName,
+        revision: ClientConfigRevision,
+        mount_point: MountPointName,
+    },
+
+    #[serde(rename = "project_handler")]
+    ProjectHandler {
+        mount_point: MountPointName,
+        handler_name: HandlerName,
+    },
+
+    #[serde(rename = "client_handler")]
+    ClientHandler {
+        config_name: ConfigName,
+        revision: ClientConfigRevision,
+        mount_point: MountPointName,
+        handler_name: HandlerName,
+    },
+
+    #[serde(rename = "project_rule")]
+    ProjectRule {
+        mount_point: MountPointName,
+        handler_name: HandlerName,
+        rule_num: usize,
+    },
+
+    #[serde(rename = "client_rule")]
+    ClientRule {
+        config_name: ConfigName,
+        revision: ClientConfigRevision,
+        mount_point: MountPointName,
+        handler_name: HandlerName,
+        rule_num: usize,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "handler_kind")]
+pub enum HandlerProcessingStepVariant {
     #[serde(rename = "auth")]
     Auth(AuthHandlerLogMessage),
     #[serde(rename = "proxy")]
@@ -151,6 +228,12 @@ pub enum HandlerProcessingStep {
     StaticDir(StaticDirHandlerLogMessage),
     // #[serde(rename = "application_firewall")]
     // ApplicationFirewall(ApplicationFirewallLogMessage),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HandlerProcessingStep {
+    #[serde(flatten)]
+    pub variant: HandlerProcessingStepVariant,
 }
 
 // #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -172,7 +255,9 @@ pub enum HandlerProcessingStep {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StaticDirHandlerLogMessage {
     pub config_name: ConfigName,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<LanguageTagBuf>,
+    pub handler_name: HandlerName,
 
     pub attempts: Vec<ProxyAttemptLogMessage>,
 }
@@ -208,6 +293,7 @@ pub enum ProtocolUpgrade {
 pub struct ProxyHandlerLogMessage {
     pub upstream: Upstream,
     pub config_name: ConfigName,
+    pub handler_name: HandlerName,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upgrade: Option<ProtocolUpgrade>,
@@ -246,7 +332,9 @@ pub struct BodyLog {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct S3BucketHandlerLogMessage {
     pub region: SmolStr,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<LanguageTagBuf>,
+    pub handler_name: HandlerName,
 
     #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
     pub proxy_response_body: HttpBodyLog,
@@ -255,7 +343,9 @@ pub struct S3BucketHandlerLogMessage {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GcsBucketHandlerLogMessage {
     pub bucket: SmolStr,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<LanguageTagBuf>,
+    pub handler_name: HandlerName,
 
     #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
     pub proxy_response_body: HttpBodyLog,
@@ -272,9 +362,11 @@ pub enum AclAction {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AuthHandlerLogMessage {
+    pub handler_name: HandlerName,
     pub provider: Option<SmolStr>,
     pub identity: Option<SmolStr>,
     pub acl_entry: Option<SmolStr>,
     pub acl_action: AclAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<LanguageTagBuf>,
 }

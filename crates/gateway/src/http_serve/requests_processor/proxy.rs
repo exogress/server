@@ -35,10 +35,10 @@ use chrono::Utc;
 use exogress_common::{
     common_utils::uri_ext::UriExt,
     config_core::UpstreamDefinition,
-    entities::{LabelName, LabelValue},
+    entities::{HandlerName, LabelName, LabelValue},
 };
 use exogress_server_common::logging::{
-    HttpBodyLog, InstanceLog, ProtocolUpgrade, ProxyAttemptLogMessage,
+    HandlerProcessingStepVariant, HttpBodyLog, InstanceLog, ProtocolUpgrade, ProxyAttemptLogMessage,
 };
 use futures::StreamExt;
 use hashbrown::HashMap;
@@ -50,6 +50,7 @@ use tokio_tungstenite::WebSocketStream;
 
 pub struct ResolvedProxy {
     pub name: Upstream,
+    pub handler_name: HandlerName,
     pub upstream: UpstreamDefinition,
     pub instances: HashMap<InstanceId, HashMap<LabelName, LabelValue>>,
     pub balancer: Mutex<SmoothWeight<InstanceId>>,
@@ -347,10 +348,11 @@ impl ResolvedProxy {
                         .lock()
                         .as_mut()
                         .steps
-                        .push(ProcessingStep::Invoked(HandlerProcessingStep::Proxy(
-                            ProxyHandlerLogMessage {
+                        .push(ProcessingStep::Invoked(HandlerProcessingStep {
+                            variant: HandlerProcessingStepVariant::Proxy(ProxyHandlerLogMessage {
                                 upstream: self.name.clone(),
                                 config_name: self.config_id.config_name.clone(),
+                                handler_name: self.handler_name.clone(),
                                 upgrade: if is_websocket {
                                     Some(ProtocolUpgrade::WebSocket)
                                 } else {
@@ -358,8 +360,8 @@ impl ResolvedProxy {
                                 },
                                 language: language.clone(),
                                 attempts,
-                            },
-                        )));
+                            }),
+                        }));
 
                     return HandlerInvocationResult::Responded;
                 }
