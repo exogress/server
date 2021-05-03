@@ -78,26 +78,8 @@ impl ElasticsearchClient {
     ) -> anyhow::Result<()> {
         let body: Vec<BulkOperation<_>> = messages
             .into_iter()
-            .map(|msg| BulkOperation::index(msg).into())
+            .map(|msg| BulkOperation::create(msg.request_id, msg).into())
             .collect();
-
-        self.client
-            .indices()
-            .create(IndicesCreateParts::Index(index.as_str()))
-            .send()
-            .await?;
-
-        self.client
-            .indices()
-            .put_mapping(IndicesPutMappingParts::Index(&[index.as_str()]))
-            .body(json!({
-                "properties" : {
-                    "date" : { "type" : "date" },
-                    "client_addr": { "type": "ip" }
-                }
-            }))
-            .send()
-            .await?;
 
         match self
             .client

@@ -2,9 +2,9 @@ use elasticsearch::{
     cert::{Certificate, CertificateValidation},
     cluster::ClusterHealthParts,
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
-    Elasticsearch, SearchParts,
+    Elasticsearch, GetParts, SearchParts,
 };
-use exogress_common::entities::Ulid;
+use exogress_common::entities::{AccountUniqueId, Ulid};
 use serde_json::{json, Value};
 use tokio::{fs::File, io::AsyncReadExt};
 
@@ -71,10 +71,12 @@ impl ElasticsearchClient {
 
     pub(crate) async fn find_request_by_request_id(
         &self,
+        account_unique_id: &AccountUniqueId,
         request_id: &Ulid,
     ) -> Result<Value, elasticsearch::Error> {
+        let ds = format!("account-{}", account_unique_id.to_string().to_lowercase());
         self.client
-            .search(SearchParts::Index(&["*"]))
+            .search(SearchParts::Index(&[&ds]))
             .body(json!({
                 "query": {
                     "match": {

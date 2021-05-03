@@ -123,7 +123,7 @@ pub async fn server(
                                                 let grouped = messages
                                                     .into_iter()
                                                     .into_group_map_by(|msg| {
-                                                        format!("{}-{}", msg.account_unique_id, msg.date.format("%Y.%m.%d")).to_lowercase()
+                                                        format!("account-{}", msg.account_unique_id).to_lowercase()
                                                     });
 
                                                 for (index, messages_for_index) in grouped {

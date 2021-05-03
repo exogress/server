@@ -3,7 +3,7 @@ use anyhow::bail;
 use bson::oid::ObjectId;
 use exogress_common::{
     access_tokens::{validate_jwt_token, Claims},
-    entities::{AccessKeyId, AccountName, ProjectName, Ulid},
+    entities::{AccessKeyId, AccountName, AccountUniqueId, ProjectName, Ulid},
 };
 use serde_json::Value;
 use typed_builder::TypedBuilder;
@@ -48,12 +48,16 @@ impl Service {
 
     pub(crate) async fn find_request_by_request_id(
         &self,
+        account_unique_id: &AccountUniqueId,
         request_id: &Ulid,
     ) -> anyhow::Result<Option<Value>> {
         let mut res = self
             .elasticsearch
-            .find_request_by_request_id(request_id)
+            .find_request_by_request_id(account_unique_id, request_id)
             .await?;
+
+        error!("res = {:?}", res);
+
         if let Some(array) = res["hits"].take()["hits"].take().as_array_mut() {
             if let Some(mut first) = array.pop() {
                 Ok(Some(first["_source"].take()))

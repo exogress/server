@@ -103,10 +103,16 @@ pub async fn run_http_server(
                     }
                 };
 
-                match service.find_request_by_request_id(&request_id).await {
+                match service
+                    .find_request_by_request_id(&account.unique_id, &request_id)
+                    .await
+                {
                     Ok(Some(r)) => Ok(warp::reply::json(&r)),
                     Ok(None) => Err(warp::reject::custom(ApiError::RequestIdNotFound)),
-                    Err(_e) => Err(warp::reject::custom(ApiError::InternalServerError)),
+                    Err(e) => {
+                        error!("Error searching in elasticsearch: {}", e);
+                        Err(warp::reject::custom(ApiError::InternalServerError))
+                    }
                 }
             }
         }

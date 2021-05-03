@@ -565,12 +565,12 @@ impl RequestsProcessor {
 
             let response_body_log = HttpBodyLog::default();
             let request_body_log = HttpBodyLog::default();
+            let started_at = Utc::now();
 
             let log_message = LogMessage {
                 request_id,
                 gw_location: self.gw_location.clone(),
                 project_unique_id: self.project_unique_id.clone(),
-                date: Utc::now(),
                 remote_addr: remote_addr.ip(),
                 account_unique_id: self.account_unique_id.clone(),
                 project: self.project_name.clone(),
@@ -589,7 +589,8 @@ impl RequestsProcessor {
                 str: None,
                 request_body: request_body_log.clone(),
                 response_body: response_body_log.clone(),
-                started_at: Utc::now(),
+                timestamp: started_at,
+                started_at,
                 ended_at: None,
                 compression: None,
                 time_taken_ms: None,

@@ -1,4 +1,4 @@
-use chrono::{serde::ts_milliseconds, DateTime, Utc};
+use chrono::{DateTime, Utc};
 use exogress_common::{
     config_core::ClientConfigRevision,
     entities::{
@@ -27,10 +27,6 @@ impl HttpBodyLog {
 pub struct LogMessage {
     pub request_id: Ulid,
     pub gw_location: SmolStr,
-
-    // Date is a system fields. This format should be kept
-    #[serde(with = "ts_milliseconds")]
-    pub date: chrono::DateTime<chrono::Utc>,
 
     pub remote_addr: IpAddr,
 
@@ -61,6 +57,9 @@ pub struct LogMessage {
     #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
     pub response_body: HttpBodyLog,
 
+    #[serde(rename = "@timestamp")]
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
 
@@ -75,7 +74,7 @@ impl LogMessage {
     pub fn set_message_string(&mut self) {
         self.str = Some(format!(
             "{} {} {} {} {} {} {} {} \"{}\"",
-            self.date.to_rfc3339(),
+            self.started_at.to_rfc3339(),
             self.gw_location,
             self.mount_point,
             self.remote_addr,
