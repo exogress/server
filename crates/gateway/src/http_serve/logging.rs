@@ -144,7 +144,6 @@ mod test {
         let msg = LogMessage {
             request_id: Ulid::new(),
             gw_location: Default::default(),
-            date: Utc::now(),
             remote_addr: "127.0.0.1".parse().unwrap(),
             account_unique_id: Default::default(),
             project: "prj".parse().unwrap(),
@@ -161,8 +160,10 @@ mod test {
             str: None,
             request_body: Default::default(),
             response_body: Default::default(),
+            timestamp: Utc::now(),
             started_at: Utc::now(),
             ended_at: None,
+            compression: None,
             time_taken_ms: None,
         };
 
@@ -187,7 +188,6 @@ mod test {
         let msg = LogMessage {
             request_id: Ulid::new(),
             gw_location: Default::default(),
-            date: Utc::now(),
             remote_addr: "127.0.0.1".parse().unwrap(),
             account_unique_id: Default::default(),
             project: "prj".parse().unwrap(),
@@ -204,8 +204,10 @@ mod test {
             str: None,
             request_body: Default::default(),
             response_body: response_body.clone(),
+            timestamp: Utc::now(),
             started_at: Utc::now(),
             ended_at: None,
+            compression: None,
             time_taken_ms: None,
         };
 
@@ -248,7 +250,6 @@ mod test {
         let msg = LogMessage {
             request_id: Ulid::new(),
             gw_location: Default::default(),
-            date: Utc::now(),
             remote_addr: "127.0.0.1".parse().unwrap(),
             account_unique_id: Default::default(),
             project: "prj".parse().unwrap(),
@@ -265,8 +266,10 @@ mod test {
             str: None,
             request_body: Default::default(),
             response_body: response_body.clone(),
+            timestamp: Utc::now(),
             started_at: Utc::now(),
             ended_at: None,
+            compression: None,
             time_taken_ms: None,
         };
 
