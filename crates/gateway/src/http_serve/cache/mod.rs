@@ -560,7 +560,7 @@ impl Cache {
         valid_till: DateTime<Utc>,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
         temp_file_path: PathBuf,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let file_name = processing_identifier.to_string();
 
         let key = (account_unique_id.clone(), file_name.clone());
@@ -616,7 +616,7 @@ impl Cache {
                 )
                 .await?;
 
-                Ok(())
+                Ok(true)
             }
             .await;
 
@@ -625,7 +625,7 @@ impl Cache {
             r
         } else {
             error!("Will not save since another saving is in progress");
-            Ok(())
+            Ok(false)
         }
     }
 
@@ -882,5 +882,9 @@ impl CacheResponse {
 
     pub fn as_full_resp(&self) -> &Response<hyper::Body> {
         &self.full
+    }
+
+    pub fn is_transformed(&self) -> bool {
+        self.full.headers().contains_key("x-exg-transformed")
     }
 }

@@ -35,7 +35,7 @@ use exogress_common::{
     common_utils::uri_ext::UriExt,
     config_core::{
         self, is_profile_active, referenced,
-        referenced::{Container, Parameter},
+        referenced::{Container, ContainerScope, Parameter},
         refinable::RefinableSet,
         Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandlerVariant,
         MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue,
@@ -53,8 +53,11 @@ use exogress_server_common::{
     crypto,
     crypto::decrypt_reader,
     logging::{
-        CatchProcessingStep, CatchProcessingVariantStep, ExceptionProcessingStep, HttpBodyLog,
-        LogMessage, ProcessingStep, ProcessingStep::Catch, ScopeLog, StaticResponseProcessingStep,
+        CacheSaveStatus, CacheableInvocationProcessingStep, CatchProcessingStep,
+        CatchProcessingVariantStep, ExceptionProcessingStep, HandlerProcessingStep,
+        HandlerProcessingStepVariant, HttpBodyLog, LogMessage, ProcessingStep, RequestMetaInfo,
+        ResponseMetaInfo, ScopeLog, StaticResponseProcessingStep, TransformationStatus,
+        WellKnownRequestHeaders,
     },
     presence,
     transformer::{ProcessResponse, MAX_SIZE_FOR_TRANSFORMATION},
@@ -69,7 +72,7 @@ use hashbrown::HashMap;
 use http::{
     header::{
         HeaderName, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, LOCATION,
-        RANGE, SET_COOKIE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
+        RANGE, SET_COOKIE, STRICT_TRANSPORT_SECURITY,
     },
     HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 };
@@ -98,6 +101,7 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+use tap::Tap;
 use tokio::io::AsyncWriteExt;
 use trust_dns_resolver::TokioAsyncResolver;
 use typed_headers::{Accept, ContentType, HeaderMapExt};
@@ -217,6 +221,12 @@ impl RequestsProcessor {
         let mut processed_by = None;
         let original_req_headers = req.headers().clone();
         for handler in &self.ordered_handlers {
+            let invocation_log = Arc::new(parking_lot::Mutex::new(
+                CacheableInvocationProcessingStep::Empty {
+                    transformation: None,
+                },
+            ));
+
             // restore original headers
             *req.headers_mut() = original_req_headers.clone();
 
@@ -242,13 +252,19 @@ impl RequestsProcessor {
                     if resp_from_cache.is_full_response_success()
                         || resp_from_cache.has_conditional()
                     {
-                        if !self.is_transformations_limited
-                            && is_eligible_for_transformation_not_considering_status_code(
-                                resp_from_cache.as_full_resp(),
-                                handler.resolved_variant.post_processing(),
-                            )
-                        {
-                            error!("After cache responded, it is eligible for transformation");
+                        *invocation_log.lock() = CacheableInvocationProcessingStep::Cached {
+                            config_name: handler.config_name.clone(),
+                            handler_name: handler.handler_name.clone(),
+                            transformation: None,
+                        };
+
+                        if self.is_transformations_limited {
+                            *invocation_log.lock().transformation_mut() =
+                                Some(TransformationStatus::Limited);
+                        } else if is_eligible_for_transformation_not_considering_status_code(
+                            resp_from_cache.as_full_resp(),
+                            handler.resolved_variant.post_processing(),
+                        ) {
                             if let Some(max_age) =
                                 cache_max_age_without_checks(resp_from_cache.as_full_resp())
                             {
@@ -276,9 +292,10 @@ impl RequestsProcessor {
                                         let handler_name = handler.handler_name.clone();
                                         let handler_checksum = handler.handler_checksum.clone();
                                         let requested_url = requested_url.clone();
+                                        let log_message_container = log_message_container.clone();
+                                        let invocation_log = invocation_log.clone();
 
                                         tokio::spawn(async move {
-                                            error!("waiting for on_response_finished");
                                             match on_response_finished.await {
                                                 Some(cloned_resp) => {
                                                     trigger_transformation_if_required(
@@ -299,6 +316,8 @@ impl RequestsProcessor {
                                                         handler_name,
                                                         handler_checksum,
                                                         &requested_url,
+                                                        invocation_log.clone(),
+                                                        log_message_container.clone(),
                                                     )
                                                     .await;
                                                 }
@@ -318,27 +337,38 @@ impl RequestsProcessor {
                                     }
                                 }
                             } else {
+                                *invocation_log.lock().transformation_mut() =
+                                    Some(TransformationStatus::NotEligible);
+
                                 *res = resp_from_cache.into_for_user();
                             };
                         } else {
+                            *invocation_log.lock().transformation_mut() =
+                                Some(if resp_from_cache.is_transformed() {
+                                    TransformationStatus::Transformed
+                                } else {
+                                    error!("Set transformation NotEligible 2");
+                                    TransformationStatus::NotEligible
+                                });
+
                             *res = resp_from_cache.into_for_user();
-                            error!("after cache responded, it's not eligible for transformation");
                         }
 
                         res.headers_mut()
                             .insert("x-exg-edge-cached", "1".parse().unwrap());
 
-                        if let Ok(Some(len)) =
-                            res.headers().typed_get::<typed_headers::ContentLength>()
-                        {
-                            log_message_container.lock().as_mut().content_len = Some(len.0);
-                        }
+                        log_message_container
+                            .lock()
+                            .as_mut()
+                            .response
+                            .headers
+                            .fill_from_headers(res.headers());
 
                         log_message_container
                             .lock()
                             .as_mut()
                             .steps
-                            .push(ProcessingStep::ServeFromCache);
+                            .push(ProcessingStep::Invoke(invocation_log));
 
                         return;
                     }
@@ -386,13 +416,14 @@ impl RequestsProcessor {
                         local_addr,
                         remote_addr,
                         &best_language,
+                        invocation_log.clone(),
                         log_message_container,
                     )
                     .await;
 
                 match result {
                     ResolvedHandlerProcessingResult::Processed => {
-                        processed_by = Some(handler);
+                        processed_by = Some((handler, invocation_log));
                         break;
                     }
                     ResolvedHandlerProcessingResult::FiltersNotMatched => {}
@@ -408,88 +439,109 @@ impl RequestsProcessor {
                 *res = Response::new(Body::from("Not found"));
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
-            Some(handler) => {
-                if !self.is_transformations_limited
-                    && res.status().is_success()
-                    && is_eligible_for_transformation_not_considering_status_code(
-                        res,
-                        handler.resolved_variant.post_processing(),
-                    )
-                {
-                    if !self.cache.is_enough_space() {
-                        crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
-                        warn!(
-                            "Not saving content to cache, because cache reached the limit in size"
-                        );
-                    } else {
-                        if let Some(max_age) = cache_max_age_if_eligible(req, res, handler) {
-                            match clone_response_through_tempfile(res).await {
-                                Ok(on_response_finished) => {
-                                    let transformer_client = self.transformer_client.clone();
-                                    let account_secret_key =
-                                        self.xchacha20poly1305_secret_key.clone();
+            Some((handler, invocation_log)) => {
+                if handler.resolved_variant.is_cache_enabled() != Some(true) {
+                    // cache is disabled
+                    if let CacheableInvocationProcessingStep::Invoked(step) =
+                        &mut *invocation_log.lock()
+                    {
+                        step.cache = Some(CacheSaveStatus::Disabled);
+                    }
+                    *invocation_log.lock().transformation_mut() =
+                        Some(TransformationStatus::CacheDisabled);
+                } else {
+                    if !self.is_transformations_limited
+                        && res.status().is_success()
+                        && is_eligible_for_transformation_not_considering_status_code(
+                            res,
+                            handler.resolved_variant.post_processing(),
+                        )
+                    {
+                        if !self.cache.is_enough_space() {
+                            crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
+                            warn!(
+                                "Not triggering transformation, because cache dir reached global limit in size"
+                            );
+                        } else {
+                            if let Some(max_age) = cache_max_age_if_eligible(req, res) {
+                                match clone_response_through_tempfile(res).await {
+                                    Ok(on_response_finished) => {
+                                        let transformer_client = self.transformer_client.clone();
+                                        let account_secret_key =
+                                            self.xchacha20poly1305_secret_key.clone();
 
-                                    let req_uri = req.uri().clone();
-                                    let req_method = req.method().clone();
-                                    let req_headers = req.headers().clone();
+                                        let req_uri = req.uri().clone();
+                                        let req_method = req.method().clone();
+                                        let req_headers = req.headers().clone();
 
-                                    let cache = self.cache.clone();
-                                    let account_unique_id = self.account_unique_id.clone();
-                                    let project_name = self.project_name.clone();
-                                    let project_unique_id = self.project_unique_id.clone();
-                                    let mount_point_name = self.mount_point_name.clone();
-                                    let max_pop_cache_size_bytes =
-                                        self.max_pop_cache_size_bytes.clone();
-                                    let xchacha20poly1305_secret_key =
-                                        self.xchacha20poly1305_secret_key.clone();
-                                    let handler_name = handler.handler_name.clone();
-                                    let handler_checksum = handler.handler_checksum.clone();
-                                    let requested_url = requested_url.clone();
+                                        let cache = self.cache.clone();
+                                        let account_unique_id = self.account_unique_id.clone();
+                                        let project_name = self.project_name.clone();
+                                        let project_unique_id = self.project_unique_id.clone();
+                                        let mount_point_name = self.mount_point_name.clone();
+                                        let max_pop_cache_size_bytes =
+                                            self.max_pop_cache_size_bytes.clone();
+                                        let xchacha20poly1305_secret_key =
+                                            self.xchacha20poly1305_secret_key.clone();
+                                        let handler_name = handler.handler_name.clone();
+                                        let handler_checksum = handler.handler_checksum.clone();
+                                        let requested_url = requested_url.clone();
+                                        let log_message_container = log_message_container.clone();
+                                        let invocation_log = invocation_log.clone();
 
-                                    tokio::spawn(async move {
-                                        if let Some(cloned_resp) = on_response_finished.await {
-                                            trigger_transformation_if_required(
-                                                max_age,
-                                                &req_headers,
-                                                req_method,
-                                                &req_uri,
-                                                cloned_resp,
-                                                account_secret_key,
-                                                transformer_client,
-                                                cache,
-                                                account_unique_id,
-                                                project_name,
-                                                project_unique_id,
-                                                mount_point_name,
-                                                max_pop_cache_size_bytes,
-                                                xchacha20poly1305_secret_key,
-                                                handler_name,
-                                                handler_checksum,
-                                                &requested_url,
-                                            )
-                                            .await;
-                                        }
-                                    });
-                                }
-                                Err(e) => {
-                                    error!("Failed to clone response through tempfile: {}", e);
+                                        tokio::spawn(async move {
+                                            if let Some(cloned_resp) = on_response_finished.await {
+                                                trigger_transformation_if_required(
+                                                    max_age,
+                                                    &req_headers,
+                                                    req_method,
+                                                    &req_uri,
+                                                    cloned_resp,
+                                                    account_secret_key,
+                                                    transformer_client,
+                                                    cache,
+                                                    account_unique_id,
+                                                    project_name,
+                                                    project_unique_id,
+                                                    mount_point_name,
+                                                    max_pop_cache_size_bytes,
+                                                    xchacha20poly1305_secret_key,
+                                                    handler_name,
+                                                    handler_checksum,
+                                                    &requested_url,
+                                                    invocation_log,
+                                                    log_message_container.clone(),
+                                                )
+                                                .await;
+                                            }
+                                        });
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to clone response through tempfile: {}", e);
+                                    }
                                 }
                             }
                         }
-                    }
-                } else {
-                    // compression is never applied after transformation
-                    if let Err(e) = self.compress_if_applicable(
-                        req,
-                        res,
-                        handler
-                            .resolved_variant
-                            .post_processing()
-                            .map(|pp| &pp.encoding),
-                        log_message_container,
-                    ) {
-                        warn!("Error compressing: {}", e);
-                    }
+                    } else {
+                        *invocation_log.lock().transformation_mut() =
+                            Some(if self.is_transformations_limited {
+                                TransformationStatus::Limited
+                            } else {
+                                TransformationStatus::NotEligible
+                            });
+                    };
+                };
+
+                if let Err(e) = self.compress_if_applicable(
+                    req,
+                    res,
+                    handler
+                        .resolved_variant
+                        .post_processing()
+                        .map(|pp| &pp.encoding),
+                    log_message_container,
+                ) {
+                    warn!("Error compressing: {}", e);
                 };
 
                 res.headers_mut()
@@ -497,48 +549,68 @@ impl RequestsProcessor {
                 res.headers_mut()
                     .insert("x-exg-location", self.gw_location.parse().unwrap());
 
-                if !self.cache.is_enough_space() {
-                    crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
-                    warn!("Not saving content to cache, because cache reached the limit in size");
-                } else {
-                    if let Some(max_age) = cache_max_age_if_eligible(req, res, handler) {
-                        let cache = self.cache.clone();
-                        let account_unique_id = self.account_unique_id.clone();
-                        let project_name = self.project_name.clone();
-                        let mount_point_name = self.mount_point_name.clone();
-                        let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes.clone();
-                        let xchacha20poly1305_secret_key =
-                            self.xchacha20poly1305_secret_key.clone();
-                        let handler_name = handler.handler_name.clone();
-                        let handler_checksum = handler.handler_checksum.clone();
-
-                        let req_headers = req.headers();
-                        let req_method = req.method().clone();
-                        let req_uri = req.uri();
-
-                        save_to_cache(
-                            max_age,
-                            req_headers,
-                            req_method,
-                            req_uri,
-                            res,
-                            cache,
-                            account_unique_id,
-                            project_name,
-                            mount_point_name,
-                            max_pop_cache_size_bytes,
-                            xchacha20poly1305_secret_key,
-                            handler_name,
-                            handler_checksum,
+                if handler.resolved_variant.is_cache_enabled() == Some(true) {
+                    if !self.cache.is_enough_space() {
+                        crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
+                        warn!(
+                            "Not saving content to cache, because cache reached the limit in size"
                         );
+                        if let CacheableInvocationProcessingStep::Invoked(step) =
+                            &mut *invocation_log.lock()
+                        {
+                            step.cache = Some(CacheSaveStatus::SaveError);
+                        }
+                    } else {
+                        if let Some(max_age) = cache_max_age_if_eligible(req, res) {
+                            let cache = self.cache.clone();
+                            let account_unique_id = self.account_unique_id.clone();
+                            let project_name = self.project_name.clone();
+                            let mount_point_name = self.mount_point_name.clone();
+                            let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes.clone();
+                            let xchacha20poly1305_secret_key =
+                                self.xchacha20poly1305_secret_key.clone();
+                            let handler_name = handler.handler_name.clone();
+                            let handler_checksum = handler.handler_checksum.clone();
+
+                            let req_headers = req.headers();
+                            let req_method = req.method().clone();
+                            let req_uri = req.uri();
+
+                            save_to_cache(
+                                max_age,
+                                req_headers,
+                                req_method,
+                                req_uri,
+                                res,
+                                cache,
+                                account_unique_id,
+                                project_name,
+                                mount_point_name,
+                                max_pop_cache_size_bytes,
+                                xchacha20poly1305_secret_key,
+                                handler_name,
+                                handler_checksum,
+                                Some(invocation_log.clone()),
+                                &log_message_container,
+                            );
+                        } else {
+                            if let CacheableInvocationProcessingStep::Invoked(step) =
+                                &mut *invocation_log.lock()
+                            {
+                                step.cache = Some(CacheSaveStatus::NotEligible);
+                            }
+                        }
                     }
                 }
             }
         }
 
-        if let Ok(Some(len)) = res.headers().typed_get::<typed_headers::ContentLength>() {
-            log_message_container.lock().as_mut().content_len = Some(len.0);
-        }
+        log_message_container
+            .lock()
+            .as_mut()
+            .response
+            .headers
+            .fill_from_headers(res.headers());
 
         if let Some(strict_transport_security) = &self.strict_transport_security {
             res.headers_mut().insert(
@@ -575,30 +647,40 @@ impl RequestsProcessor {
                 account_unique_id: self.account_unique_id.clone(),
                 project: self.project_name.clone(),
                 mount_point: self.mount_point_name.clone(),
-                url: requested_url.to_string().into(),
-                method: req.method().to_string().into(),
+                request: RequestMetaInfo {
+                    headers: WellKnownRequestHeaders::default().tap_mut(|well_known_headers| {
+                        well_known_headers.fill_from_headers(&req.headers())
+                    }),
+                    body: request_body_log.clone(),
+                    url: requested_url.to_string().into(),
+                    method: req.method().to_string().into(),
+                },
+                response: ResponseMetaInfo {
+                    headers: Default::default(),
+                    body: response_body_log.clone(),
+                    compression: None,
+                    status_code: None,
+                },
                 protocol: format!("{:?}", req.version()).into(),
-                user_agent: req
-                    .headers()
-                    .get(USER_AGENT)
-                    .map(|v| v.to_str().unwrap_or_default().into()),
-                status_code: None,
-                content_len: None,
                 steps: vec![],
                 facts: facts.clone(),
                 str: None,
-                request_body: request_body_log.clone(),
-                response_body: response_body_log.clone(),
                 timestamp: started_at,
                 started_at,
                 ended_at: None,
-                compression: None,
                 time_taken_ms: None,
             };
 
             let log_message_container = Arc::new(parking_lot::Mutex::new(
                 LogMessageSendOnDrop::new(log_message, self.log_messages_tx.clone()),
             ));
+
+            let original_request_body = mem::replace(req.body_mut(), Body::empty());
+            *req.body_mut() = save_body_info_to_log_message(
+                original_request_body,
+                log_message_container.clone(),
+                request_body_log,
+            );
 
             self.do_process(
                 req,
@@ -614,21 +696,14 @@ impl RequestsProcessor {
             {
                 let mut log_message = log_message_container.lock();
 
-                log_message.as_mut().status_code = Some(res.status().as_u16());
+                log_message.as_mut().response.status_code = Some(res.status().as_u16());
             };
 
             let original_response_body = mem::replace(res.body_mut(), Body::empty());
             *res.body_mut() = save_body_info_to_log_message(
                 original_response_body,
                 log_message_container.clone(),
-                response_body_log,
-            );
-
-            let original_request_body = mem::replace(req.body_mut(), Body::empty());
-            *req.body_mut() = save_body_info_to_log_message(
-                original_request_body,
-                log_message_container.clone(),
-                request_body_log,
+                response_body_log.clone(),
             );
 
             res.headers_mut().insert(
@@ -664,11 +739,20 @@ fn save_to_cache(
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     handler_name: HandlerName,
     handler_checksum: HandlerChecksum,
+    invocation_log: Option<Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>>,
+    log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
 ) {
     if !cache.is_enough_space() {
         crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
         warn!("Not saving content to cache, because cache reached the limit in size");
+        if let Some(invocation_log) = &invocation_log {
+            if let CacheableInvocationProcessingStep::Invoked(step) = &mut *invocation_log.lock() {
+                step.cache = Some(CacheSaveStatus::SaveError);
+            }
+        }
     }
+
+    shadow_clone!(log_message_container);
 
     let path_and_query = req_uri.path_and_query().unwrap().to_string();
 
@@ -748,13 +832,44 @@ fn save_to_cache(
                     )
                     .await;
 
-                if let Err(e) = cached_response {
-                    crate::statistics::EDGE_CACHE_ERRORS
-                        .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
-                        .inc();
-                    error!("error saving to cache: {}", e);
+                match cached_response {
+                    Err(e) => {
+                        crate::statistics::EDGE_CACHE_ERRORS
+                            .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
+                            .inc();
+                        error!("error saving to cache: {}", e);
+                        if let Some(invocation_log) = invocation_log {
+                            if let CacheableInvocationProcessingStep::Invoked(step) =
+                                &mut *invocation_log.lock()
+                            {
+                                step.cache = Some(CacheSaveStatus::SaveError);
+                            }
+                        }
+                    }
+                    Ok(true) => {
+                        if let Some(invocation_log) = invocation_log {
+                            if let CacheableInvocationProcessingStep::Invoked(step) =
+                                &mut *invocation_log.lock()
+                            {
+                                step.cache = Some(CacheSaveStatus::Saved {
+                                    max_age: max_age.to_std().unwrap(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(false) => {
+                        if let Some(invocation_log) = invocation_log {
+                            if let CacheableInvocationProcessingStep::Invoked(step) =
+                                &mut *invocation_log.lock()
+                            {
+                                step.cache = Some(CacheSaveStatus::Skipped);
+                            }
+                        }
+                    }
                 }
             }
+
+            mem::drop(log_message_container);
 
             Ok::<_, anyhow::Error>(())
         }
@@ -786,10 +901,14 @@ async fn trigger_transformation_if_required(
     handler_name: HandlerName,
     handler_checksum: HandlerChecksum,
     requested_url: &http::uri::Uri,
+    invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
+    log_message_container: Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
 ) {
     let r = async move {
         if !cache.is_enough_space() {
             crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
+            *invocation_log.lock().transformation_mut() = Some(TransformationStatus::Skipped);
+
             warn!("Not saving content to cache, because cache reached the limit in size");
         } else {
             let maybe_accept = req_headers.typed_get::<typed_headers::Accept>()?;
@@ -814,8 +933,9 @@ async fn trigger_transformation_if_required(
                     )
                     .await?;
 
-                error!("TRANSFORMER: transformer_result = {:?}", transformer_result);
                 let mut resp = cloned_res.response;
+
+                *invocation_log.lock().transformation_mut() = Some(TransformationStatus::Triggered);
 
                 match transformer_result {
                     ProcessResponse::Ready(ready) => {
@@ -884,8 +1004,6 @@ async fn trigger_transformation_if_required(
 
                                 *resp.body_mut() = Body::from(transformed_content);
 
-                                error!("Will saved transformed to cache");
-
                                 save_to_cache(
                                     max_age,
                                     req_headers,
@@ -900,6 +1018,8 @@ async fn trigger_transformation_if_required(
                                     xchacha20poly1305_secret_key,
                                     handler_name,
                                     handler_checksum,
+                                    None,
+                                    &log_message_container,
                                 );
 
                                 // FIXME: this is ugly, but we need to consume whole body stream in order
@@ -928,12 +1048,17 @@ async fn trigger_transformation_if_required(
                                 xchacha20poly1305_secret_key,
                                 handler_name,
                                 handler_checksum,
+                                None,
+                                &log_message_container,
                             );
 
                             // FIXME: this is ugly, but we need to consume whole body stream in order to successfuly complete cache saving
                             let mut body_to_consume = resp.into_body();
                             while let Some(_) = body_to_consume.next().await {}
-                        }
+                        };
+
+                        *invocation_log.lock().transformation_mut() =
+                            Some(TransformationStatus::SavedToCache);
                     }
                     ProcessResponse::PendingUpload { upload_id, .. } => {
                         error!("will upload");
@@ -1093,12 +1218,7 @@ pub fn cache_max_age_without_checks(res: &Response<Body>) -> Option<chrono::Dura
 pub fn cache_max_age_if_eligible(
     req: &Request<Body>,
     res: &Response<Body>,
-    handler: &ResolvedHandler,
 ) -> Option<chrono::Duration> {
-    if handler.resolved_variant.is_cache_enabled() != Some(true) {
-        return None;
-    }
-
     if req.method() != &Method::GET && req.method() != &Method::HEAD {
         return None;
     };
@@ -1211,11 +1331,15 @@ impl ResolvedHandlerVariant {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
+        cacheable_invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
+        assert!(!cacheable_invocation_log.lock().is_not_empty());
+
         match self {
             ResolvedHandlerVariant::Proxy(proxy) => {
-                proxy
+                let mut proxy_log = None;
+                let r = proxy
                     .invoke(
                         req,
                         res,
@@ -1224,12 +1348,29 @@ impl ResolvedHandlerVariant {
                         local_addr,
                         remote_addr,
                         language,
+                        &mut proxy_log,
                         log_message_container,
                     )
-                    .await
+                    .await;
+
+                if let Some(log) = proxy_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::Proxy(log.into()),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::StaticDir(static_dir) => {
-                static_dir
+                let mut static_dir_log = None;
+
+                let r = static_dir
                     .invoke(
                         req,
                         res,
@@ -1238,46 +1379,106 @@ impl ResolvedHandlerVariant {
                         local_addr,
                         remote_addr,
                         language,
+                        &mut static_dir_log,
                         log_message_container,
                     )
-                    .await
+                    .await;
+
+                if let Some(log) = static_dir_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::StaticDir(log.into()),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::Auth(auth) => {
-                auth.invoke(req, res, requested_url, language, log_message_container)
-                    .await
+                let mut auth_log = None;
+
+                let r = auth
+                    .invoke(req, res, requested_url, language, &mut auth_log)
+                    .await;
+
+                if let Some(log) = auth_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::Auth(log.into()),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
-                s3_bucket
+                let mut s3_log = None;
+                let r = s3_bucket
                     .invoke(
                         req,
                         res,
                         requested_url,
                         modified_url,
                         language,
+                        &mut s3_log,
                         log_message_container,
                     )
-                    .await
+                    .await;
+
+                if let Some(log) = s3_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::S3Bucket(log.into()),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
-                gcs_bucket
+                let mut gcs_log = None;
+
+                let r = gcs_bucket
                     .invoke(
                         req,
                         res,
                         requested_url,
                         modified_url,
                         language,
+                        &mut gcs_log,
                         log_message_container,
                     )
-                    .await
+                    .await;
+
+                if let Some(log) = gcs_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::GcsBucket(log.into()),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
-            // ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
-            //     application_firewall
-            //         .invoke(req, res, requested_url, modified_url, language, log_message)
-            //         .await
-            // }
             ResolvedHandlerVariant::PassThrough(pass_through) => {
                 pass_through
-                    .invoke(req, res, requested_url, modified_url, log_message_container)
+                    .invoke(req, res, requested_url, modified_url)
                     .await
             }
         }
@@ -1375,6 +1576,7 @@ impl ResolvedStaticResponseAction {
                         StaticResponseProcessingStep {
                             data: static_response.data.clone(),
                             config_name: handler.config_name.clone(),
+                            scope: container_scope_to_log(&static_response.container_scope),
                             language: language.clone(),
                         },
                     ));
@@ -2063,64 +2265,69 @@ enum ResolvedHandlerProcessingResult {
     NextHandler,
 }
 
-fn scope_to_log(scope: &Scope) -> ScopeLog {
-    match scope {
-        Scope::ProjectConfig => ScopeLog::ProjectConfig,
-        Scope::ClientConfig { config, revision } => ScopeLog::ClientConfig {
-            config_name: config.clone(),
-            revision: revision.clone(),
+fn container_scope_to_log(container_scope: &ContainerScope) -> ScopeLog {
+    match container_scope {
+        ContainerScope::Inline { scope } | ContainerScope::Referenced { scope } => match scope {
+            Scope::ProjectConfig => ScopeLog::ProjectConfig,
+            Scope::ClientConfig { config, revision } => ScopeLog::ClientConfig {
+                config_name: config.clone(),
+                revision: revision.clone(),
+            },
+            Scope::ProjectMount { mount_point } => ScopeLog::ProjectMount {
+                mount_point: mount_point.clone(),
+            },
+            Scope::ClientMount {
+                config,
+                revision,
+                mount_point,
+            } => ScopeLog::ClientMount {
+                config_name: config.clone(),
+                revision: revision.clone(),
+                mount_point: mount_point.clone(),
+            },
+            Scope::ProjectHandler {
+                mount_point,
+                handler,
+            } => ScopeLog::ProjectHandler {
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+            },
+            Scope::ClientHandler {
+                config,
+                revision,
+                mount_point,
+                handler,
+            } => ScopeLog::ClientHandler {
+                config_name: config.clone(),
+                revision: revision.clone(),
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+            },
+            Scope::ProjectRule {
+                mount_point,
+                handler,
+                rule_num,
+            } => ScopeLog::ProjectRule {
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+                rule_num: *rule_num,
+            },
+            Scope::ClientRule {
+                config,
+                revision,
+                mount_point,
+                handler,
+                rule_num,
+            } => ScopeLog::ClientRule {
+                config_name: config.clone(),
+                revision: revision.clone(),
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+                rule_num: *rule_num,
+            },
         },
-        Scope::ProjectMount { mount_point } => ScopeLog::ProjectMount {
-            mount_point: mount_point.clone(),
-        },
-        Scope::ClientMount {
-            config,
-            revision,
-            mount_point,
-        } => ScopeLog::ClientMount {
-            config_name: config.clone(),
-            revision: revision.clone(),
-            mount_point: mount_point.clone(),
-        },
-        Scope::ProjectHandler {
-            mount_point,
-            handler,
-        } => ScopeLog::ProjectHandler {
-            mount_point: mount_point.clone(),
-            handler_name: handler.clone(),
-        },
-        Scope::ClientHandler {
-            config,
-            revision,
-            mount_point,
-            handler,
-        } => ScopeLog::ClientHandler {
-            config_name: config.clone(),
-            revision: revision.clone(),
-            mount_point: mount_point.clone(),
-            handler_name: handler.clone(),
-        },
-        Scope::ProjectRule {
-            mount_point,
-            handler,
-            rule_num,
-        } => ScopeLog::ProjectRule {
-            mount_point: mount_point.clone(),
-            handler_name: handler.clone(),
-            rule_num: *rule_num,
-        },
-        Scope::ClientRule {
-            config,
-            revision,
-            mount_point,
-            handler,
-            rule_num,
-        } => ScopeLog::ClientRule {
-            config_name: config.clone(),
-            revision: revision.clone(),
-            mount_point: mount_point.clone(),
-            handler_name: handler.clone(),
-            rule_num: *rule_num,
+        ContainerScope::Parameter { name } => ScopeLog::Parameter {
+            parameter_name: name.clone(),
         },
     }
 }
@@ -2201,7 +2408,7 @@ impl ResolvedHandler {
                 .lock()
                 .as_mut()
                 .steps
-                .push(ProcessingStep::Exception(ExceptionProcessingStep {
+                .push(ProcessingStep::ThrowException(ExceptionProcessingStep {
                     exception: exception.clone(),
                     handler_name: Some(SmolStr::from(&self.handler_name)),
                     data: data.clone(),
@@ -2235,7 +2442,7 @@ impl ResolvedHandler {
                         variant: CatchProcessingVariantStep::Exception {
                             exception: exception.to_string().into(),
                         },
-                        scope: scope_to_log(&rescue_item.scope),
+                        scope: container_scope_to_log(&rescue_item.container_scope),
                     },
                     (
                         Rescuable::StatusCode(status_code),
@@ -2245,7 +2452,7 @@ impl ResolvedHandler {
                         variant: CatchProcessingVariantStep::StatusCode {
                             status_code: status_code.clone(),
                         },
-                        scope: scope_to_log(&rescue_item.scope),
+                        scope: container_scope_to_log(&rescue_item.container_scope),
                     },
                     r => {
                         unreachable!("BAD rescuable matching => {:?}", r)
@@ -2256,7 +2463,7 @@ impl ResolvedHandler {
                     .lock()
                     .as_mut()
                     .steps
-                    .push(ProcessingStep::Catch(catch_step));
+                    .push(ProcessingStep::CatchException(catch_step));
 
                 match rescue_item.handle {
                     ResolvedCatchAction::Throw {
@@ -2275,7 +2482,7 @@ impl ResolvedHandler {
                         rescuable = rethrow;
 
                         log_message_container.lock().as_mut().steps.push(
-                            ProcessingStep::Exception(ExceptionProcessingStep {
+                            ProcessingStep::ThrowException(ExceptionProcessingStep {
                                 exception: exception.clone(),
                                 // FIXME
                                 handler_name: None,
@@ -2475,6 +2682,7 @@ impl ResolvedHandler {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
+        invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
         if let Some(invocation_result) = self
@@ -2625,9 +2833,22 @@ impl ResolvedHandler {
                         local_addr,
                         remote_addr,
                         language,
+                        invocation_log.clone(),
                         log_message_container,
                     )
                     .await;
+
+                if let HandlerInvocationResult::Responded = invocation_result {
+                    if invocation_log.lock().is_not_empty() {
+                        // handler saved cacheable invocation result. Save it to logs
+
+                        log_message_container
+                            .lock()
+                            .as_mut()
+                            .steps
+                            .push(ProcessingStep::Invoke(invocation_log));
+                    }
+                }
 
                 self.resolve_handler_invocation_result(
                     invocation_result,
@@ -2733,7 +2954,7 @@ fn resolve_static_response(
     refined: &RefinableSet,
     current_scope: &Scope,
 ) -> Result<ResolvedStaticResponse, referenced::Error> {
-    let (static_response, maybe_static_response_scope) =
+    let (static_response, static_response_scope) =
         static_response_container.resolve(params, refined, current_scope)?;
 
     let static_response_status_code = match &static_response {
@@ -2795,7 +3016,7 @@ fn resolve_static_response(
             StaticResponse::Raw(_) => None,
         },
 
-        maybe_scope: maybe_static_response_scope,
+        container_scope: static_response_scope,
     };
 
     Ok(resolved)
@@ -2873,7 +3094,9 @@ fn resolve_rescue_items(
                     rescue_item_scope,
                     current_scope,
                 )?,
-                scope: rescue_item_scope.clone(),
+                container_scope: ContainerScope::Inline {
+                    scope: rescue_item_scope.clone(),
+                },
             })
         })
         .collect::<Option<_>>()
@@ -3425,7 +3648,7 @@ impl RequestsProcessor {
                                                     &data,
                                                     &params,
                                                     &refinable,
-                                                    &handler_scope
+                                                    &rule_scope
                                                 ),
                                                 rescues: resolve_rescue_items(
                                                     &client_config_info,
@@ -3578,7 +3801,7 @@ struct ResolvedStaticResponse {
     headers: HeaderMap,
     data: HashMap<SmolStr, SmolStr>,
     maybe_redirect: Option<ResolvedRedirectResponse>,
-    maybe_scope: Option<Scope>,
+    container_scope: ContainerScope,
 }
 
 impl ResolvedStaticResponse {
@@ -3719,7 +3942,7 @@ pub enum ResolvedCatchMatcher {
 pub struct ResolvedRescueItem {
     catch: ResolvedCatchMatcher,
     handle: ResolvedCatchAction,
-    scope: Scope,
+    container_scope: ContainerScope,
 }
 
 #[derive(Debug)]

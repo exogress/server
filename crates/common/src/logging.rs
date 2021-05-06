@@ -3,14 +3,19 @@ use exogress_common::{
     config_core::ClientConfigRevision,
     entities::{
         AccountUniqueId, ConfigName, Exception, HandlerName, InstanceId, LabelName, LabelValue,
-        MountPointName, ProjectName, ProjectUniqueId, SmolStr, Ulid, Upstream,
+        MountPointName, ParameterName, ProjectName, ProjectUniqueId, SmolStr, Ulid, Upstream,
     },
 };
 use hashbrown::HashMap;
+use http::{
+    header::{ACCEPT, USER_AGENT},
+    HeaderMap,
+};
 use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
-use serde_with::{serde_as, DurationMilliSecondsWithFrac};
+use serde_with::{serde_as, DurationMilliSecondsWithFrac, DurationSeconds};
 use std::{net::IpAddr, sync::Arc, time::Duration};
+use typed_headers::HeaderMapExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(transparent)]
@@ -34,16 +39,11 @@ pub struct LogMessage {
     pub project: ProjectName,
     pub project_unique_id: ProjectUniqueId,
     pub mount_point: MountPointName,
-    pub url: SmolStr,
-    pub method: SmolStr,
 
     pub protocol: SmolStr,
 
-    pub user_agent: Option<SmolStr>,
-
-    pub status_code: Option<u16>,
-
-    pub content_len: Option<u64>,
+    pub request: RequestMetaInfo,
+    pub response: ResponseMetaInfo,
 
     pub steps: Vec<ProcessingStep>,
 
@@ -51,23 +51,100 @@ pub struct LogMessage {
 
     pub str: Option<String>,
 
-    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
-    pub request_body: HttpBodyLog,
-
-    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
-    pub response_body: HttpBodyLog,
-
     #[serde(rename = "@timestamp")]
     pub timestamp: chrono::DateTime<chrono::Utc>,
 
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
 
+    #[serde_as(as = "Option<DurationMilliSecondsWithFrac>")]
+    pub time_taken_ms: Option<Duration>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct WellKnownHeaders {
+    #[serde(rename = "content-length")]
+    pub content_length: Option<u64>,
+
+    #[serde(rename = "content-type")]
+    pub content_type: Option<SmolStr>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct WellKnownRequestHeaders {
+    #[serde(flatten)]
+    pub common: WellKnownHeaders,
+
+    #[serde(rename = "user-agent")]
+    pub user_agent: Option<SmolStr>,
+
+    pub accept: Option<SmolStr>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct WellKnownResponseHeaders {
+    #[serde(flatten)]
+    pub common: WellKnownHeaders,
+}
+
+impl WellKnownHeaders {
+    pub fn fill_from_headers(&mut self, headers: &HeaderMap) {
+        if let Ok(Some(len)) = headers.typed_get::<typed_headers::ContentLength>() {
+            self.content_length = Some(len.0);
+        }
+
+        if let Ok(Some(content_type)) = headers.typed_get::<typed_headers::ContentType>() {
+            self.content_type = Some(content_type.0.as_ref().into());
+        }
+    }
+}
+
+impl WellKnownResponseHeaders {
+    pub fn fill_from_headers(&mut self, headers: &HeaderMap) {
+        self.common.fill_from_headers(headers);
+    }
+}
+
+impl WellKnownRequestHeaders {
+    pub fn fill_from_headers(&mut self, headers: &HeaderMap) {
+        self.common.fill_from_headers(headers);
+
+        if let Some(user_agent) = headers.get(USER_AGENT) {
+            if let Ok(ua) = user_agent.to_str() {
+                self.user_agent = Some(ua.into());
+            }
+        }
+
+        if let Some(accept) = headers.get(ACCEPT) {
+            if let Ok(s) = accept.to_str() {
+                self.accept = Some(s.into());
+            }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RequestMetaInfo {
+    pub headers: WellKnownRequestHeaders,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub body: HttpBodyLog,
+
+    pub url: SmolStr,
+    pub method: SmolStr,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ResponseMetaInfo {
+    pub headers: WellKnownResponseHeaders,
+
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub body: HttpBodyLog,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compression: Option<SmolStr>,
 
-    #[serde_as(as = "Option<DurationMilliSecondsWithFrac>")]
-    pub time_taken_ms: Option<Duration>,
+    pub status_code: Option<u16>,
 }
 
 impl LogMessage {
@@ -79,37 +156,37 @@ impl LogMessage {
             self.mount_point,
             self.remote_addr,
             self.protocol,
-            self.method,
-            self.url,
-            self.status_code
+            self.request.method,
+            self.request.url,
+            self.response
+                .status_code
                 .as_ref()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "-".to_string()),
-            self.user_agent
+            self.request
+                .headers
+                .user_agent
                 .as_ref()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "-".to_string()),
+                .map(|s| s.as_str())
+                .unwrap_or_else(|| "-"),
         ));
     }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "kind")]
+#[serde(tag = "action")]
 pub enum ProcessingStep {
-    #[serde(rename = "invoked")]
-    Invoked(HandlerProcessingStep),
+    #[serde(rename = "invoke")]
+    Invoke(Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>),
 
-    #[serde(rename = "exception")]
-    Exception(ExceptionProcessingStep),
+    #[serde(rename = "throw-exception")]
+    ThrowException(ExceptionProcessingStep),
 
-    #[serde(rename = "catch")]
-    Catch(CatchProcessingStep),
+    #[serde(rename = "catch-exception")]
+    CatchException(CatchProcessingStep),
 
-    #[serde(rename = "static_response")]
+    #[serde(rename = "static-response")]
     StaticResponse(StaticResponseProcessingStep),
-
-    #[serde(rename = "serve_from_cache")]
-    ServeFromCache,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -124,6 +201,8 @@ pub struct StaticResponseProcessingStep {
     // pub static_response: StaticResponseName,
     pub data: HashMap<SmolStr, SmolStr>,
     pub config_name: Option<ConfigName>,
+
+    pub scope: ScopeLog,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<LanguageTagBuf>,
@@ -165,7 +244,7 @@ pub enum ScopeLog {
     #[serde(rename = "project_config")]
     ProjectConfig,
 
-    #[serde(rename = "config_name")]
+    #[serde(rename = "client_config")]
     ClientConfig {
         config_name: ConfigName,
         revision: ClientConfigRevision,
@@ -210,6 +289,41 @@ pub enum ScopeLog {
         handler_name: HandlerName,
         rule_num: usize,
     },
+
+    #[serde(rename = "parameter")]
+    Parameter { parameter_name: ParameterName },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "source")]
+pub enum CacheableInvocationProcessingStep {
+    #[serde(rename = "cache")]
+    Cached {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        config_name: Option<ConfigName>,
+
+        handler_name: HandlerName,
+
+        transformation: Option<TransformationStatus>,
+    },
+
+    #[serde(rename = "origin")]
+    Invoked(HandlerProcessingStep),
+
+    #[serde(rename = "empty")]
+    Empty {
+        transformation: Option<TransformationStatus>,
+    },
+}
+
+impl CacheableInvocationProcessingStep {
+    pub fn is_not_empty(&self) -> bool {
+        if let &CacheableInvocationProcessingStep::Empty { .. } = self {
+            return false;
+        }
+
+        true
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -225,14 +339,98 @@ pub enum HandlerProcessingStepVariant {
     GcsBucket(GcsBucketHandlerLogMessage),
     #[serde(rename = "static_dir")]
     StaticDir(StaticDirHandlerLogMessage),
-    // #[serde(rename = "application_firewall")]
-    // ApplicationFirewall(ApplicationFirewallLogMessage),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HandlerProcessingStep {
     #[serde(flatten)]
     pub variant: HandlerProcessingStepVariant,
+
+    pub path: SmolStr,
+
+    pub cache: Option<CacheSaveStatus>,
+
+    pub transformation: Option<TransformationStatus>,
+}
+
+impl CacheableInvocationProcessingStep {
+    pub fn transformation_mut(&mut self) -> &mut Option<TransformationStatus> {
+        match self {
+            CacheableInvocationProcessingStep::Cached { transformation, .. } => transformation,
+            CacheableInvocationProcessingStep::Invoked(HandlerProcessingStep {
+                transformation,
+                ..
+            }) => transformation,
+            CacheableInvocationProcessingStep::Empty { transformation } => transformation,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CacheSaveStep {
+    pub enabled: bool,
+    pub eligible: bool,
+    pub status: bool,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "status")]
+pub enum CacheSaveStatus {
+    #[serde(rename = "disabled")]
+    Disabled,
+
+    #[serde(rename = "not-eligible")]
+    NotEligible,
+
+    #[serde(rename = "save-error")]
+    SaveError,
+
+    #[serde(rename = "skipped")]
+    Skipped,
+
+    #[serde(rename = "saved")]
+    Saved {
+        #[serde_as(as = "DurationSeconds")]
+        max_age: Duration,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "status")]
+pub enum TransformationStatus {
+    #[serde(rename = "disabled")]
+    Disabled,
+
+    #[serde(rename = "cache-disabled")]
+    CacheDisabled,
+
+    #[serde(rename = "limited")]
+    Limited,
+
+    #[serde(rename = "not-eligible")]
+    NotEligible,
+
+    #[serde(rename = "transformed")]
+    Transformed,
+
+    #[serde(rename = "triggered")]
+    Triggered,
+
+    #[serde(rename = "saved-to-cache")]
+    SavedToCache,
+
+    #[serde(rename = "error")]
+    Error,
+
+    #[serde(rename = "skipped")]
+    Skipped,
+}
+
+impl From<HandlerProcessingStep> for CacheableInvocationProcessingStep {
+    fn from(s: HandlerProcessingStep) -> Self {
+        CacheableInvocationProcessingStep::Invoked(s)
+    }
 }
 
 // #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -273,13 +471,12 @@ pub struct ProxyAttemptLogMessage {
 
     pub attempted_at: DateTime<Utc>,
 
-    pub instance: InstanceLog,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<InstanceLog>,
 
-    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
-    pub proxy_request_body: HttpBodyLog,
+    pub request: ProxyRequestToOriginInfo,
 
-    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
-    pub proxy_response_body: HttpBodyLog,
+    pub response: ProxyOriginResponseInfo,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -306,8 +503,9 @@ pub struct ProxyHandlerLogMessage {
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 #[serde(tag = "status")]
 pub enum BodyStatusLog {
-    #[serde(rename = "transferred")]
-    Transferred,
+    #[serde(rename = "finished")]
+    Finished,
+
     #[serde(rename = "cancelled")]
     Cancelled { error: String },
 }
@@ -335,8 +533,19 @@ pub struct S3BucketHandlerLogMessage {
     pub language: Option<LanguageTagBuf>,
     pub handler_name: HandlerName,
 
+    pub attempts: Vec<ProxyAttemptLogMessage>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProxyRequestToOriginInfo {
     #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
-    pub proxy_response_body: HttpBodyLog,
+    pub body: HttpBodyLog,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProxyOriginResponseInfo {
+    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
+    pub body: HttpBodyLog,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -346,8 +555,7 @@ pub struct GcsBucketHandlerLogMessage {
     pub language: Option<LanguageTagBuf>,
     pub handler_name: HandlerName,
 
-    #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
-    pub proxy_response_body: HttpBodyLog,
+    pub attempts: Vec<ProxyAttemptLogMessage>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

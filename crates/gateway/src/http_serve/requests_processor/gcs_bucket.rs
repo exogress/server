@@ -8,14 +8,15 @@ use crate::{
     },
     public_hyper_client::MeteredHttpConnector,
 };
+use chrono::Utc;
 use core::{fmt, mem};
 use exogress_common::{
     config_core::{referenced, referenced::google::bucket::GcsBucket},
     entities::{exceptions, Exception, HandlerName},
 };
 use exogress_server_common::logging::{
-    GcsBucketHandlerLogMessage, HandlerProcessingStep, HandlerProcessingStepVariant, HttpBodyLog,
-    ProcessingStep,
+    GcsBucketHandlerLogMessage, HttpBodyLog, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
+    ProxyRequestToOriginInfo,
 };
 use futures::TryStreamExt;
 use hashbrown::HashMap;
@@ -76,6 +77,7 @@ impl ResolvedGcsBucket {
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
+        handler_log: &mut Option<GcsBucketHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
@@ -87,18 +89,22 @@ impl ResolvedGcsBucket {
 
         let proxy_response_body = HttpBodyLog::default();
 
-        log_message_container
-            .lock()
-            .as_mut()
-            .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep {
-                variant: HandlerProcessingStepVariant::GcsBucket(GcsBucketHandlerLogMessage {
-                    handler_name: self.handler_name.clone(),
-                    bucket: bucket_name.name.clone(),
-                    language: language.clone(),
-                    proxy_response_body: proxy_response_body.clone(),
-                }),
-            }));
+        *handler_log = Some(GcsBucketHandlerLogMessage {
+            handler_name: self.handler_name.clone(),
+            bucket: bucket_name.name.clone(),
+            language: language.clone(),
+            attempts: vec![ProxyAttemptLogMessage {
+                attempt: 0,
+                attempted_at: Utc::now(),
+                instance: None,
+                request: ProxyRequestToOriginInfo {
+                    body: Default::default(),
+                },
+                response: ProxyOriginResponseInfo {
+                    body: proxy_response_body.clone(),
+                },
+            }],
+        });
 
         let token_or_req = try_or_exception!(
             auth.get_token(&[tame_gcs::Scopes::ReadOnly]),

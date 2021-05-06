@@ -44,7 +44,7 @@ pub fn save_body_info_to_log_message(
                             time_taken_ms: time_taken,
                             transferred_bytes: len as u32,
                             bytes_per_sec: bytes_per_sec as f32,
-                            status: BodyStatusLog::Transferred,
+                            status: BodyStatusLog::Finished,
                         });
 
                         yield Ok::<_, hyper::Error>(buf);
@@ -238,7 +238,7 @@ mod test {
 
         let reported_resp_body_stats = ready_log_message.response_body.0.lock().take().unwrap();
 
-        assert_eq!(reported_resp_body_stats.status, BodyStatusLog::Transferred);
+        assert_eq!(reported_resp_body_stats.status, BodyStatusLog::Finished);
         assert_eq!(reported_resp_body_stats.transferred_bytes, 3);
         assert!(reported_resp_body_stats.time_taken_ms > Duration::from_secs(0));
     }

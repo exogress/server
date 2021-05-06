@@ -3,11 +3,10 @@ use elasticsearch::{
     cert::{Certificate, CertificateValidation},
     cluster::ClusterHealthParts,
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
-    indices::{IndicesCreateParts, IndicesPutMappingParts},
     BulkOperation, BulkParts, Elasticsearch,
 };
 use exogress_server_common::logging::LogMessage;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::{fs::File, io::AsyncReadExt};
 
 #[derive(Clone)]

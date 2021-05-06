@@ -41,6 +41,7 @@ bytes = "1.0.1"
 rand = "0.8.3"
 mime = "0.3.16"
 http-serde = "1.0.1"
+typed-headers = { git = "https://github.com/glebpom/typed-headers.git", branch = "master" }
 
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "config-core", "signaling", "common-utils"], default-features = false }
 

@@ -17,10 +17,7 @@ use exogress_common::{
     },
     entities::{exceptions, HandlerName},
 };
-use exogress_server_common::logging::{
-    AclAction, AuthHandlerLogMessage, HandlerProcessingStep, HandlerProcessingStepVariant,
-    ProcessingStep,
-};
+use exogress_server_common::logging::{AclAction, AuthHandlerLogMessage};
 use globset::Glob;
 use http::{
     header::{CACHE_CONTROL, COOKIE, LOCATION, SET_COOKIE},
@@ -353,7 +350,7 @@ impl ResolvedAuth {
         res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
-        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
+        handler_log: &mut Option<AuthHandlerLogMessage>,
     ) -> HandlerInvocationResult {
         let auth_cookie_name = self.cookie_name();
 
@@ -404,37 +401,25 @@ impl ResolvedAuth {
                                 self.acl_allowed_to(&identities, &acl.0);
 
                             if let Some(allow_to) = acl_allowed_to {
-                                log_message_container.lock().as_mut().steps.push(
-                                    ProcessingStep::Invoked(HandlerProcessingStep {
-                                        variant: HandlerProcessingStepVariant::Auth(
-                                            AuthHandlerLogMessage {
-                                                handler_name: self.handler_name.clone(),
-                                                provider: Some(granted_provider.to_string().into()),
-                                                identity: Some(allow_to.into()),
-                                                acl_entry: acl_entry.cloned(),
-                                                acl_action: AclAction::Allowed,
-                                                language: language.clone(),
-                                            },
-                                        ),
-                                    }),
-                                );
+                                *handler_log = Some(AuthHandlerLogMessage {
+                                    handler_name: self.handler_name.clone(),
+                                    provider: Some(granted_provider.to_string().into()),
+                                    identity: Some(allow_to.into()),
+                                    acl_entry: acl_entry.cloned(),
+                                    acl_action: AclAction::Allowed,
+                                    language: language.clone(),
+                                });
                             } else {
                                 self.respond_not_authorized(req, res);
 
-                                log_message_container.lock().as_mut().steps.push(
-                                    ProcessingStep::Invoked(HandlerProcessingStep {
-                                        variant: HandlerProcessingStepVariant::Auth(
-                                            AuthHandlerLogMessage {
-                                                handler_name: self.handler_name.clone(),
-                                                provider: Some(granted_provider.to_string().into()),
-                                                identity: Some(granted_identity.into()),
-                                                acl_entry: acl_entry.cloned(),
-                                                acl_action: AclAction::Denied,
-                                                language: language.clone(),
-                                            },
-                                        ),
-                                    }),
-                                );
+                                *handler_log = Some(AuthHandlerLogMessage {
+                                    handler_name: self.handler_name.clone(),
+                                    provider: Some(granted_provider.to_string().into()),
+                                    identity: Some(granted_identity.into()),
+                                    acl_entry: acl_entry.cloned(),
+                                    acl_action: AclAction::Denied,
+                                    language: language.clone(),
+                                });
 
                                 return HandlerInvocationResult::Responded;
                             }
@@ -442,20 +427,14 @@ impl ResolvedAuth {
                         None => {
                             self.respond_not_authorized(req, res);
 
-                            log_message_container.lock().as_mut().steps.push(
-                                ProcessingStep::Invoked(HandlerProcessingStep {
-                                    variant: HandlerProcessingStepVariant::Auth(
-                                        AuthHandlerLogMessage {
-                                            handler_name: self.handler_name.clone(),
-                                            provider: Some(granted_provider.to_string().into()),
-                                            identity: Some(granted_identity.into()),
-                                            acl_entry: None,
-                                            acl_action: AclAction::Denied,
-                                            language: language.clone(),
-                                        },
-                                    ),
-                                }),
-                            );
+                            *handler_log = Some(AuthHandlerLogMessage {
+                                handler_name: self.handler_name.clone(),
+                                provider: Some(granted_provider.to_string().into()),
+                                identity: Some(granted_identity.into()),
+                                acl_entry: None,
+                                acl_action: AclAction::Denied,
+                                language: language.clone(),
+                            });
 
                             return HandlerInvocationResult::Responded;
                         }
@@ -464,39 +443,27 @@ impl ResolvedAuth {
                 Err(_e) => {
                     self.respond_not_authorized(req, res);
 
-                    log_message_container
-                        .lock()
-                        .as_mut()
-                        .steps
-                        .push(ProcessingStep::Invoked(HandlerProcessingStep {
-                            variant: HandlerProcessingStepVariant::Auth(AuthHandlerLogMessage {
-                                handler_name: self.handler_name.clone(),
-                                provider: None,
-                                identity: None,
-                                acl_entry: None,
-                                acl_action: AclAction::Denied,
-                                language: language.clone(),
-                            }),
-                        }));
-
-                    return HandlerInvocationResult::Responded;
-                }
-            }
-        } else {
-            log_message_container
-                .lock()
-                .as_mut()
-                .steps
-                .push(ProcessingStep::Invoked(HandlerProcessingStep {
-                    variant: HandlerProcessingStepVariant::Auth(AuthHandlerLogMessage {
+                    *handler_log = Some(AuthHandlerLogMessage {
                         handler_name: self.handler_name.clone(),
                         provider: None,
                         identity: None,
                         acl_entry: None,
                         acl_action: AclAction::Denied,
                         language: language.clone(),
-                    }),
-                }));
+                    });
+
+                    return HandlerInvocationResult::Responded;
+                }
+            }
+        } else {
+            *handler_log = Some(AuthHandlerLogMessage {
+                handler_name: self.handler_name.clone(),
+                provider: None,
+                identity: None,
+                acl_entry: None,
+                acl_action: AclAction::Denied,
+                language: language.clone(),
+            });
 
             self.respond_not_authorized(req, res);
             return HandlerInvocationResult::Responded;
@@ -504,6 +471,7 @@ impl ResolvedAuth {
 
         HandlerInvocationResult::ToNextHandler
     }
+
     fn enabled_providers(&self) -> Vec<Oauth2Provider> {
         let mut providers = vec![];
         if self.github.is_some() {

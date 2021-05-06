@@ -20,8 +20,8 @@ use exogress_common::{
     tunnel::ConnectTarget,
 };
 use exogress_server_common::logging::{
-    HandlerProcessingStep, HandlerProcessingStepVariant, HttpBodyLog, InstanceLog, ProcessingStep,
-    ProxyAttemptLogMessage, StaticDirHandlerLogMessage,
+    HttpBodyLog, InstanceLog, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
+    ProxyRequestToOriginInfo, StaticDirHandlerLogMessage,
 };
 use hashbrown::HashMap;
 use http::{Method, Request, Response};
@@ -66,6 +66,7 @@ impl ResolvedStaticDir {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
+        handler_log: &mut Option<StaticDirHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
@@ -90,27 +91,25 @@ impl ResolvedStaticDir {
 
         let proxy_response_body = HttpBodyLog::default();
 
-        log_message_container
-            .lock()
-            .as_mut()
-            .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep {
-                variant: HandlerProcessingStepVariant::StaticDir(StaticDirHandlerLogMessage {
-                    handler_name: self.handler_name.clone(),
-                    config_name: self.config_id.config_name.clone(),
-                    language: language.clone(),
-                    attempts: vec![ProxyAttemptLogMessage {
-                        attempt: 0,
-                        attempted_at: Utc::now(),
-                        instance: InstanceLog {
-                            instance_id: instance_id.clone(),
-                            labels: labels.clone(),
-                        },
-                        proxy_request_body: Default::default(),
-                        proxy_response_body: proxy_response_body.clone(),
-                    }],
+        *handler_log = Some(StaticDirHandlerLogMessage {
+            handler_name: self.handler_name.clone(),
+            config_name: self.config_id.config_name.clone(),
+            language: language.clone(),
+            attempts: vec![ProxyAttemptLogMessage {
+                attempt: 0,
+                attempted_at: Utc::now(),
+                instance: Some(InstanceLog {
+                    instance_id: instance_id.clone(),
+                    labels: labels.clone(),
                 }),
-            }));
+                request: ProxyRequestToOriginInfo {
+                    body: Default::default(),
+                },
+                response: ProxyOriginResponseInfo {
+                    body: proxy_response_body.clone(),
+                },
+            }],
+        });
 
         let mut proxy_to = rebased_url.clone();
 

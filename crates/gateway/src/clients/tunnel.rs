@@ -80,7 +80,7 @@ fn load_keys(path: &str) -> io::Result<Vec<PrivateKey>> {
     Ok(rsa)
 }
 
-pub const MAX_ALLOWED_TUNNELS: usize = 8;
+pub const MAX_ALLOWED_TUNNELS: usize = 2;
 
 struct HyperAcceptor<F>
 where

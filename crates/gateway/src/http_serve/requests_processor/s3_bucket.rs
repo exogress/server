@@ -8,13 +8,14 @@ use crate::{
     },
     public_hyper_client::MeteredHttpConnector,
 };
+use chrono::Utc;
 use core::mem;
 use exogress_common::{
     config_core::referenced,
     entities::{exceptions, Exception, HandlerName},
 };
 use exogress_server_common::logging::{
-    HandlerProcessingStep, HandlerProcessingStepVariant, HttpBodyLog, ProcessingStep,
+    HttpBodyLog, ProxyAttemptLogMessage, ProxyOriginResponseInfo, ProxyRequestToOriginInfo,
     S3BucketHandlerLogMessage,
 };
 use hashbrown::HashMap;
@@ -62,6 +63,7 @@ impl ResolvedS3Bucket {
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
+        handler_log: &mut Option<S3BucketHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.method() != &Method::GET && req.method() != &Method::HEAD {
@@ -72,18 +74,22 @@ impl ResolvedS3Bucket {
 
         let proxy_response_body = HttpBodyLog::default();
 
-        log_message_container
-            .lock()
-            .as_mut()
-            .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep {
-                variant: HandlerProcessingStepVariant::S3Bucket(S3BucketHandlerLogMessage {
-                    handler_name: self.handler_name.clone(),
-                    region: bucket.region().into(),
-                    language: language.clone(),
-                    proxy_response_body: proxy_response_body.clone(),
-                }),
-            }));
+        *handler_log = Some(S3BucketHandlerLogMessage {
+            handler_name: self.handler_name.clone(),
+            region: bucket.region().into(),
+            language: language.clone(),
+            attempts: vec![ProxyAttemptLogMessage {
+                attempt: 0,
+                attempted_at: Utc::now(),
+                instance: None,
+                request: ProxyRequestToOriginInfo {
+                    body: Default::default(),
+                },
+                response: ProxyOriginResponseInfo {
+                    body: proxy_response_body.clone(),
+                },
+            }],
+        });
 
         let credentials = if let Some(creds) = &self.credentials {
             Some(try_or_to_exception!(creds))

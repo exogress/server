@@ -9,10 +9,7 @@ use exogress_common::{
     tunnel::{Compression, ConnectTarget},
 };
 
-use exogress_server_common::{
-    logging::{HandlerProcessingStep, ProcessingStep, ProxyHandlerLogMessage},
-    presence,
-};
+use exogress_server_common::{logging::ProxyHandlerLogMessage, presence};
 use futures::SinkExt;
 use http::{
     header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE},
@@ -38,7 +35,8 @@ use exogress_common::{
     entities::{HandlerName, LabelName, LabelValue},
 };
 use exogress_server_common::logging::{
-    HandlerProcessingStepVariant, HttpBodyLog, InstanceLog, ProtocolUpgrade, ProxyAttemptLogMessage,
+    HttpBodyLog, InstanceLog, ProtocolUpgrade, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
+    ProxyRequestToOriginInfo,
 };
 use futures::StreamExt;
 use hashbrown::HashMap;
@@ -92,6 +90,7 @@ impl ResolvedProxy {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
+        handler_log: &mut Option<ProxyHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
@@ -169,11 +168,15 @@ impl ResolvedProxy {
                     attempts.push(ProxyAttemptLogMessage {
                         attempted_at: Utc::now(),
                         attempt,
-                        proxy_request_body: proxy_request_body.clone(),
-                        proxy_response_body: proxy_response_body.clone(),
-                        instance: InstanceLog {
+                        instance: Some(InstanceLog {
                             instance_id,
                             labels: labels.clone(),
+                        }),
+                        request: ProxyRequestToOriginInfo {
+                            body: proxy_request_body.clone(),
+                        },
+                        response: ProxyOriginResponseInfo {
+                            body: proxy_response_body.clone(),
                         },
                     });
 
@@ -344,24 +347,18 @@ impl ResolvedProxy {
 
                     *res.body_mut() = instrumented_response_body;
 
-                    log_message_container
-                        .lock()
-                        .as_mut()
-                        .steps
-                        .push(ProcessingStep::Invoked(HandlerProcessingStep {
-                            variant: HandlerProcessingStepVariant::Proxy(ProxyHandlerLogMessage {
-                                upstream: self.name.clone(),
-                                config_name: self.config_id.config_name.clone(),
-                                handler_name: self.handler_name.clone(),
-                                upgrade: if is_websocket {
-                                    Some(ProtocolUpgrade::WebSocket)
-                                } else {
-                                    None
-                                },
-                                language: language.clone(),
-                                attempts,
-                            }),
-                        }));
+                    *handler_log = Some(ProxyHandlerLogMessage {
+                        upstream: self.name.clone(),
+                        config_name: self.config_id.config_name.clone(),
+                        handler_name: self.handler_name.clone(),
+                        upgrade: if is_websocket {
+                            Some(ProtocolUpgrade::WebSocket)
+                        } else {
+                            None
+                        },
+                        language: language.clone(),
+                        attempts,
+                    });
 
                     return HandlerInvocationResult::Responded;
                 }
