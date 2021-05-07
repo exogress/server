@@ -279,24 +279,26 @@ impl ResolvedAuth {
                                                         .unwrap(),
                                                 };
 
-                                                let token = jsonwebtoken::encode(
-                                                    &Header {
-                                                        alg: jsonwebtoken::Algorithm::ES256,
-                                                        ..Default::default()
-                                                    },
-                                                    &claims,
-                                                    &EncodingKey::from_ec_pem(
-                                                        retrieved_flow_data
-                                                            .oauth2_flow_data
-                                                            .jwt_ecdsa
-                                                            .private_key
-                                                            .as_ref(),
-                                                    )
-                                                    .expect(
-                                                        "Could not create encoding key from EC PEM",
+                                                let token = try_or_exception!(
+                                                    jsonwebtoken::encode(
+                                                        &Header {
+                                                            alg: jsonwebtoken::Algorithm::ES256,
+                                                            ..Default::default()
+                                                        },
+                                                        &claims,
+                                                        &try_or_exception!(
+                                                            EncodingKey::from_ec_pem(
+                                                                retrieved_flow_data
+                                                                    .oauth2_flow_data
+                                                                    .jwt_ecdsa
+                                                                    .private_key
+                                                                    .as_ref(),
+                                                            ),
+                                                            exceptions::AUTH_INTERNAL_ERROR
+                                                        ),
                                                     ),
-                                                )
-                                                .expect("Could no encode JSON web token");
+                                                    exceptions::AUTH_INTERNAL_ERROR
+                                                );
 
                                                 let auth_cookie_name = self.cookie_name();
 

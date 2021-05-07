@@ -33,7 +33,8 @@ macro_rules! try_or_exception {
                 return HandlerInvocationResult::Exception {
                     name: $exception.clone(),
                     data,
-                };
+                }
+                .into();
             }
         }
     };
