@@ -135,9 +135,9 @@ mod test {
     use super::*;
     use chrono::Utc;
     use exogress_common::entities::Ulid;
-    use exogress_server_common::logging::BodyStatusLog;
+    use exogress_server_common::logging::{RequestMetaInfo, ResponseMetaInfo};
     use futures::{channel::mpsc, StreamExt};
-    use std::{io, mem, sync::Arc};
+    use std::{mem, sync::Arc};
 
     #[tokio::test]
     async fn test_send_on_drop() {
@@ -149,21 +149,25 @@ mod test {
             project: "prj".parse().unwrap(),
             project_unique_id: Default::default(),
             mount_point: "mnt".parse().unwrap(),
-            url: Default::default(),
-            method: Default::default(),
             protocol: Default::default(),
-            user_agent: None,
-            status_code: None,
-            content_len: None,
+            request: RequestMetaInfo {
+                headers: Default::default(),
+                body: Default::default(),
+                url: Default::default(),
+                method: Default::default(),
+            },
+            response: ResponseMetaInfo {
+                headers: Default::default(),
+                body: Default::default(),
+                compression: None,
+                status_code: None,
+            },
             steps: vec![],
             facts: Arc::new(Default::default()),
             str: None,
-            request_body: Default::default(),
-            response_body: Default::default(),
             timestamp: Utc::now(),
             started_at: Utc::now(),
             ended_at: None,
-            compression: None,
             time_taken_ms: None,
         };
 
@@ -179,134 +183,5 @@ mod test {
         mem::drop(will_send);
 
         send_rx.next().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_body_reporting() {
-        let response_body = HttpBodyLog::default();
-
-        let msg = LogMessage {
-            request_id: Ulid::new(),
-            gw_location: Default::default(),
-            remote_addr: "127.0.0.1".parse().unwrap(),
-            account_unique_id: Default::default(),
-            project: "prj".parse().unwrap(),
-            project_unique_id: Default::default(),
-            mount_point: "mnt".parse().unwrap(),
-            url: Default::default(),
-            method: Default::default(),
-            protocol: Default::default(),
-            user_agent: None,
-            status_code: None,
-            content_len: None,
-            steps: vec![],
-            facts: Arc::new(Default::default()),
-            str: None,
-            request_body: Default::default(),
-            response_body: response_body.clone(),
-            timestamp: Utc::now(),
-            started_at: Utc::now(),
-            ended_at: None,
-            compression: None,
-            time_taken_ms: None,
-        };
-
-        let (send_tx, mut send_rx) = mpsc::unbounded();
-
-        let shared_log_message = Arc::new(parking_lot::Mutex::new(LogMessageSendOnDrop {
-            inner: Some(msg),
-            send_tx,
-        }));
-
-        let chunks = vec![
-            Ok::<_, hyper::Error>(vec![1u8]),
-            Ok(vec![2u8]),
-            Ok(vec![1u8]),
-        ];
-
-        let chunks_stream = futures::stream::iter(chunks.into_iter());
-
-        let body = hyper::Body::wrap_stream(chunks_stream);
-
-        let mut wrapped_body =
-            save_body_info_to_log_message(body, shared_log_message.clone(), response_body);
-        mem::drop(shared_log_message);
-
-        while let Some(_) = wrapped_body.next().await {}
-
-        let ready_log_message = send_rx.next().await.unwrap();
-
-        let reported_resp_body_stats = ready_log_message.response_body.0.lock().take().unwrap();
-
-        assert_eq!(reported_resp_body_stats.status, BodyStatusLog::Finished);
-        assert_eq!(reported_resp_body_stats.transferred_bytes, 3);
-        assert!(reported_resp_body_stats.time_taken_ms > Duration::from_secs(0));
-    }
-
-    #[tokio::test]
-    async fn test_body_reporting_error() {
-        let response_body = HttpBodyLog::default();
-
-        let msg = LogMessage {
-            request_id: Ulid::new(),
-            gw_location: Default::default(),
-            remote_addr: "127.0.0.1".parse().unwrap(),
-            account_unique_id: Default::default(),
-            project: "prj".parse().unwrap(),
-            project_unique_id: Default::default(),
-            mount_point: "mnt".parse().unwrap(),
-            url: Default::default(),
-            method: Default::default(),
-            protocol: Default::default(),
-            user_agent: None,
-            status_code: None,
-            content_len: None,
-            steps: vec![],
-            facts: Arc::new(Default::default()),
-            str: None,
-            request_body: Default::default(),
-            response_body: response_body.clone(),
-            timestamp: Utc::now(),
-            started_at: Utc::now(),
-            ended_at: None,
-            compression: None,
-            time_taken_ms: None,
-        };
-
-        let (send_tx, mut send_rx) = mpsc::unbounded();
-
-        let shared_log_message = Arc::new(parking_lot::Mutex::new(LogMessageSendOnDrop {
-            inner: Some(msg),
-            send_tx,
-        }));
-
-        let chunks = vec![
-            Ok(vec![1u8]),
-            Ok(vec![2u8]),
-            Err(io::Error::new(io::ErrorKind::Other, "test error")),
-        ];
-
-        let chunks_stream = futures::stream::iter(chunks.into_iter());
-
-        let body = hyper::Body::wrap_stream(chunks_stream);
-
-        let mut wrapped_body =
-            save_body_info_to_log_message(body, shared_log_message.clone(), response_body);
-        mem::drop(shared_log_message);
-
-        while let Some(_) = wrapped_body.next().await {}
-
-        let ready_log_message = send_rx.next().await.unwrap();
-
-        let reported_resp_body_stats = ready_log_message.response_body.0.lock().take().unwrap();
-
-        assert_eq!(
-            reported_resp_body_stats.status,
-            BodyStatusLog::Cancelled {
-                error: "error reading a body from connection: test error".to_string(),
-            }
-        );
-        assert_eq!(reported_resp_body_stats.transferred_bytes, 2);
-        assert!(reported_resp_body_stats.time_taken_ms > Duration::from_secs(0));
     }
 }

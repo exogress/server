@@ -69,10 +69,10 @@ pub async fn server(
         .and(warp::filters::query::query::<HashMap<String, String>>())
         .and(warp::filters::ws::ws())
         .map({
-            shadow_clone!(redis, db_client, webapp_client, presence_client, elastic_client);
+            shadow_clone!(redis, db_client, presence_client, elastic_client);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
-                shadow_clone!(mut redis, common_gw_tls_config, db_client, webapp_client, presence_client, stop_handle, elastic_client);
+                shadow_clone!(mut redis, common_gw_tls_config, db_client, presence_client, stop_handle, elastic_client);
 
                 let gw_location = query.get("location").unwrap().clone();
 
@@ -192,12 +192,8 @@ pub async fn server(
                                     });
 
                                     let msg_receiver = {
-                                        shadow_clone!(mut ch_ws_tx, gw_hostname);
-
                                         async move {
                                             while let Some(Ok(msg)) = ws_rx.next().await {
-                                                shadow_clone!(gw_hostname);
-
                                                 // info!("received from WS: {:?}", msg);
 
                                                 if msg.is_text() {

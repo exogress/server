@@ -2,7 +2,7 @@ use elasticsearch::{
     cert::{Certificate, CertificateValidation},
     cluster::ClusterHealthParts,
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
-    Elasticsearch, GetParts, SearchParts,
+    Elasticsearch, SearchParts,
 };
 use exogress_common::entities::{AccountUniqueId, Ulid};
 use serde_json::{json, Value};

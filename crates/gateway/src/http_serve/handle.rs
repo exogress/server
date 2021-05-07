@@ -198,7 +198,6 @@ pub async fn server(
             let listener = TcpListener::bind(listen_https_addr).await?;
             loop {
                 shadow_clone!(
-                    transformer_base_url,
                     tls_gw_common,
                     incoming_https_connections_tx,
                     public_gw_base_url,
@@ -212,12 +211,7 @@ pub async fn server(
                     shadow_clone!(mut incoming_https_connections_tx);
 
                     async move {
-                        shadow_clone!(
-                            transformer_base_url,
-                            tls_gw_common,
-                            public_gw_base_url,
-                            webapp_client
-                        );
+                        shadow_clone!(tls_gw_common, public_gw_base_url, webapp_client);
 
                         let handshake = async {
                             conn.set_nodelay(true)?;

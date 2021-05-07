@@ -2435,7 +2435,7 @@ impl ResolvedHandler {
 
                 let catch_step = match (&rescuable, &rescue_item.catch) {
                     (
-                        Rescuable::Exception { exception, data },
+                        Rescuable::Exception { exception, .. },
                         ResolvedCatchMatcher::Exception(exception_matcher),
                     ) => CatchProcessingStep {
                         catch_matcher: exception_matcher.to_string(),
@@ -2822,7 +2822,7 @@ impl ResolvedHandler {
         }
 
         match action {
-            ResolvedRuleAction::Invoke { rescues, scope } => {
+            ResolvedRuleAction::Invoke { rescues, .. } => {
                 let invocation_result = self
                     .resolved_variant
                     .invoke(
@@ -3238,7 +3238,6 @@ impl RequestsProcessor {
         {
             shadow_clone!(
                 instances,
-                project_rescue,
                 jwt_ecdsa,
                 mount_point_fqdn,
                 google_oauth2_client,
@@ -3252,8 +3251,6 @@ impl RequestsProcessor {
                 project_unique_id,
                 project_name,
                 rules_counter,
-                resolver,
-                traffic_counters,
                 presence_client,
                 params,
                 active_profile

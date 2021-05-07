@@ -199,8 +199,6 @@ fn main() {
 
     let logger_bg = rt
         .block_on({
-            shadow_clone!(int_client_cert);
-
             exogress_server_common::clap::log::handle(
                 matches.clone(),
                 "assistant",

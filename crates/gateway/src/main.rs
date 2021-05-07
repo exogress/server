@@ -725,7 +725,7 @@ fn main() {
             .to_string();
 
         let dump_log_messages = {
-            shadow_clone!(individual_hostname, mut gw_to_assistant_messages_tx);
+            shadow_clone!(mut gw_to_assistant_messages_tx);
 
             const CHUNK: usize = 2048;
             let mut ready_chunks = log_messages_rx.ready_chunks(CHUNK);
@@ -749,7 +749,7 @@ fn main() {
         };
 
         let dump_traffic_statistics = {
-            shadow_clone!(individual_hostname, mut gw_to_assistant_messages_tx);
+            shadow_clone!(mut gw_to_assistant_messages_tx);
 
             const CHUNK: usize = 2048;
             let mut ready_chunks = futures::stream::select(

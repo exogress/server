@@ -484,7 +484,6 @@ impl Client {
                 let assistant_base_url = self.assistant_base_url.clone();
                 let transformer_base_url = self.transformer_base_url.clone();
                 let maybe_identity = self.maybe_identity.clone();
-                let public_gw_base_url = self.public_gw_base_url.clone();
                 let rules_counters = self.rules_counters.clone();
                 let presence_client = self.presence_client.clone();
                 let log_messages_tx = self.log_messages_tx.clone();
@@ -498,7 +497,7 @@ impl Client {
 
                     // initiate query
                     tokio::spawn({
-                        shadow_clone!(gcs_credentials_file, ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, transformer_base_url, maybe_identity, public_gw_base_url, rules_counters, config_error, cache, presence_client, dbip);
+                        shadow_clone!(gcs_credentials_file, ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, transformer_base_url, maybe_identity, rules_counters, config_error, cache, presence_client, dbip);
 
                         async move {
                             let retrieval_started_at = crate::statistics::CONFIGS_RETRIEVAL_TIME.start_timer();
