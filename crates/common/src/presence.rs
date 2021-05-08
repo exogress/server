@@ -161,15 +161,17 @@ impl Client {
         authorization: &str,
         project: &ProjectName,
         account: &AccountName,
+        exogress_version: &str,
         labels_json: &str,
         config: &ClientConfig,
         active_profile: &Option<ProfileName>,
     ) -> Result<InstanceRegistered, Error> {
         let mut args = format!(
-            "project={}&account={}&labels_json={}",
+            "project={}&account={}&labels_json={}&exogress_version={}",
             urlencoding::encode(project),
             urlencoding::encode(account),
             urlencoding::encode(&labels_json),
+            urlencoding::encode(&exogress_version),
         );
 
         if let Some(profile) = active_profile {

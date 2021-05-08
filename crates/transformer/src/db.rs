@@ -129,7 +129,7 @@ pub fn listen_queue(
     async_stream::stream! {
         loop {
             if should_stop.load(Ordering::Relaxed) {
-                info!("Processing queue will not longer accept new tasks beacuse stop request received");
+                info!("Processing queue will not longer accept new tasks because stop request received");
                 return;
             }
 
