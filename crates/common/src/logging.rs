@@ -63,10 +63,10 @@ pub struct LogMessage {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct WellKnownHeaders {
-    #[serde(rename = "content-length")]
+    #[serde(rename = "content_length")]
     pub content_length: Option<u64>,
 
-    #[serde(rename = "content-type")]
+    #[serde(rename = "content_type")]
     pub content_type: Option<SmolStr>,
 }
 
@@ -75,7 +75,7 @@ pub struct WellKnownRequestHeaders {
     #[serde(flatten)]
     pub common: WellKnownHeaders,
 
-    #[serde(rename = "user-agent")]
+    #[serde(rename = "user_agent")]
     pub user_agent: Option<SmolStr>,
 
     pub accept: Option<SmolStr>,
@@ -179,21 +179,14 @@ pub enum ProcessingStep {
     #[serde(rename = "invoke")]
     Invoke(Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>),
 
-    #[serde(rename = "throw-exception")]
+    #[serde(rename = "throw_exception")]
     ThrowException(ExceptionProcessingStep),
 
-    #[serde(rename = "catch-exception")]
+    #[serde(rename = "catch_exception")]
     CatchException(CatchProcessingStep),
 
-    #[serde(rename = "static-response")]
+    #[serde(rename = "static_response")]
     StaticResponse(StaticResponseProcessingStep),
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct OptimizeProcessingStep {
-    pub from_content_type: SmolStr,
-    pub to_content_type: SmolStr,
-    pub compression_ratio: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -348,7 +341,7 @@ pub struct HandlerProcessingStep {
 
     pub path: SmolStr,
 
-    #[serde(rename = "save-to-cache")]
+    #[serde(rename = "save_to_cache")]
     pub save_to_cache: Option<CacheSavingStatus>,
 
     pub transformation: Option<TransformationStatus>,
@@ -381,10 +374,10 @@ pub enum CacheSavingStatus {
     #[serde(rename = "disabled")]
     Disabled,
 
-    #[serde(rename = "not-eligible")]
+    #[serde(rename = "not_eligible")]
     NotEligible,
 
-    #[serde(rename = "save-error")]
+    #[serde(rename = "save_error")]
     SaveError,
 
     #[serde(rename = "skipped")]
@@ -403,13 +396,13 @@ pub enum TransformationStatus {
     #[serde(rename = "disabled")]
     Disabled,
 
-    #[serde(rename = "cache-disabled")]
+    #[serde(rename = "cache_disabled")]
     CacheDisabled,
 
     #[serde(rename = "limited")]
     Limited,
 
-    #[serde(rename = "not-eligible")]
+    #[serde(rename = "not_eligible")]
     NotEligible,
 
     #[serde(rename = "transformed")]
@@ -418,7 +411,7 @@ pub enum TransformationStatus {
     #[serde(rename = "triggered")]
     Triggered,
 
-    #[serde(rename = "saved-to-cache")]
+    #[serde(rename = "saved_to_cache")]
     SavedToCache,
 
     #[serde(rename = "error")]
@@ -433,22 +426,6 @@ impl From<HandlerProcessingStep> for CacheableInvocationProcessingStep {
         CacheableInvocationProcessingStep::Invoked(s)
     }
 }
-
-// #[derive(Serialize, Deserialize, Clone, Debug)]
-// pub enum ApplicationFirewallAction {
-//     #[serde(rename = "permitted")]
-//     Permitted,
-//
-//     #[serde(rename = "prohibited")]
-//     Prohibited,
-// }
-//
-// #[derive(Serialize, Deserialize, Clone, Debug)]
-// pub struct ApplicationFirewallLogMessage {
-//     pub detected: Vec<String>,
-//     pub action: ApplicationFirewallAction,
-//     pub language: Option<LanguageTagBuf>,
-// }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StaticDirHandlerLogMessage {
