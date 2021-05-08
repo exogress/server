@@ -56,7 +56,6 @@ pub async fn server(
     common_gw_tls_config: GatewayCommonTlsConfig,
     https_config: Option<HttpsConfig>,
     redis: redis::Client,
-    webapp_client: crate::webapp::Client,
     presence_client: crate::presence::Client,
     db_client: MongoDbClient,
     elastic_client: ElasticsearchClient,
@@ -69,10 +68,10 @@ pub async fn server(
         .and(warp::filters::query::query::<HashMap<String, String>>())
         .and(warp::filters::ws::ws())
         .map({
-            shadow_clone!(redis, db_client, webapp_client, presence_client, elastic_client);
+            shadow_clone!(redis, db_client, presence_client, elastic_client);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
-                shadow_clone!(mut redis, common_gw_tls_config, db_client, webapp_client, presence_client, stop_handle, elastic_client);
+                shadow_clone!(mut redis, common_gw_tls_config, db_client, presence_client, stop_handle, elastic_client);
 
                 let gw_location = query.get("location").unwrap().clone();
 
@@ -123,7 +122,7 @@ pub async fn server(
                                                 let grouped = messages
                                                     .into_iter()
                                                     .into_group_map_by(|msg| {
-                                                        format!("{}-{}", msg.account_unique_id, msg.date.format("%Y.%m.%d")).to_lowercase()
+                                                        format!("account-{}", msg.account_unique_id).to_lowercase()
                                                     });
 
                                                 for (index, messages_for_index) in grouped {
@@ -192,17 +191,13 @@ pub async fn server(
                                     });
 
                                     let msg_receiver = {
-                                        shadow_clone!(mut ch_ws_tx, gw_hostname);
-
                                         async move {
                                             while let Some(Ok(msg)) = ws_rx.next().await {
-                                                shadow_clone!(gw_hostname);
-
                                                 // info!("received from WS: {:?}", msg);
 
                                                 if msg.is_text() {
-                                                    let mut txt = msg.to_str().unwrap().to_string();
-                                                    match serde_json::from_str::<WsFromGwMessage>(&mut txt) {
+                                                    let txt = msg.to_str().unwrap().to_string();
+                                                    match serde_json::from_str::<WsFromGwMessage>(&txt) {
                                                         Ok(msg) => {
                                                             crate::statistics::GW_MESSAGES_PARSED
                                                                 .with_label_values(&[
@@ -263,9 +258,9 @@ pub async fn server(
                                                             async move {
                                                                 while let Some(msg) = messages.next().await {
                                                                     match msg.get_payload::<String>() {
-                                                                        Ok(mut p) => {
+                                                                        Ok(p) => {
                                                                             info!("redis -> assistant: {:?}", p);
-                                                                            match serde_json::from_str::<Notification>(&mut p) {
+                                                                            match serde_json::from_str::<Notification>(&p) {
                                                                                 Ok(notification) => {
                                                                                     let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
                                                                                         .expect("could not serialize");
@@ -520,7 +515,7 @@ pub async fn server(
             }
         });
 
-    let metrics = warp::path!("metrics").map(|| crate::statistics::dump_prometheus());
+    let metrics = warp::path!("metrics").map(crate::statistics::dump_prometheus);
 
     info!("Spawning...");
 

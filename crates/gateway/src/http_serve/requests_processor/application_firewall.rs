@@ -23,7 +23,7 @@
 //         _requested_url: &http::uri::Uri,
 //         _rebased_url: &http::uri::Uri,
 //         language: &Option<LanguageTagBuf>,
-//         log_message: &mut LogMessage,
+//         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
 //     ) -> HandlerInvocationResult {
 //         let raw_path_and_query = req.uri().path_and_query().unwrap().to_string();
 //         let decoded_path_and_query =

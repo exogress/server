@@ -1,13 +1,12 @@
-use crate::http_serve::RequestsProcessor;
+use crate::http_serve::{logging::LogMessageSendOnDrop, RequestsProcessor};
 use exogress_common::config_core::referenced;
-use exogress_server_common::logging::{CompressProcessingStep, LogMessage, ProcessingStep};
 use futures::TryStreamExt;
 use hashbrown::HashSet;
 use http::{HeaderValue, Request, Response};
 use hyper::Body;
 use itertools::Itertools;
 use smol_str::SmolStr;
-use std::{convert::TryFrom, io, mem};
+use std::{convert::TryFrom, io, mem, sync::Arc};
 use tokio_util::either::Either;
 use typed_headers::{ContentCoding, HeaderMapExt};
 
@@ -68,7 +67,7 @@ impl RequestsProcessor {
         req: &Request<Body>,
         res: &mut Response<Body>,
         encoding: Option<&ResolvedEncoding>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> Result<(), anyhow::Error> {
         let encoding = match encoding {
             None => return Ok(()),
@@ -94,9 +93,9 @@ impl RequestsProcessor {
         // FIXME: remove clone
         let mime_types = encoding.mime_types.clone()?;
 
-        let maybe_compression = if maybe_content_type.is_none() {
-            None
-        } else if !mime_types.contains(maybe_content_type.unwrap().essence_str()) {
+        let maybe_compression = if maybe_content_type.is_none()
+            || !mime_types.contains(maybe_content_type.unwrap().essence_str())
+        {
             None
         } else if let Some(accept_encoding) = maybe_accept_encoding {
             accept_encoding
@@ -130,11 +129,8 @@ impl RequestsProcessor {
         let processed_stream = match compression {
             SupportedContentEncoding::Brotli => {
                 let header = typed_headers::ContentCoding::BROTLI;
-                log_message
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
+                log_message_container.lock().as_mut().response.compression =
+                    Some(SmolStr::from("br"));
 
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(header));
@@ -149,11 +145,8 @@ impl RequestsProcessor {
             SupportedContentEncoding::Gzip => {
                 let header = typed_headers::ContentCoding::GZIP;
 
-                log_message
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
+                log_message_container.lock().as_mut().response.compression =
+                    Some(SmolStr::from("gzip"));
 
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(header));
@@ -167,11 +160,8 @@ impl RequestsProcessor {
             SupportedContentEncoding::Deflate => {
                 let header = typed_headers::ContentCoding::DEFLATE;
 
-                log_message
-                    .steps
-                    .push(ProcessingStep::Compress(CompressProcessingStep {
-                        encoding: header.as_str().into(),
-                    }));
+                log_message_container.lock().as_mut().response.compression =
+                    Some(SmolStr::from("deflate"));
 
                 res.headers_mut()
                     .typed_insert(&typed_headers::ContentEncoding::from(header));

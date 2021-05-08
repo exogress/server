@@ -246,7 +246,7 @@ impl AssistantClient {
 
                                 #[allow(unreachable_code)]
                                     let consume = {
-                                    shadow_clone!(stop_handle, mut ch_ws_tx, mut from_assistant_tx, num_connections, latest_msg_time, first_connection_established_tx);
+                                    shadow_clone!(stop_handle, mut from_assistant_tx, num_connections, latest_msg_time, first_connection_established_tx);
 
                                     async move {
                                         let mut is_first_received = false;

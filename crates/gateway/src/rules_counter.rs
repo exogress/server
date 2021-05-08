@@ -34,7 +34,7 @@ impl AccountCounters {
     pub fn register_rule(&self, account: &AccountUniqueId, project_unique_id: &ProjectUniqueId) {
         self.inner
             .write()
-            .entry((account.clone(), project_unique_id.clone()))
+            .entry((*account, *project_unique_id))
             .or_insert_with(|| Counter {
                 rules_processed: 0,
                 requests_processed: 0,
@@ -46,7 +46,7 @@ impl AccountCounters {
     pub fn register_request(&self, account: &AccountUniqueId, project_unique_id: &ProjectUniqueId) {
         self.inner
             .write()
-            .entry((account.clone(), project_unique_id.clone()))
+            .entry((*account, *project_unique_id))
             .or_insert_with(|| Counter {
                 rules_processed: 0,
                 requests_processed: 0,
@@ -61,7 +61,7 @@ impl AccountCounters {
             return None;
         }
         let mut result = Vec::with_capacity(len);
-        let old = mem::replace(&mut *self.inner.write(), Default::default());
+        let old = mem::take(&mut *self.inner.write());
 
         for ((account_unique_id, project_unique_id), counter) in old.into_iter() {
             result.push(RecordedRulesStatistics {

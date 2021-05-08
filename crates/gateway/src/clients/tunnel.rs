@@ -80,7 +80,7 @@ fn load_keys(path: &str) -> io::Result<Vec<PrivateKey>> {
     Ok(rsa)
 }
 
-pub const MAX_ALLOWED_TUNNELS: usize = 8;
+pub const MAX_ALLOWED_TUNNELS: usize = 2;
 
 struct HyperAcceptor<F>
 where
@@ -156,7 +156,7 @@ pub async fn tunnels_acceptor(
                     Ok(Ok(r)) => r,
                 };
 
-                if tls_conn
+                let is_alpn_error = tls_conn
                     .get_mut()
                     .1
                     .get_alpn_protocol()
@@ -165,8 +165,9 @@ pub async fn tunnels_acceptor(
                         p != *ALPN_PROTOCOL
                     })
                     // ALPN not provides should lead to Error as well
-                    .unwrap_or(true)
-                {
+                    .unwrap_or(true);
+
+                if is_alpn_error {
                     warn!("not accepting tunnel connection: ALPN mismatch");
                 } else {
                     accepted_connection_tx.send(tls_conn).await.unwrap();
@@ -212,14 +213,7 @@ pub async fn tunnels_acceptor(
                                 let AuthorizeTunnelResponse {
                                     account_unique_id,
                                     project_unique_id,
-                                } = webapp
-                                    .authorize_tunnel(
-                                        &tunnel_hello.project_name,
-                                        &tunnel_hello.instance_id,
-                                        &tunnel_hello.access_key_id,
-                                        &tunnel_hello.secret_access_key,
-                                    )
-                                    .await?;
+                                } = webapp.authorize_tunnel(&tunnel_hello).await?;
 
                                 info!(
                                     "Accepted tunnel from instance {}. Params: {}",
@@ -257,7 +251,7 @@ pub async fn tunnels_acceptor(
                                     }
                                     Ok(Err(e)) => {
                                         warn!("error on TLS tunnel: {}. Closing connection", e);
-                                        return Err(e.into());
+                                        return Err(e);
                                     }
                                     Err(tokio::time::error::Elapsed { .. }) => {
                                         warn!(
@@ -267,10 +261,8 @@ pub async fn tunnels_acceptor(
                                     }
                                 };
 
-                            let counters = TrafficCounters::new(
-                                account_unique_id.clone(),
-                                project_unique_id.clone(),
-                            );
+                            let counters =
+                                TrafficCounters::new(account_unique_id, project_unique_id);
                             let metered = TrafficCountedStream::new(
                                 upgraded,
                                 counters.clone(),
@@ -300,7 +292,7 @@ pub async fn tunnels_acceptor(
                                         let (bg, connector) = server_connection(framed);
 
                                         let new_connected_tunnel = ConnectedTunnel {
-                                            connector: connector.clone(),
+                                            connector,
                                             config_id: config_id.clone(),
                                             instance_id,
                                         };
@@ -327,9 +319,7 @@ pub async fn tunnels_acceptor(
                                                     http_client: hyper::Client::builder()
                                                         .set_host(false)
                                                         .http2_only(false)
-                                                        .build::<_, Body>(
-                                                            instance_connector.clone(),
-                                                        ),
+                                                        .build::<_, Body>(instance_connector),
                                                 };
 
                                                 c.insert(instance_id, instance_conections);

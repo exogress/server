@@ -9,16 +9,17 @@ use byte_unit::Byte;
 use chrono::{serde::ts_milliseconds, DateTime, Utc};
 use dashmap::DashMap;
 use exogress_common::{
-    common_utils::jwt::{jwt_token, JwtError},
+    access_tokens::{generate_jwt_token, JwtError},
     config_core::{
         referenced::Parameter,
         refinable::{Refinable, RefinableSet},
         ClientConfig, ClientConfigRevision, ProjectConfig, Scope,
     },
     entities::{
-        AccessKeyId, AccountName, AccountUniqueId, ConfigName, InstanceId, MountPointName,
-        ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
+        AccountName, AccountUniqueId, ConfigName, InstanceId, LabelName, LabelValue,
+        MountPointName, ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
     },
+    tunnel::TunnelHello,
 };
 use exogress_server_common::{logging::LogMessage, presence};
 use futures::channel::mpsc;
@@ -61,7 +62,7 @@ pub struct Client {
     gw_location: SmolStr,
 
     public_gw_base_url: Url,
-    log_messages_tx: mpsc::Sender<LogMessage>,
+    log_messages_tx: mpsc::UnboundedSender<LogMessage>,
 
     rules_counters: AccountCounters,
 
@@ -183,8 +184,14 @@ pub struct AcmeHttpChallengeVerificationQueryParams {
 // }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct InstanceInfo {
+    pub upstreams: HashMap<Upstream, bool>,
+    pub labels: HashMap<LabelName, LabelValue>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct ConfigData {
-    pub instance_ids: HashMap<InstanceId, HashMap<Upstream, bool>>,
+    pub instances: HashMap<InstanceId, InstanceInfo>,
     pub config: ClientConfig,
     pub revision: ClientConfigRevision,
     pub config_name: ConfigName,
@@ -274,7 +281,7 @@ impl ConfigsResponse {
                 .add(
                     Scope::ClientConfig {
                         config: config_data.config_name.clone(),
-                        revision: config_data.config.revision.clone(),
+                        revision: config_data.config.revision,
                     },
                     &config_data.config.refinable,
                 )
@@ -284,7 +291,7 @@ impl ConfigsResponse {
                     .add(
                         Scope::ClientMount {
                             config: config_data.config_name.clone(),
-                            revision: config_data.config.revision.clone(),
+                            revision: config_data.config.revision,
                             mount_point: mount_point_name.clone(),
                         },
                         &mount.refinable,
@@ -295,7 +302,7 @@ impl ConfigsResponse {
                         .add(
                             Scope::ClientHandler {
                                 config: config_data.config_name.clone(),
-                                revision: config_data.config.revision.clone(),
+                                revision: config_data.config.revision,
                                 mount_point: mount_point_name.clone(),
                                 handler: handler_name.clone(),
                             },
@@ -308,7 +315,7 @@ impl ConfigsResponse {
                                 .add(
                                     Scope::ClientRule {
                                         config: config_data.config_name.clone(),
-                                        revision: config_data.config.revision.clone(),
+                                        revision: config_data.config.revision,
                                         mount_point: mount_point_name.clone(),
                                         handler: handler_name.clone(),
                                         rule_num,
@@ -343,7 +350,7 @@ impl Client {
         public_gw_base_url: &Url,
         gw_location: SmolStr,
         gcs_credentials_file: String,
-        log_messages_tx: mpsc::Sender<LogMessage>,
+        log_messages_tx: mpsc::UnboundedSender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
         dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
@@ -466,7 +473,7 @@ impl Client {
         // take lock and deal with in_flight queries
         let in_flight_request = self
             .retrieve_configs
-            .entry(host.clone().into())
+            .entry(host.clone())
             .or_insert_with({
                 shadow_clone!(matchable_url, config_error, gw_location);
 
@@ -477,7 +484,6 @@ impl Client {
                 let assistant_base_url = self.assistant_base_url.clone();
                 let transformer_base_url = self.transformer_base_url.clone();
                 let maybe_identity = self.maybe_identity.clone();
-                let public_gw_base_url = self.public_gw_base_url.clone();
                 let rules_counters = self.rules_counters.clone();
                 let presence_client = self.presence_client.clone();
                 let log_messages_tx = self.log_messages_tx.clone();
@@ -491,7 +497,7 @@ impl Client {
 
                     // initiate query
                     tokio::spawn({
-                        shadow_clone!(gcs_credentials_file, ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, transformer_base_url, maybe_identity, public_gw_base_url, rules_counters, config_error, cache, presence_client, dbip);
+                        shadow_clone!(gcs_credentials_file, ready_event, reqwest, base_url, google_oauth2_client, github_oauth2_client, assistant_base_url, transformer_base_url, maybe_identity, rules_counters, config_error, cache, presence_client, dbip);
 
                         async move {
                             let retrieval_started_at = crate::statistics::CONFIGS_RETRIEVAL_TIME.start_timer();
@@ -535,7 +541,7 @@ impl Client {
                                                 let fqdn =
                                                     configs_response.fqdn.clone();
                                                 let generated_at =
-                                                    configs_response.generated_at.clone();
+                                                    configs_response.generated_at;
 
                                                 let requests_processor =
                                                     match RequestsProcessor::new(
@@ -633,9 +639,7 @@ impl Client {
             return Err(Error::ConfigError);
         }
 
-        if let dashmap::mapref::entry::Entry::Occupied(entry) =
-            self.retrieve_configs.entry(host.into())
-        {
+        if let dashmap::mapref::entry::Entry::Occupied(entry) = self.retrieve_configs.entry(host) {
             if Arc::ptr_eq(entry.get(), &in_flight_request) {
                 // we are now sure that it's the same request
                 entry.remove_entry();
@@ -697,10 +701,9 @@ impl Client {
                             Ok(certs) => {
                                 crate::statistics::CERTIFICATES_RETRIEVAL_SUCCESS.inc();
 
-                                certificates.lock().insert(
-                                    domain,
-                                    CertificateRetrievalState::Found(certs.clone()),
-                                );
+                                certificates
+                                    .lock()
+                                    .insert(domain, CertificateRetrievalState::Found(certs));
                             }
                             Err(e) => {
                                 match e {
@@ -774,10 +777,7 @@ impl Client {
 
     pub async fn authorize_tunnel(
         &self,
-        project_name: &ProjectName,
-        instance_id: &InstanceId,
-        access_key_id: &AccessKeyId,
-        secret_access_key: &str,
+        tunnel_hello: &TunnelHello,
     ) -> Result<AuthorizeTunnelResponse, Error> {
         let mut url = self.webapp_base_url.clone();
         url.path_segments_mut()
@@ -788,10 +788,19 @@ impl Client {
             .push("auth");
 
         url.query_pairs_mut()
-            .append_pair("project", project_name.as_str())
-            .append_pair("instance_id", &instance_id.to_string());
+            .append_pair("project", tunnel_hello.project_name.as_str())
+            .append_pair("instance_id", &tunnel_hello.instance_id.to_string());
 
-        let token = jwt_token(access_key_id, secret_access_key)?;
+        let token = if let Some(token) = &tunnel_hello.jwt_token {
+            token.clone()
+        } else {
+            error!("insecure tunnel authorization is used!");
+            generate_jwt_token(
+                tunnel_hello.secret_access_key.as_ref(),
+                &tunnel_hello.access_key_id,
+            )?
+            .into()
+        };
 
         let res = self
             .reqwest

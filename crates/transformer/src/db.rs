@@ -343,7 +343,7 @@ impl MongoDbClient {
 
         let filter = doc! {
             "account_unique_id": account_unique_id.to_string(),
-            "content_hash": content_hash.clone(),
+            "content_hash": content_hash,
         };
         let find_options = FindOneAndUpdateOptions::builder().upsert(true).build();
         let upload_id = Ulid::new().to_string();
@@ -356,7 +356,7 @@ impl MongoDbClient {
                     "$setOnInsert": {
                         "upload_id": upload_id.clone(),
                         "upload_requested_at": Utc::now(),
-                        "content_type": content_type.clone(),
+                        "content_type": content_type,
                         "handler_name": handler_name.to_string(),
                         "project_name": project_name.to_string(),
                         "project_unique_id": project_unique_id,
@@ -416,7 +416,7 @@ impl MongoDbClient {
             url: queued.url.clone(),
             mount_point_name: queued.mount_point_name.clone(),
             project_name: queued.project_name.clone(),
-            project_unique_id: queued.project_unique_id.clone(),
+            project_unique_id: queued.project_unique_id,
             handler_name: queued.handler_name.clone(),
             content_hash: queued.content_hash.clone(),
             account_unique_id: queued.account_unique_id,

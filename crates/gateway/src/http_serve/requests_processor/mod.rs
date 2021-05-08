@@ -9,6 +9,7 @@ use crate::{
         cache::{Cache, HandlerChecksum},
         helpers::{clone_response_through_tempfile, ClonedResponse},
         identifier::RequestProcessingIdentifier,
+        logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
         requests_processor::{
             modifications::{
                 substitute_str_with_filter_matches, Replaced, ResolvedPathSegmentModify,
@@ -34,7 +35,7 @@ use exogress_common::{
     common_utils::uri_ext::UriExt,
     config_core::{
         self, is_profile_active, referenced,
-        referenced::{Container, Parameter},
+        referenced::{Container, ContainerScope, Parameter},
         refinable::RefinableSet,
         Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandlerVariant,
         MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue,
@@ -45,13 +46,19 @@ use exogress_common::{
     entities::{
         exceptions, exceptions::MODIFICATION_ERROR, serde::Serializer, AccountUniqueId, ConfigId,
         ConfigName, Exception, HandlerName, InstanceId, MountPointName, ParameterName, ProjectName,
-        ProjectUniqueId, StaticResponseName,
+        ProjectUniqueId, StaticResponseName, Ulid,
     },
 };
 use exogress_server_common::{
     crypto,
     crypto::decrypt_reader,
-    logging::{ExceptionProcessingStep, LogMessage, ProcessingStep, StaticResponseProcessingStep},
+    logging::{
+        CacheSavingStatus, CacheableInvocationProcessingStep, CatchProcessingStep,
+        CatchProcessingVariantStep, ExceptionProcessingStep, HandlerProcessingStep,
+        HandlerProcessingStepVariant, HttpBodyLog, LogMessage, ProcessingStep, RequestMetaInfo,
+        ResponseMetaInfo, ScopeLog, StaticResponseProcessingStep, TransformationStatus,
+        WellKnownRequestHeaders,
+    },
     presence,
     transformer::{ProcessResponse, MAX_SIZE_FOR_TRANSFORMATION},
     ContentHash,
@@ -65,7 +72,7 @@ use hashbrown::HashMap;
 use http::{
     header::{
         HeaderName, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, LOCATION,
-        RANGE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
+        RANGE, SET_COOKIE, STRICT_TRANSPORT_SECURITY,
     },
     HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 };
@@ -93,8 +100,8 @@ use std::{
     io,
     net::SocketAddr,
     sync::Arc,
-    time::Instant,
 };
+use tap::Tap;
 use tokio::io::AsyncWriteExt;
 use trust_dns_resolver::TokioAsyncResolver;
 use typed_headers::{Accept, ContentType, HeaderMapExt};
@@ -137,7 +144,7 @@ pub struct RequestsProcessor {
     max_pop_cache_size_bytes: Byte,
     gw_location: SmolStr,
     transformer_client: TransformerClient,
-    log_messages_tx: mpsc::Sender<LogMessage>,
+    log_messages_tx: mpsc::UnboundedSender<LogMessage>,
     dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
 }
 
@@ -150,7 +157,7 @@ impl RequestsProcessor {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         facts: Arc<Mutex<serde_json::Value>>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) {
         if let Some(db) = self.dbip.as_ref() {
             if let Ok(loc) = db.lookup::<LocationAndIsp>(remote_addr.ip()) {
@@ -214,6 +221,12 @@ impl RequestsProcessor {
         let mut processed_by = None;
         let original_req_headers = req.headers().clone();
         for handler in &self.ordered_handlers {
+            let invocation_log = Arc::new(parking_lot::Mutex::new(
+                CacheableInvocationProcessingStep::Empty {
+                    transformation: None,
+                },
+            ));
+
             // restore original headers
             *req.headers_mut() = original_req_headers.clone();
 
@@ -239,13 +252,19 @@ impl RequestsProcessor {
                     if resp_from_cache.is_full_response_success()
                         || resp_from_cache.has_conditional()
                     {
-                        if !self.is_transformations_limited
-                            && is_eligible_for_transformation_not_considering_status_code(
-                                resp_from_cache.as_full_resp(),
-                                handler.resolved_variant.post_processing(),
-                            )
-                        {
-                            error!("After cache responded, it is eligible for transformation");
+                        *invocation_log.lock() = CacheableInvocationProcessingStep::Cached {
+                            config_name: handler.config_name.clone(),
+                            handler_name: handler.handler_name.clone(),
+                            transformation: None,
+                        };
+
+                        if self.is_transformations_limited {
+                            *invocation_log.lock().transformation_mut() =
+                                Some(TransformationStatus::Limited);
+                        } else if is_eligible_for_transformation_not_considering_status_code(
+                            resp_from_cache.as_full_resp(),
+                            handler.resolved_variant.post_processing(),
+                        ) {
                             if let Some(max_age) =
                                 cache_max_age_without_checks(resp_from_cache.as_full_resp())
                             {
@@ -262,20 +281,21 @@ impl RequestsProcessor {
                                         let req_headers = req.headers().clone();
 
                                         let cache = self.cache.clone();
-                                        let account_unique_id = self.account_unique_id.clone();
+                                        let account_unique_id = self.account_unique_id;
                                         let project_name = self.project_name.clone();
-                                        let project_unique_id = self.project_unique_id.clone();
+                                        let project_unique_id = self.project_unique_id;
                                         let mount_point_name = self.mount_point_name.clone();
                                         let max_pop_cache_size_bytes =
-                                            self.max_pop_cache_size_bytes.clone();
+                                            self.max_pop_cache_size_bytes;
                                         let xchacha20poly1305_secret_key =
                                             self.xchacha20poly1305_secret_key.clone();
                                         let handler_name = handler.handler_name.clone();
-                                        let handler_checksum = handler.handler_checksum.clone();
+                                        let handler_checksum = handler.handler_checksum;
                                         let requested_url = requested_url.clone();
+                                        let log_message_container = log_message_container.clone();
+                                        let invocation_log = invocation_log.clone();
 
                                         tokio::spawn(async move {
-                                            error!("waiting for on_response_finished");
                                             match on_response_finished.await {
                                                 Some(cloned_resp) => {
                                                     trigger_transformation_if_required(
@@ -296,6 +316,8 @@ impl RequestsProcessor {
                                                         handler_name,
                                                         handler_checksum,
                                                         &requested_url,
+                                                        invocation_log.clone(),
+                                                        log_message_container.clone(),
                                                     )
                                                     .await;
                                                 }
@@ -315,23 +337,38 @@ impl RequestsProcessor {
                                     }
                                 }
                             } else {
+                                *invocation_log.lock().transformation_mut() =
+                                    Some(TransformationStatus::NotEligible);
+
                                 *res = resp_from_cache.into_for_user();
                             };
                         } else {
+                            *invocation_log.lock().transformation_mut() =
+                                Some(if resp_from_cache.is_transformed() {
+                                    TransformationStatus::Transformed
+                                } else {
+                                    error!("Set transformation NotEligible 2");
+                                    TransformationStatus::NotEligible
+                                });
+
                             *res = resp_from_cache.into_for_user();
-                            error!("after cache responded, it's not eligible for transformation");
                         }
 
                         res.headers_mut()
                             .insert("x-exg-edge-cached", "1".parse().unwrap());
 
-                        if let Ok(Some(len)) =
-                            res.headers().typed_get::<typed_headers::ContentLength>()
-                        {
-                            log_message.content_len = Some(len.0);
-                        }
+                        log_message_container
+                            .lock()
+                            .as_mut()
+                            .response
+                            .headers
+                            .fill_from_headers(res.headers());
 
-                        log_message.steps.push(ProcessingStep::ServedFromCache);
+                        log_message_container
+                            .lock()
+                            .as_mut()
+                            .steps
+                            .push(ProcessingStep::Invoke(invocation_log));
 
                         return;
                     }
@@ -356,7 +393,7 @@ impl RequestsProcessor {
                                 if let Some(rest) =
                                     supported_lang.as_str().strip_prefix(accepted.as_str())
                                 {
-                                    if rest.is_empty() || rest.starts_with("-") {
+                                    if rest.is_empty() || rest.starts_with('-') {
                                         return true;
                                     }
                                 }
@@ -379,13 +416,14 @@ impl RequestsProcessor {
                         local_addr,
                         remote_addr,
                         &best_language,
-                        log_message,
+                        invocation_log.clone(),
+                        log_message_container,
                     )
                     .await;
 
                 match result {
                     ResolvedHandlerProcessingResult::Processed => {
-                        processed_by = Some(handler);
+                        processed_by = Some((handler, invocation_log));
                         break;
                     }
                     ResolvedHandlerProcessingResult::FiltersNotMatched => {}
@@ -401,8 +439,17 @@ impl RequestsProcessor {
                 *res = Response::new(Body::from("Not found"));
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
-            Some(handler) => {
-                if !self.is_transformations_limited
+            Some((handler, invocation_log)) => {
+                if handler.resolved_variant.is_cache_enabled() != Some(true) {
+                    // cache is disabled
+                    if let CacheableInvocationProcessingStep::Invoked(step) =
+                        &mut *invocation_log.lock()
+                    {
+                        step.save_to_cache = Some(CacheSavingStatus::Disabled);
+                    }
+                    *invocation_log.lock().transformation_mut() =
+                        Some(TransformationStatus::CacheDisabled);
+                } else if !self.is_transformations_limited
                     && res.status().is_success()
                     && is_eligible_for_transformation_not_considering_status_code(
                         res,
@@ -412,96 +459,111 @@ impl RequestsProcessor {
                     if !self.cache.is_enough_space() {
                         crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
                         warn!(
-                            "Not saving content to cache, because cache reached the limit in size"
-                        );
-                    } else {
-                        if let Some(max_age) = cache_max_age_if_eligible(req, res, handler) {
-                            match clone_response_through_tempfile(res).await {
-                                Ok(on_response_finished) => {
-                                    let transformer_client = self.transformer_client.clone();
-                                    let account_secret_key =
-                                        self.xchacha20poly1305_secret_key.clone();
+                                "Not triggering transformation, because cache dir reached global limit in size"
+                            );
+                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res) {
+                        match clone_response_through_tempfile(res).await {
+                            Ok(on_response_finished) => {
+                                let transformer_client = self.transformer_client.clone();
+                                let account_secret_key = self.xchacha20poly1305_secret_key.clone();
 
-                                    let req_uri = req.uri().clone();
-                                    let req_method = req.method().clone();
-                                    let req_headers = req.headers().clone();
+                                let req_uri = req.uri().clone();
+                                let req_method = req.method().clone();
+                                let req_headers = req.headers().clone();
 
-                                    let cache = self.cache.clone();
-                                    let account_unique_id = self.account_unique_id.clone();
-                                    let project_name = self.project_name.clone();
-                                    let project_unique_id = self.project_unique_id.clone();
-                                    let mount_point_name = self.mount_point_name.clone();
-                                    let max_pop_cache_size_bytes =
-                                        self.max_pop_cache_size_bytes.clone();
-                                    let xchacha20poly1305_secret_key =
-                                        self.xchacha20poly1305_secret_key.clone();
-                                    let handler_name = handler.handler_name.clone();
-                                    let handler_checksum = handler.handler_checksum.clone();
-                                    let requested_url = requested_url.clone();
+                                let cache = self.cache.clone();
+                                let account_unique_id = self.account_unique_id;
+                                let project_name = self.project_name.clone();
+                                let project_unique_id = self.project_unique_id;
+                                let mount_point_name = self.mount_point_name.clone();
+                                let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
+                                let xchacha20poly1305_secret_key =
+                                    self.xchacha20poly1305_secret_key.clone();
+                                let handler_name = handler.handler_name.clone();
+                                let handler_checksum = handler.handler_checksum;
+                                let requested_url = requested_url.clone();
+                                let log_message_container = log_message_container.clone();
+                                let invocation_log = invocation_log.clone();
 
-                                    tokio::spawn(async move {
-                                        if let Some(cloned_resp) = on_response_finished.await {
-                                            trigger_transformation_if_required(
-                                                max_age,
-                                                &req_headers,
-                                                req_method,
-                                                &req_uri,
-                                                cloned_resp,
-                                                account_secret_key,
-                                                transformer_client,
-                                                cache,
-                                                account_unique_id,
-                                                project_name,
-                                                project_unique_id,
-                                                mount_point_name,
-                                                max_pop_cache_size_bytes,
-                                                xchacha20poly1305_secret_key,
-                                                handler_name,
-                                                handler_checksum,
-                                                &requested_url,
-                                            )
-                                            .await;
-                                        }
-                                    });
-                                }
-                                Err(e) => {
-                                    error!("Failed to clone response through tempfile: {}", e);
-                                }
+                                tokio::spawn(async move {
+                                    if let Some(cloned_resp) = on_response_finished.await {
+                                        trigger_transformation_if_required(
+                                            max_age,
+                                            &req_headers,
+                                            req_method,
+                                            &req_uri,
+                                            cloned_resp,
+                                            account_secret_key,
+                                            transformer_client,
+                                            cache,
+                                            account_unique_id,
+                                            project_name,
+                                            project_unique_id,
+                                            mount_point_name,
+                                            max_pop_cache_size_bytes,
+                                            xchacha20poly1305_secret_key,
+                                            handler_name,
+                                            handler_checksum,
+                                            &requested_url,
+                                            invocation_log,
+                                            log_message_container.clone(),
+                                        )
+                                        .await;
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                error!("Failed to clone response through tempfile: {}", e);
                             }
                         }
                     }
                 } else {
-                    // compression is never applied after transformation
-                    if let Err(e) = self.compress_if_applicable(
-                        req,
-                        res,
-                        handler
-                            .resolved_variant
-                            .post_processing()
-                            .map(|pp| &pp.encoding),
-                        log_message,
-                    ) {
-                        warn!("Error compressing: {}", e);
-                    }
+                    *invocation_log.lock().transformation_mut() =
+                        Some(if self.is_transformations_limited {
+                            TransformationStatus::Limited
+                        } else {
+                            TransformationStatus::NotEligible
+                        });
+                };
+
+                if let Err(e) = self.compress_if_applicable(
+                    req,
+                    res,
+                    handler
+                        .resolved_variant
+                        .post_processing()
+                        .map(|pp| &pp.encoding),
+                    log_message_container,
+                ) {
+                    warn!("Error compressing: {}", e);
                 };
 
                 res.headers_mut()
                     .insert("server", HeaderValue::from_static("exogress"));
+                res.headers_mut()
+                    .insert("x-exg-location", self.gw_location.parse().unwrap());
 
-                if !self.cache.is_enough_space() {
-                    crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
-                    warn!("Not saving content to cache, because cache reached the limit in size");
-                } else {
-                    if let Some(max_age) = cache_max_age_if_eligible(req, res, handler) {
+                if handler.resolved_variant.is_cache_enabled() == Some(true) {
+                    if !self.cache.is_enough_space() {
+                        crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
+                        warn!(
+                            "Not saving content to cache, because cache reached the limit in size"
+                        );
+                        if let CacheableInvocationProcessingStep::Invoked(step) =
+                            &mut *invocation_log.lock()
+                        {
+                            step.save_to_cache = Some(CacheSavingStatus::SaveError);
+                        }
+                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res) {
                         let cache = self.cache.clone();
-                        let account_unique_id = self.account_unique_id.clone();
+                        let account_unique_id = self.account_unique_id;
                         let project_name = self.project_name.clone();
                         let mount_point_name = self.mount_point_name.clone();
-                        let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes.clone();
+                        let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
                         let xchacha20poly1305_secret_key =
                             self.xchacha20poly1305_secret_key.clone();
                         let handler_name = handler.handler_name.clone();
-                        let handler_checksum = handler.handler_checksum.clone();
+                        let handler_checksum = handler.handler_checksum;
 
                         let req_headers = req.headers();
                         let req_method = req.method().clone();
@@ -521,15 +583,24 @@ impl RequestsProcessor {
                             xchacha20poly1305_secret_key,
                             handler_name,
                             handler_checksum,
+                            Some(invocation_log.clone()),
+                            &log_message_container,
                         );
+                    } else if let CacheableInvocationProcessingStep::Invoked(step) =
+                        &mut *invocation_log.lock()
+                    {
+                        step.save_to_cache = Some(CacheSavingStatus::NotEligible);
                     }
                 }
             }
         }
 
-        if let Ok(Some(len)) = res.headers().typed_get::<typed_headers::ContentLength>() {
-            log_message.content_len = Some(len.0);
-        }
+        log_message_container
+            .lock()
+            .as_mut()
+            .response
+            .headers
+            .fill_from_headers(res.headers());
 
         if let Some(strict_transport_security) = &self.strict_transport_security {
             res.headers_mut().insert(
@@ -550,31 +621,57 @@ impl RequestsProcessor {
         remote_addr: &SocketAddr,
     ) {
         if self.is_active {
-            let started_at = Instant::now();
             let facts = Arc::new(Mutex::new(json!({})));
 
-            let mut log_message = LogMessage {
+            let request_id = Ulid::new();
+
+            let response_body_log = HttpBodyLog::default();
+            let request_body_log = HttpBodyLog::default();
+            let started_at = Utc::now();
+
+            let log_message = LogMessage {
+                request_id,
                 gw_location: self.gw_location.clone(),
-                project_unique_id: self.project_unique_id.clone(),
-                date: Utc::now(),
+                project_unique_id: self.project_unique_id,
                 remote_addr: remote_addr.ip(),
-                account_unique_id: self.account_unique_id.clone(),
+                account_unique_id: self.account_unique_id,
                 project: self.project_name.clone(),
                 mount_point: self.mount_point_name.clone(),
-                url: requested_url.to_string().into(),
-                method: req.method().to_string().into(),
+                request: RequestMetaInfo {
+                    headers: WellKnownRequestHeaders::default().tap_mut(|well_known_headers| {
+                        well_known_headers.fill_from_headers(&req.headers())
+                    }),
+                    body: request_body_log.clone(),
+                    url: requested_url.to_string().into(),
+                    method: req.method().to_string().into(),
+                },
+                response: ResponseMetaInfo {
+                    headers: Default::default(),
+                    body: response_body_log.clone(),
+                    compression: None,
+                    status_code: None,
+                },
                 protocol: format!("{:?}", req.version()).into(),
-                user_agent: req
-                    .headers()
-                    .get(USER_AGENT)
-                    .map(|v| v.to_str().unwrap_or_default().into()),
-                status_code: None,
-                time_taken: None,
-                content_len: None,
                 steps: vec![],
                 facts: facts.clone(),
                 str: None,
+                timestamp: started_at,
+                started_at,
+                ended_at: None,
+                time_taken_ms: None,
             };
+
+            let log_message_container = Arc::new(parking_lot::Mutex::new(
+                LogMessageSendOnDrop::new(log_message, self.log_messages_tx.clone()),
+            ));
+
+            let original_request_body = mem::replace(req.body_mut(), Body::empty());
+            *req.body_mut() = save_body_info_to_log_message(
+                original_request_body,
+                log_message_container.clone(),
+                request_body_log,
+            );
+
             self.do_process(
                 req,
                 res,
@@ -582,19 +679,27 @@ impl RequestsProcessor {
                 local_addr,
                 remote_addr,
                 facts,
-                &mut log_message,
+                &log_message_container,
             )
             .await;
-            log_message.time_taken = Some(started_at.elapsed());
-            log_message.status_code = Some(res.status().as_u16());
 
-            log_message.set_message_string();
+            {
+                let mut log_message = log_message_container.lock();
 
-            self.log_messages_tx
-                .clone()
-                .send(log_message)
-                .await
-                .unwrap();
+                log_message.as_mut().response.status_code = Some(res.status().as_u16());
+            };
+
+            let original_response_body = mem::replace(res.body_mut(), Body::empty());
+            *res.body_mut() = save_body_info_to_log_message(
+                original_response_body,
+                log_message_container.clone(),
+                response_body_log.clone(),
+            );
+
+            res.headers_mut().insert(
+                "x-exg-request-id",
+                HeaderValue::try_from(request_id.to_string()).unwrap(),
+            );
         } else {
             let body = render_limit_reached();
             {
@@ -602,6 +707,8 @@ impl RequestsProcessor {
                 headers.insert(CONTENT_TYPE, TEXT_HTML_UTF_8.to_string().parse().unwrap());
                 headers.insert(CONTENT_LENGTH, body.len().into());
                 headers.insert("server", HeaderValue::from_static("exogress"));
+                res.headers_mut()
+                    .insert("x-exg-location", self.gw_location.parse().unwrap());
             }
             *res.body_mut() = Body::from(body);
         }
@@ -622,18 +729,27 @@ fn save_to_cache(
     xchacha20poly1305_secret_key: xchacha20poly1305::Key,
     handler_name: HandlerName,
     handler_checksum: HandlerChecksum,
+    invocation_log: Option<Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>>,
+    log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
 ) {
     if !cache.is_enough_space() {
         crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
         warn!("Not saving content to cache, because cache reached the limit in size");
+        if let Some(invocation_log) = &invocation_log {
+            if let CacheableInvocationProcessingStep::Invoked(step) = &mut *invocation_log.lock() {
+                step.save_to_cache = Some(CacheSavingStatus::SaveError);
+            }
+        }
     }
+
+    shadow_clone!(log_message_container);
 
     let path_and_query = req_uri.path_and_query().unwrap().to_string();
 
-    let method = req_method.clone();
+    let method = req_method;
     let req_headers = req_headers.clone();
     let mut res_headers = res.headers().clone();
-    let status = res.status().clone();
+    let status = res.status();
 
     let (mut resp_tx, resp_rx) = mpsc::channel(1);
 
@@ -643,7 +759,7 @@ fn save_to_cache(
 
     tokio::spawn(async move {
         let r = async move {
-            let tempdir = tokio::task::spawn_blocking(|| tempfile::tempdir()).await??;
+            let tempdir = tokio::task::spawn_blocking(tempfile::tempdir).await??;
 
             let tempfile_path = tempdir.path().to_owned().join("req");
             let mut original_file_size = 0;
@@ -706,13 +822,44 @@ fn save_to_cache(
                     )
                     .await;
 
-                if let Err(e) = cached_response {
-                    crate::statistics::EDGE_CACHE_ERRORS
-                        .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
-                        .inc();
-                    error!("error saving to cache: {}", e);
+                match cached_response {
+                    Err(e) => {
+                        crate::statistics::EDGE_CACHE_ERRORS
+                            .with_label_values(&[crate::statistics::CACHE_ACTION_WRITE])
+                            .inc();
+                        error!("error saving to cache: {}", e);
+                        if let Some(invocation_log) = invocation_log {
+                            if let CacheableInvocationProcessingStep::Invoked(step) =
+                                &mut *invocation_log.lock()
+                            {
+                                step.save_to_cache = Some(CacheSavingStatus::SaveError);
+                            }
+                        }
+                    }
+                    Ok(true) => {
+                        if let Some(invocation_log) = invocation_log {
+                            if let CacheableInvocationProcessingStep::Invoked(step) =
+                                &mut *invocation_log.lock()
+                            {
+                                step.save_to_cache = Some(CacheSavingStatus::Saved {
+                                    max_age: max_age.to_std().unwrap(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(false) => {
+                        if let Some(invocation_log) = invocation_log {
+                            if let CacheableInvocationProcessingStep::Invoked(step) =
+                                &mut *invocation_log.lock()
+                            {
+                                step.save_to_cache = Some(CacheSavingStatus::Skipped);
+                            }
+                        }
+                    }
                 }
             }
+
+            mem::drop(log_message_container);
 
             Ok::<_, anyhow::Error>(())
         }
@@ -744,10 +891,14 @@ async fn trigger_transformation_if_required(
     handler_name: HandlerName,
     handler_checksum: HandlerChecksum,
     requested_url: &http::uri::Uri,
+    invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
+    log_message_container: Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
 ) {
     let r = async move {
         if !cache.is_enough_space() {
             crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
+            *invocation_log.lock().transformation_mut() = Some(TransformationStatus::Skipped);
+
             warn!("Not saving content to cache, because cache reached the limit in size");
         } else {
             let maybe_accept = req_headers.typed_get::<typed_headers::Accept>()?;
@@ -772,8 +923,9 @@ async fn trigger_transformation_if_required(
                     )
                     .await?;
 
-                error!("TRANSFORMER: transformer_result = {:?}", transformer_result);
                 let mut resp = cloned_res.response;
+
+                *invocation_log.lock().transformation_mut() = Some(TransformationStatus::Triggered);
 
                 match transformer_result {
                     ProcessResponse::Ready(ready) => {
@@ -830,7 +982,7 @@ async fn trigger_transformation_if_required(
                                 );
                                 resp.headers_mut().insert(
                                     ETAG,
-                                    EntityTag::from_hash(cloned_res.content_hash.as_ref())
+                                    EntityTag::from_data(cloned_res.content_hash.as_ref())
                                         .to_string()
                                         .parse()
                                         .unwrap(),
@@ -841,8 +993,6 @@ async fn trigger_transformation_if_required(
                                 );
 
                                 *resp.body_mut() = Body::from(transformed_content);
-
-                                error!("Will saved transformed to cache");
 
                                 save_to_cache(
                                     max_age,
@@ -858,12 +1008,14 @@ async fn trigger_transformation_if_required(
                                     xchacha20poly1305_secret_key,
                                     handler_name,
                                     handler_checksum,
+                                    None,
+                                    &log_message_container,
                                 );
 
                                 // FIXME: this is ugly, but we need to consume whole body stream in order
                                 // to successfully complete cache saving
                                 let mut body_to_consume = resp.into_body();
-                                while let Some(_) = body_to_consume.next().await {}
+                                while body_to_consume.next().await.is_some() {}
                             }
                         } else {
                             // no appropriate conversion is available to the provided Accept header.
@@ -886,12 +1038,17 @@ async fn trigger_transformation_if_required(
                                 xchacha20poly1305_secret_key,
                                 handler_name,
                                 handler_checksum,
+                                None,
+                                &log_message_container,
                             );
 
                             // FIXME: this is ugly, but we need to consume whole body stream in order to successfuly complete cache saving
                             let mut body_to_consume = resp.into_body();
-                            while let Some(_) = body_to_consume.next().await {}
-                        }
+                            while body_to_consume.next().await.is_some() {}
+                        };
+
+                        *invocation_log.lock().transformation_mut() =
+                            Some(TransformationStatus::SavedToCache);
                     }
                     ProcessResponse::PendingUpload { upload_id, .. } => {
                         error!("will upload");
@@ -948,13 +1105,8 @@ fn is_eligible_for_transformation_not_considering_status_code(
 
             match content_type_result {
                 Ok(Some(mime_type)) => {
-                    if mime_type.0 == IMAGE_JPEG && post_processing.image.is_jpeg {
-                        true
-                    } else if mime_type.0 == IMAGE_PNG && post_processing.image.is_png {
-                        true
-                    } else {
-                        false
-                    }
+                    (mime_type.0 == IMAGE_JPEG && post_processing.image.is_jpeg)
+                        || (mime_type.0 == IMAGE_PNG && post_processing.image.is_png)
                 }
                 Ok(None) => {
                     error!("no content-type while checking transformation eligibility");
@@ -1011,7 +1163,7 @@ impl Rebase {
             }
         }
 
-        return Some(rebased_url);
+        Some(rebased_url)
     }
 }
 
@@ -1051,13 +1203,8 @@ pub fn cache_max_age_without_checks(res: &Response<Body>) -> Option<chrono::Dura
 pub fn cache_max_age_if_eligible(
     req: &Request<Body>,
     res: &Response<Body>,
-    handler: &ResolvedHandler,
 ) -> Option<chrono::Duration> {
-    if handler.resolved_variant.is_cache_enabled() != Some(true) {
-        return None;
-    }
-
-    if req.method() != &Method::GET && req.method() != &Method::HEAD {
+    if req.method() != Method::GET && req.method() != Method::HEAD {
         return None;
     };
 
@@ -1066,8 +1213,13 @@ pub fn cache_max_age_if_eligible(
         return None;
     }
 
-    if req.headers().get(RANGE).is_some() {
+    if req.headers().contains_key(RANGE) {
         info!("range set!");
+        return None;
+    }
+
+    if res.headers().contains_key(SET_COOKIE) {
+        info!("set-cookie set. skip caching!");
         return None;
     }
 
@@ -1137,12 +1289,18 @@ impl ResolvedHandlerVariant {
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> Option<HandlerInvocationResult> {
         match self {
             ResolvedHandlerVariant::Auth(handler) => {
                 handler
-                    .try_handle_service_paths(req, res, requested_url, language, log_message)
+                    .try_handle_service_paths(
+                        req,
+                        res,
+                        requested_url,
+                        language,
+                        log_message_container,
+                    )
                     .await
             }
             _ => None,
@@ -1158,11 +1316,15 @@ impl ResolvedHandlerVariant {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        cacheable_invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
+        assert!(!cacheable_invocation_log.lock().is_not_empty());
+
         match self {
             ResolvedHandlerVariant::Proxy(proxy) => {
-                proxy
+                let mut proxy_log = None;
+                let r = proxy
                     .invoke(
                         req,
                         res,
@@ -1171,12 +1333,29 @@ impl ResolvedHandlerVariant {
                         local_addr,
                         remote_addr,
                         language,
-                        log_message,
+                        &mut proxy_log,
+                        log_message_container,
                     )
-                    .await
+                    .await;
+
+                if let Some(log) = proxy_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::Proxy(log),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        save_to_cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::StaticDir(static_dir) => {
-                static_dir
+                let mut static_dir_log = None;
+
+                let r = static_dir
                     .invoke(
                         req,
                         res,
@@ -1185,32 +1364,106 @@ impl ResolvedHandlerVariant {
                         local_addr,
                         remote_addr,
                         language,
-                        log_message,
+                        &mut static_dir_log,
+                        log_message_container,
                     )
-                    .await
+                    .await;
+
+                if let Some(log) = static_dir_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::StaticDir(log),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        save_to_cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::Auth(auth) => {
-                auth.invoke(req, res, requested_url, language, log_message)
-                    .await
+                let mut auth_log = None;
+
+                let r = auth
+                    .invoke(req, res, requested_url, language, &mut auth_log)
+                    .await;
+
+                if let Some(log) = auth_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::Auth(log),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        save_to_cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::S3Bucket(s3_bucket) => {
-                s3_bucket
-                    .invoke(req, res, requested_url, modified_url, language, log_message)
-                    .await
+                let mut s3_log = None;
+                let r = s3_bucket
+                    .invoke(
+                        req,
+                        res,
+                        requested_url,
+                        modified_url,
+                        language,
+                        &mut s3_log,
+                        log_message_container,
+                    )
+                    .await;
+
+                if let Some(log) = s3_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::S3Bucket(log),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        save_to_cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
             ResolvedHandlerVariant::GcsBucket(gcs_bucket) => {
-                gcs_bucket
-                    .invoke(req, res, requested_url, modified_url, language, log_message)
-                    .await
+                let mut gcs_log = None;
+
+                let r = gcs_bucket
+                    .invoke(
+                        req,
+                        res,
+                        requested_url,
+                        modified_url,
+                        language,
+                        &mut gcs_log,
+                        log_message_container,
+                    )
+                    .await;
+
+                if let Some(log) = gcs_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::GcsBucket(log),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        save_to_cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
-            // ResolvedHandlerVariant::ApplicationFirewall(application_firewall) => {
-            //     application_firewall
-            //         .invoke(req, res, requested_url, modified_url, language, log_message)
-            //         .await
-            // }
             ResolvedHandlerVariant::PassThrough(pass_through) => {
                 pass_through
-                    .invoke(req, res, requested_url, modified_url, log_message)
+                    .invoke(req, res, requested_url, modified_url)
                     .await
             }
         }
@@ -1220,25 +1473,24 @@ impl ResolvedHandlerVariant {
 #[derive(Debug)]
 enum ResolvedRuleAction {
     Invoke {
-        rescue: Vec<ResolvedRescueItem>,
+        rescues: Vec<ResolvedRescueItem>,
+        scope: Scope,
     },
     NextHandler,
     Throw {
         exception: Exception,
         data: HashMap<SmolStr, SmolStr>,
     },
-    Respond(ResolvedStaticResponseAction),
+    Respond(Box<ResolvedStaticResponseAction>),
 }
 
 impl ResolvedRuleAction {
     pub fn rescues(&self) -> Vec<ResolvedRescueItem> {
         match self {
-            ResolvedRuleAction::Invoke { rescue } => rescue.clone(),
+            ResolvedRuleAction::Invoke { rescues, .. } => rescues.clone(),
             ResolvedRuleAction::NextHandler => Default::default(),
             ResolvedRuleAction::Throw { .. } => Default::default(),
-            ResolvedRuleAction::Respond(ResolvedStaticResponseAction { rescue, .. }) => {
-                rescue.clone()
-            }
+            ResolvedRuleAction::Respond(action) => action.rescues.clone(),
         }
     }
 }
@@ -1247,7 +1499,7 @@ impl ResolvedRuleAction {
 struct ResolvedStaticResponseAction {
     // static_response_name: StaticResponseName,
     pub static_response: Result<ResolvedStaticResponse, referenced::Error>,
-    pub rescue: Vec<ResolvedRescueItem>,
+    pub rescues: Vec<ResolvedRescueItem>,
 }
 
 impl ResolvedStaticResponseAction {
@@ -1261,9 +1513,9 @@ impl ResolvedStaticResponseAction {
         matches: Option<&HashMap<SmolStr, Matched>>,
         is_in_exception: bool,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
-        let facts = log_message.facts.clone();
+        let facts = log_message_container.lock().as_mut().facts.clone();
 
         *res = Response::new(Body::empty());
 
@@ -1273,21 +1525,21 @@ impl ResolvedStaticResponseAction {
 
                 data.insert(SmolStr::from("error"), SmolStr::from(e.to_string()));
 
-                let rescueable = Rescueable::Exception {
-                    exception: &*exceptions::STATIC_RESPONSE_NOT_DEFINED,
-                    data: &data,
+                let rescuable = Rescuable::Exception {
+                    exception: exceptions::STATIC_RESPONSE_NOT_DEFINED.clone(),
+                    data,
                 };
 
-                return handler.handle_rescueable(
+                handler.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable,
                     true,
-                    &self.rescue,
+                    &self.rescues,
                     &language,
-                    log_message,
-                );
+                    log_message_container,
+                )
             }
             Ok(static_response) => {
                 let mut data = if let Some(d) = additional_data {
@@ -1299,13 +1551,18 @@ impl ResolvedStaticResponseAction {
                     data.insert(k.clone(), v.clone());
                 }
 
-                log_message.steps.push(ProcessingStep::StaticResponse(
-                    StaticResponseProcessingStep {
-                        data: static_response.data.clone(),
-                        config_name: handler.config_name.clone(),
-                        language: language.clone(),
-                    },
-                ));
+                log_message_container
+                    .lock()
+                    .as_mut()
+                    .steps
+                    .push(ProcessingStep::StaticResponse(
+                        StaticResponseProcessingStep {
+                            data: static_response.data.clone(),
+                            config_name: handler.config_name.clone(),
+                            scope: container_scope_to_log(&static_response.container_scope),
+                            language: language.clone(),
+                        },
+                    ));
 
                 match static_response.invoke(
                     req,
@@ -1320,20 +1577,17 @@ impl ResolvedStaticResponseAction {
                     Err((exception, data)) => {
                         *res = Response::new(Body::empty());
                         if !is_in_exception {
-                            let rescueable = Rescueable::Exception {
-                                exception: &exception,
-                                data: &data,
-                            };
-                            error!("could not invoke static resp; call handle_rescueable. rescue handlers: {:?}", self.rescue);
-                            handler.handle_rescueable(
+                            let rescuable = Rescuable::Exception { exception, data };
+                            error!("could not invoke static resp; call handle_rescuable. rescue handlers: {:?}", self.rescues);
+                            handler.handle_rescuable(
                                 req,
                                 res,
                                 requested_url,
-                                &rescueable,
+                                rescuable,
                                 false,
-                                &self.rescue,
+                                &self.rescues,
                                 &language,
-                                log_message,
+                                log_message_container,
                             )
                         } else {
                             *res.body_mut() = Body::from("Internal server error");
@@ -1356,8 +1610,20 @@ enum ResolvedCatchAction {
         data: HashMap<SmolStr, SmolStr>,
         rescues: Vec<ResolvedRescueItem>,
     },
-    NextHandler,
+    NextHandler {
+        scope: Scope,
+    },
 }
+
+// impl ResolvedCatchAction {
+//     pub fn scope(&self) -> &Scope {
+//         match self {
+//             ResolvedCatchAction::StaticResponse(resp) => &resp.scope,
+//             ResolvedCatchAction::Throw {  .. } => &scope,
+//             ResolvedCatchAction::NextHandler { scope } => scope,
+//         }
+//     }
+// }
 
 #[derive(Debug)]
 pub struct ResolvedFilter {
@@ -1374,7 +1640,7 @@ pub enum ResolvedMatchQueryValue {
     MayBeAnyMultipleSegments,
     Exact(SmolStr),
     Regex(Box<Regex>),
-    Choice(AhoCorasick),
+    Choice(Box<AhoCorasick>),
 }
 
 impl From<MatchQueryValue> for ResolvedMatchQueryValue {
@@ -1396,7 +1662,7 @@ impl From<MatchQueryValue> for ResolvedMatchQueryValue {
                 let aho_corasick = AhoCorasickBuilder::new()
                     .match_kind(MatchKind::LeftmostLongest)
                     .build(variants.iter().map(|s| s.as_str()));
-                ResolvedMatchQueryValue::Choice(aho_corasick)
+                ResolvedMatchQueryValue::Choice(Box::new(aho_corasick))
             }
         }
     }
@@ -1454,7 +1720,7 @@ impl From<MatchPathSegment> for ResolvedMatchPathSegment {
                 let aho_corasick = AhoCorasickBuilder::new()
                     .match_kind(MatchKind::LeftmostLongest)
                     .build(variants);
-                ResolvedMatchPathSegment::Choice(aho_corasick)
+                ResolvedMatchPathSegment::Choice(Box::new(aho_corasick))
             }
         }
     }
@@ -1465,7 +1731,7 @@ pub enum ResolvedMatchPathSegment {
     Any,
     Exact(UrlPathSegment),
     Regex(Box<Regex>),
-    Choice(AhoCorasick),
+    Choice(Box<AhoCorasick>),
 }
 
 #[derive(Debug, Clone)]
@@ -1653,7 +1919,7 @@ impl ResolvedFilter {
         url: &http::Uri,
         method: &http::Method,
     ) -> Option<(HashMap<SmolStr, Matched>, usize)> {
-        let is_trailing_slash = url.path().ends_with("/");
+        let is_trailing_slash = url.path().ends_with('/');
 
         if !self.method.is_match(method) {
             return None;
@@ -1671,9 +1937,9 @@ impl ResolvedFilter {
         let mut segments = vec![];
         {
             let mut path_segments = url.path_segments().into_iter();
-            let mut base_segments = self.base_path_replacement.iter();
+            let base_segments = self.base_path_replacement.iter();
 
-            while let Some(expected_base_segment) = base_segments.next() {
+            for expected_base_segment in base_segments {
                 if let Some(segment) = path_segments.next() {
                     if segment != expected_base_segment.as_str() {
                         return None;
@@ -1683,7 +1949,7 @@ impl ResolvedFilter {
                 }
             }
 
-            while let Some(segment) = path_segments.next() {
+            for segment in path_segments {
                 if !segment.is_empty() {
                     segments.push(SmolStr::from(segment.to_string()));
                 }
@@ -1695,12 +1961,9 @@ impl ResolvedFilter {
 
             match &self.path {
                 ResolvedMatchingPath::Root
-                    if segments.len() == 0 || (segments.len() == 1 && segments[0].is_empty()) => {}
+                    if segments.is_empty() || (segments.len() == 1 && segments[0].is_empty()) => {}
                 ResolvedMatchingPath::Wildcard => {
-                    matches.insert(
-                        "0".to_string().into(),
-                        Matched::Segments(segments.iter().cloned().collect()),
-                    );
+                    matches.insert("0".to_string().into(), Matched::Segments(segments.to_vec()));
                 }
                 ResolvedMatchingPath::Strict(match_segments) => {
                     if match_segments.len() != segments.len() {
@@ -1753,7 +2016,7 @@ impl ResolvedFilter {
                     if !wildcard_part.is_empty() {
                         matches.insert(
                             left_ends.to_string().into(),
-                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                            Matched::Segments(wildcard_part.to_vec()),
                         );
                     }
                 }
@@ -1778,7 +2041,7 @@ impl ResolvedFilter {
                     if !wildcard_part.is_empty() {
                         matches.insert(
                             num.to_string().into(),
-                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                            Matched::Segments(wildcard_part.to_vec()),
                         );
                     }
                 }
@@ -1805,7 +2068,7 @@ impl ResolvedFilter {
                     if !wildcard_part.is_empty() {
                         matches.insert(
                             0.to_string().into(),
-                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                            Matched::Segments(wildcard_part.to_vec()),
                         );
                     }
                 }
@@ -1818,10 +2081,10 @@ impl ResolvedFilter {
         let path_match = (matcher)()?;
 
         match self.trailing_slash {
-            TrailingSlashFilterRule::Require if is_trailing_slash == false => {
+            TrailingSlashFilterRule::Require if !is_trailing_slash => {
                 return None;
             }
-            TrailingSlashFilterRule::Deny if is_trailing_slash == true => {
+            TrailingSlashFilterRule::Deny if is_trailing_slash => {
                 return None;
             }
             _ => {}
@@ -1944,7 +2207,7 @@ pub struct ResolvedHandler {
 
     priority: u16,
 
-    catches: Vec<ResolvedRescueItem>,
+    rescues: Vec<ResolvedRescueItem>,
 
     resolved_rules: Vec<ResolvedRule>,
 
@@ -1955,20 +2218,20 @@ pub struct ResolvedHandler {
     languages: Option<Vec<langtag::LanguageTagBuf>>,
 }
 
-#[derive(Debug)]
-enum Rescueable<'a> {
+#[derive(Clone, Debug)]
+enum Rescuable {
     Exception {
-        exception: &'a Exception,
-        data: &'a HashMap<SmolStr, SmolStr>,
+        exception: Exception,
+        data: HashMap<SmolStr, SmolStr>,
     },
     StatusCode(StatusCode),
 }
 
-impl<'a> Rescueable<'a> {
-    fn data(&'a self) -> Option<&'a HashMap<SmolStr, SmolStr>> {
+impl Rescuable {
+    fn data(&self) -> Option<&HashMap<SmolStr, SmolStr>> {
         match self {
-            Rescueable::Exception { data, .. } => Some(data),
-            Rescueable::StatusCode(_) => None,
+            Rescuable::Exception { data, .. } => Some(data),
+            Rescuable::StatusCode(_) => None,
         }
     }
 }
@@ -1979,6 +2242,73 @@ enum ResolvedHandlerProcessingResult {
     Processed,
     FiltersNotMatched,
     NextHandler,
+}
+
+fn container_scope_to_log(container_scope: &ContainerScope) -> ScopeLog {
+    match container_scope {
+        ContainerScope::Inline { scope } | ContainerScope::Referenced { scope } => match scope {
+            Scope::ProjectConfig => ScopeLog::ProjectConfig,
+            Scope::ClientConfig { config, revision } => ScopeLog::ClientConfig {
+                config_name: config.clone(),
+                revision: *revision,
+            },
+            Scope::ProjectMount { mount_point } => ScopeLog::ProjectMount {
+                mount_point: mount_point.clone(),
+            },
+            Scope::ClientMount {
+                config,
+                revision,
+                mount_point,
+            } => ScopeLog::ClientMount {
+                config_name: config.clone(),
+                revision: *revision,
+                mount_point: mount_point.clone(),
+            },
+            Scope::ProjectHandler {
+                mount_point,
+                handler,
+            } => ScopeLog::ProjectHandler {
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+            },
+            Scope::ClientHandler {
+                config,
+                revision,
+                mount_point,
+                handler,
+            } => ScopeLog::ClientHandler {
+                config_name: config.clone(),
+                revision: *revision,
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+            },
+            Scope::ProjectRule {
+                mount_point,
+                handler,
+                rule_num,
+            } => ScopeLog::ProjectRule {
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+                rule_num: *rule_num,
+            },
+            Scope::ClientRule {
+                config,
+                revision,
+                mount_point,
+                handler,
+                rule_num,
+            } => ScopeLog::ClientRule {
+                config_name: config.clone(),
+                revision: *revision,
+                mount_point: mount_point.clone(),
+                handler_name: handler.clone(),
+                rule_num: *rule_num,
+            },
+        },
+        ContainerScope::Parameter { name } => ScopeLog::Parameter {
+            parameter_name: name.clone(),
+        },
+    }
 }
 
 impl ResolvedHandler {
@@ -2006,30 +2336,33 @@ impl ResolvedHandler {
             }
             StatusCodeRange::List(codes) => codes
                 .iter()
-                .find(|code| code.as_u16() == status_code.as_u16())
-                .is_some(),
+                .any(|code| code.as_u16() == status_code.as_u16()),
         }
     }
 
     fn find_exception_handler(
-        rescues: &Vec<ResolvedRescueItem>,
-        rescueable: &Rescueable<'_>,
-    ) -> Option<ResolvedCatchAction> {
+        rescues: &[ResolvedRescueItem],
+        rescuable: &Rescuable,
+    ) -> Option<ResolvedRescueItem> {
+        error!("find_exception_handler {:?} => {:?}", rescues, rescuable);
+
         for rescue_item in rescues.iter() {
-            match (rescueable, &rescue_item.catch) {
+            match (rescuable, &rescue_item.catch) {
                 (
-                    Rescueable::Exception { exception, .. },
+                    Rescuable::Exception { exception, .. },
                     ResolvedCatchMatcher::Exception(exception_matcher),
                 ) if Self::is_exception_matches(exception_matcher, exception) => {
-                    return Some(rescue_item.handle.clone())
+                    return Some(rescue_item.clone())
                 }
                 (
-                    Rescueable::StatusCode(status_code),
-                    ResolvedCatchMatcher::StatusCode(status_code_rande),
-                ) if Self::is_status_code_matches(status_code_rande, status_code) => {
-                    return Some(rescue_item.handle.clone())
+                    Rescuable::StatusCode(status_code),
+                    ResolvedCatchMatcher::StatusCode(status_code_range),
+                ) if Self::is_status_code_matches(status_code_range, status_code) => {
+                    return Some(rescue_item.clone())
                 }
-                _ => {}
+                _ => {
+                    error!("unmatched!!");
+                }
             }
         }
 
@@ -2037,99 +2370,162 @@ impl ResolvedHandler {
     }
 
     /// Handle exception in the right order
-    fn handle_rescueable(
+    fn handle_rescuable(
         &self,
         req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
-        rescueable: &Rescueable<'_>,
+        mut rescuable: Rescuable,
         is_in_exception: bool,
-        rescues: &Vec<ResolvedRescueItem>,
+        rescues: &[ResolvedRescueItem],
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
-        if let &Rescueable::Exception { exception, data } = rescueable {
-            log_message
+        if let Rescuable::Exception { exception, data } = &rescuable {
+            log_message_container
+                .lock()
+                .as_mut()
                 .steps
-                .push(ProcessingStep::Exception(ExceptionProcessingStep {
+                .push(ProcessingStep::ThrowException(ExceptionProcessingStep {
                     exception: exception.clone(),
+                    handler_name: Some(SmolStr::from(&self.handler_name)),
                     data: data.clone(),
                 }));
         }
 
-        let mut maybe_resolved_exception = Self::find_exception_handler(rescues, &rescueable);
-        let mut collected_data: HashMap<SmolStr, SmolStr> = if let Some(d) = rescueable.data() {
+        let mut maybe_resolved_rescue_item = Self::find_exception_handler(rescues, &rescuable);
+        let mut collected_data: HashMap<SmolStr, SmolStr> = if let Some(d) = rescuable.data() {
             d.clone()
         } else {
             Default::default()
         };
 
         let result = loop {
-            match maybe_resolved_exception {
-                None => match rescueable {
-                    &Rescueable::Exception { exception, data } => {
+            // iterate over the chain of exceptions
+
+            error!(
+                "maybe_resolved_rescue_item = {:?}",
+                maybe_resolved_rescue_item
+            );
+
+            if let Some(rescue_item) = maybe_resolved_rescue_item {
+                // some catch block is found
+
+                let catch_step = match (&rescuable, &rescue_item.catch) {
+                    (
+                        Rescuable::Exception { exception, .. },
+                        ResolvedCatchMatcher::Exception(exception_matcher),
+                    ) => CatchProcessingStep {
+                        catch_matcher: exception_matcher.to_string(),
+                        variant: CatchProcessingVariantStep::Exception {
+                            exception: exception.to_string(),
+                        },
+                        scope: container_scope_to_log(&rescue_item.container_scope),
+                    },
+                    (
+                        Rescuable::StatusCode(status_code),
+                        ResolvedCatchMatcher::StatusCode(status_code_range),
+                    ) => CatchProcessingStep {
+                        catch_matcher: status_code_range.to_string(),
+                        variant: CatchProcessingVariantStep::StatusCode {
+                            status_code: *status_code,
+                        },
+                        scope: container_scope_to_log(&rescue_item.container_scope),
+                    },
+                    r => {
+                        unreachable!("BAD rescuable matching => {:?}", r)
+                    }
+                };
+
+                log_message_container
+                    .lock()
+                    .as_mut()
+                    .steps
+                    .push(ProcessingStep::CatchException(catch_step));
+
+                match rescue_item.handle {
+                    ResolvedCatchAction::Throw {
+                        exception,
+                        data: rethrow_data,
+                        rescues,
+                    } => {
+                        collected_data
+                            .extend(rethrow_data.iter().map(|(a, b)| (a.clone(), b.clone())));
+
+                        let rethrow = Rescuable::Exception {
+                            exception: exception.clone(),
+                            data: rethrow_data.clone(),
+                        };
+
+                        rescuable = rethrow;
+
+                        log_message_container.lock().as_mut().steps.push(
+                            ProcessingStep::ThrowException(ExceptionProcessingStep {
+                                exception: exception.clone(),
+                                // FIXME
+                                handler_name: None,
+                                data: collected_data.clone(),
+                            }),
+                        );
+
+                        maybe_resolved_rescue_item =
+                            Self::find_exception_handler(&rescues, &rescuable);
+
+                        match maybe_resolved_rescue_item {
+                            Some(_) => {
+                                continue;
+                            }
+                            None => match &rescuable {
+                                Rescuable::Exception { .. } => {
+                                    break RescuableHandleResult::UnhandledException {
+                                        exception_name: exception,
+                                        data: collected_data.clone(),
+                                    };
+                                }
+                                Rescuable::StatusCode(_) => {
+                                    break RescuableHandleResult::FinishProcessing
+                                }
+                            },
+                        }
+                    }
+                    ResolvedCatchAction::StaticResponse(ResolvedStaticResponseAction {
+                        static_response,
+                        rescues,
+                    }) => {
+                        if let Ok(resp) = &static_response {
+                            collected_data
+                                .extend(resp.data.iter().map(|(a, b)| (a.clone(), b.clone())));
+                        }
+
+                        // FIXME: this will probably break data merging if static-resp is involved
+                        // FIXME: merged data should be stored to the container, so that on exception new exception queue is processed
+                        break RescuableHandleResult::StaticResponse(
+                            ResolvedStaticResponseAction {
+                                static_response,
+                                rescues,
+                            },
+                        );
+                    }
+                    ResolvedCatchAction::NextHandler { scope } => {
+                        break RescuableHandleResult::NextHandler { scope }
+                    }
+                }
+            } else {
+                match &rescuable {
+                    Rescuable::Exception { exception, data } => {
                         collected_data.extend(data.iter().map(|(a, b)| (a.clone(), b.clone())));
-                        break RescueableHandleResult::UnhandledException {
+                        break RescuableHandleResult::UnhandledException {
                             exception_name: exception.clone(),
                             data: collected_data.clone(),
                         };
                     }
-                    Rescueable::StatusCode(_) => break RescueableHandleResult::FinishProcessing,
-                },
-                Some(ResolvedCatchAction::Throw {
-                    exception,
-                    data: rethrow_data,
-                    rescues,
-                }) => {
-                    collected_data.extend(rethrow_data.iter().map(|(a, b)| (a.clone(), b.clone())));
-
-                    let rethrow = Rescueable::Exception {
-                        exception: &exception,
-                        data: &collected_data,
-                    };
-                    maybe_resolved_exception = Self::find_exception_handler(&rescues, &rethrow);
-
-                    match maybe_resolved_exception {
-                        Some(_) => {
-                            continue;
-                        }
-                        None => match &rescueable {
-                            Rescueable::Exception { .. } => {
-                                break RescueableHandleResult::UnhandledException {
-                                    exception_name: exception.clone(),
-                                    data: collected_data.clone(),
-                                };
-                            }
-                            Rescueable::StatusCode(_) => {
-                                break RescueableHandleResult::FinishProcessing
-                            }
-                        },
-                    }
-                }
-                Some(ResolvedCatchAction::StaticResponse(ResolvedStaticResponseAction {
-                    static_response,
-                    rescue,
-                })) => {
-                    if let Ok(resp) = &static_response {
-                        collected_data
-                            .extend(resp.data.iter().map(|(a, b)| (a.clone(), b.clone())));
-                    }
-
-                    // FIXME: this will probably break data merging if static-resp is innvolvedd
-                    // FIXME: merged data shouldd be store to the cotaiier, so that onn exception nnew exception queue is processed
-                    break RescueableHandleResult::StaticResponse(ResolvedStaticResponseAction {
-                        static_response: static_response.clone(),
-                        rescue,
-                    });
-                }
-                Some(ResolvedCatchAction::NextHandler) => {
-                    break RescueableHandleResult::NextHandler
+                    Rescuable::StatusCode(_) => break RescuableHandleResult::FinishProcessing,
                 }
             }
         };
 
         match result {
-            RescueableHandleResult::StaticResponse(action) => action.handle_static_response(
+            RescuableHandleResult::StaticResponse(action) => action.handle_static_response(
                 self,
                 req,
                 res,
@@ -2138,14 +2534,16 @@ impl ResolvedHandler {
                 None,
                 is_in_exception,
                 &language,
-                log_message,
+                log_message_container,
             ),
-            RescueableHandleResult::NextHandler => ResolvedHandlerProcessingResult::NextHandler,
-            RescueableHandleResult::UnhandledException { .. } => {
+            RescuableHandleResult::NextHandler { .. } => {
+                ResolvedHandlerProcessingResult::NextHandler
+            }
+            RescuableHandleResult::UnhandledException { .. } => {
                 self.respond_server_error(res);
                 ResolvedHandlerProcessingResult::Processed
             }
-            RescueableHandleResult::FinishProcessing => ResolvedHandlerProcessingResult::Processed,
+            RescuableHandleResult::FinishProcessing => ResolvedHandlerProcessingResult::Processed,
         }
     }
 
@@ -2183,10 +2581,10 @@ impl ResolvedHandler {
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
         filter_matches: HashMap<SmolStr, Matched>,
-        rescues: &Vec<ResolvedRescueItem>,
-        on_response: &Vec<OnResponse>,
+        rescues: &[ResolvedRescueItem],
+        on_response: &[OnResponse],
     ) -> ResolvedHandlerProcessingResult {
         match invocation_result {
             HandlerInvocationResult::Responded => {
@@ -2199,54 +2597,54 @@ impl ResolvedHandler {
                         ) {
                             Ok(_) => {}
                             Err(ex) => {
-                                let rescueable = Rescueable::Exception {
-                                    exception: &ex,
-                                    data: &Default::default(),
+                                let rescuable = Rescuable::Exception {
+                                    exception: ex,
+                                    data: Default::default(),
                                 };
 
-                                return self.handle_rescueable(
+                                return self.handle_rescuable(
                                     req,
                                     res,
                                     requested_url,
-                                    &rescueable,
+                                    rescuable,
                                     false,
                                     rescues,
                                     &language,
-                                    log_message,
+                                    log_message_container,
                                 );
                             }
                         }
                     }
                 }
 
-                let rescueable = Rescueable::StatusCode(res.status());
+                let rescuable = Rescuable::StatusCode(res.status());
 
-                self.handle_rescueable(
+                self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable,
                     false,
                     rescues,
                     &language,
-                    log_message,
+                    log_message_container,
                 )
             }
             HandlerInvocationResult::ToNextHandler => ResolvedHandlerProcessingResult::NextHandler,
             HandlerInvocationResult::Exception { name, data } => {
-                let rescueable = Rescueable::Exception {
-                    exception: &name,
-                    data: &data,
+                let rescuable = Rescuable::Exception {
+                    exception: name,
+                    data,
                 };
-                self.handle_rescueable(
+                self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable,
                     false,
                     rescues,
                     &language,
-                    log_message,
+                    log_message_container,
                 )
             }
         }
@@ -2262,11 +2660,12 @@ impl ResolvedHandler {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
         if let Some(invocation_result) = self
             .resolved_variant
-            .try_handle_service_paths(req, res, requested_url, language, log_message)
+            .try_handle_service_paths(req, res, requested_url, language, log_message_container)
             .await
         {
             return self.resolve_handler_invocation_result(
@@ -2275,10 +2674,10 @@ impl ResolvedHandler {
                 res,
                 requested_url,
                 language,
-                log_message,
+                log_message_container,
                 Default::default(),
-                &self.catches,
-                &Default::default(),
+                &self.rescues,
+                &[],
             );
         }
 
@@ -2305,20 +2704,20 @@ impl ResolvedHandler {
                         let mut data = HashMap::new();
                         data.insert("error".into(), e.to_string().into());
 
-                        let rescueable = Rescueable::Exception {
-                            exception: &*MODIFICATION_ERROR,
-                            data: &data,
+                        let rescuable = Rescuable::Exception {
+                            exception: MODIFICATION_ERROR.clone(),
+                            data,
                         };
 
-                        return self.handle_rescueable(
+                        return self.handle_rescuable(
                             req,
                             res,
                             requested_url,
-                            &rescueable,
+                            rescuable,
                             false,
                             &action.rescues(),
                             &language,
-                            log_message,
+                            log_message_container,
                         );
                     }
                     Ok(replaced) => replaced,
@@ -2342,7 +2741,7 @@ impl ResolvedHandler {
 
         match request_modification.trailing_slash {
             TrailingSlashModification::Keep => {
-                modified_url.ensure_trailing_slash(requested_url.path().ends_with("/"));
+                modified_url.ensure_trailing_slash(requested_url.path().ends_with('/'));
             }
             TrailingSlashModification::Set => modified_url.ensure_trailing_slash(true),
             TrailingSlashModification::Unset => modified_url.ensure_trailing_slash(false),
@@ -2355,19 +2754,19 @@ impl ResolvedHandler {
         ) {
             Ok(()) => {}
             Err(ex) => {
-                let rescueable = Rescueable::Exception {
-                    exception: &ex,
-                    data: &Default::default(),
+                let rescuable = Rescuable::Exception {
+                    exception: ex,
+                    data: Default::default(),
                 };
-                return self.handle_rescueable(
+                return self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable,
                     false,
                     &action.rescues(),
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
         }
@@ -2382,26 +2781,26 @@ impl ResolvedHandler {
                 let mut data: HashMap<SmolStr, SmolStr> = Default::default();
                 data.insert("error".into(), ex.to_string().into());
 
-                let rescueable = Rescueable::Exception {
-                    exception: &*MODIFICATION_ERROR,
-                    data: &data,
+                let rescuable = Rescuable::Exception {
+                    exception: MODIFICATION_ERROR.clone(),
+                    data,
                 };
 
-                return self.handle_rescueable(
+                return self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable,
                     false,
                     &action.rescues(),
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
         }
 
         match action {
-            ResolvedRuleAction::Invoke { rescue } => {
+            ResolvedRuleAction::Invoke { rescues, .. } => {
                 let invocation_result = self
                     .resolved_variant
                     .invoke(
@@ -2412,9 +2811,22 @@ impl ResolvedHandler {
                         local_addr,
                         remote_addr,
                         language,
-                        log_message,
+                        invocation_log.clone(),
+                        log_message_container,
                     )
                     .await;
+
+                if let HandlerInvocationResult::Responded = invocation_result {
+                    if invocation_log.lock().is_not_empty() {
+                        // handler saved cacheable invocation result. Save it to logs
+
+                        log_message_container
+                            .lock()
+                            .as_mut()
+                            .steps
+                            .push(ProcessingStep::Invoke(invocation_log));
+                    }
+                }
 
                 self.resolve_handler_invocation_result(
                     invocation_result,
@@ -2422,9 +2834,9 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     language,
-                    log_message,
+                    log_message_container,
                     filter_matches,
-                    rescue,
+                    rescues,
                     response_modification,
                 )
             }
@@ -2432,16 +2844,19 @@ impl ResolvedHandler {
                 return ResolvedHandlerProcessingResult::NextHandler;
             }
             ResolvedRuleAction::Throw { exception, data } => {
-                let rescueable = Rescueable::Exception { exception, data };
-                return self.handle_rescueable(
+                let rescuable = Rescuable::Exception {
+                    exception: exception.clone(),
+                    data: data.clone(),
+                };
+                return self.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    &rescueable,
+                    rescuable,
                     false,
-                    &self.catches,
+                    &self.rescues,
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
             ResolvedRuleAction::Respond(action) => {
@@ -2454,7 +2869,7 @@ impl ResolvedHandler {
                     Some(&filter_matches),
                     false,
                     &language,
-                    log_message,
+                    log_message_container,
                 );
             }
         }
@@ -2495,11 +2910,11 @@ fn apply_headers(
 
 #[derive(Debug)]
 #[must_use]
-enum RescueableHandleResult {
+enum RescuableHandleResult {
     /// Respond with static response
     StaticResponse(ResolvedStaticResponseAction),
     /// Move on to next handler
-    NextHandler,
+    NextHandler { scope: Scope },
     /// Exception hasn't been handled by ant of handlers
     UnhandledException {
         exception_name: Exception,
@@ -2515,9 +2930,10 @@ fn resolve_static_response(
     data: &BTreeMap<SmolStr, SmolStr>,
     params: &HashMap<ParameterName, Parameter>,
     refined: &RefinableSet,
-    scope: &Scope,
+    current_scope: &Scope,
 ) -> Result<ResolvedStaticResponse, referenced::Error> {
-    let static_response = static_response_container.resolve(params, refined, scope)?;
+    let (static_response, static_response_scope) =
+        static_response_container.resolve(params, refined, current_scope)?;
 
     let static_response_status_code = match &static_response {
         StaticResponse::Redirect(redirect) => redirect.redirect_type.status_code(),
@@ -2577,6 +2993,8 @@ fn resolve_static_response(
             }),
             StaticResponse::Raw(_) => None,
         },
+
+        container_scope: static_response_scope,
     };
 
     Ok(resolved)
@@ -2587,7 +3005,8 @@ fn resolve_catch_action(
     params: &HashMap<ParameterName, Parameter>,
     catch_action: &CatchAction,
     refinable_set: &RefinableSet,
-    scope: &Scope,
+    rescue_item_scope: &Scope,
+    current_scope: &Scope,
 ) -> Option<ResolvedCatchAction> {
     Some(match catch_action {
         CatchAction::StaticResponse {
@@ -2601,9 +3020,9 @@ fn resolve_catch_action(
                 data,
                 params,
                 refinable_set,
-                scope,
+                rescue_item_scope,
             ),
-            rescue: if let Some(prev_scope) = scope.prev(client_config_info) {
+            rescues: if let Some(prev_scope) = current_scope.prev(client_config_info) {
                 resolve_rescue_items(client_config_info, &params, &refinable_set, &prev_scope)?
             } else {
                 Default::default()
@@ -2612,13 +3031,15 @@ fn resolve_catch_action(
         CatchAction::Throw { exception, data } => ResolvedCatchAction::Throw {
             exception: exception.clone(),
             data: data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            rescues: if let Some(prev_scope) = scope.prev(client_config_info) {
+            rescues: if let Some(prev_scope) = current_scope.prev(client_config_info) {
                 resolve_rescue_items(client_config_info, &params, &refinable_set, &prev_scope)?
             } else {
                 Default::default()
             },
         },
-        CatchAction::NextHandler => ResolvedCatchAction::NextHandler,
+        CatchAction::NextHandler => ResolvedCatchAction::NextHandler {
+            scope: rescue_item_scope.clone(),
+        },
     })
 }
 
@@ -2626,14 +3047,14 @@ fn resolve_rescue_items(
     client_config_info: &Option<(ConfigName, ClientConfigRevision)>,
     params: &HashMap<ParameterName, Parameter>,
     refinable_set: &RefinableSet,
-    scope: &Scope,
+    current_scope: &Scope,
 ) -> Option<Vec<ResolvedRescueItem>> {
-    let available_exception_handlers = refinable_set.joined_for_scope(scope);
+    let available_exception_handlers = refinable_set.joined_for_scope(current_scope);
 
     available_exception_handlers
         .rescue
         .iter()
-        .map(|(rescue_item, _)| {
+        .map(|(rescue_item, rescue_item_scope)| {
             Some(ResolvedRescueItem {
                 catch: match &rescue_item.catch {
                     CatchMatcher::StatusCode(status_code) => {
@@ -2648,8 +3069,12 @@ fn resolve_rescue_items(
                     params,
                     &rescue_item.handle,
                     refinable_set,
-                    scope,
+                    rescue_item_scope,
+                    current_scope,
                 )?,
+                container_scope: ContainerScope::Inline {
+                    scope: rescue_item_scope.clone(),
+                },
             })
         })
         .collect::<Option<_>>()
@@ -2667,7 +3092,7 @@ impl RequestsProcessor {
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
         public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
-        log_messages_tx: mpsc::Sender<LogMessage>,
+        log_messages_tx: mpsc::UnboundedSender<LogMessage>,
         gw_location: &str,
         cache: Cache,
         presence_client: presence::Client,
@@ -2681,16 +3106,12 @@ impl RequestsProcessor {
         crate::statistics::ACTIVE_REQUESTS_PROCESSORS.inc();
 
         let max_pop_cache_size_bytes = resp.max_pop_cache_size_bytes;
-        let traffic_counters = TrafficCounters::new(
-            resp.account_unique_id.clone(),
-            resp.project_unique_id.clone(),
-        );
+        let traffic_counters = TrafficCounters::new(resp.account_unique_id, resp.project_unique_id);
 
         let refinable = Arc::new(resp.refinable());
 
         let grouped = resp.configs.iter().group_by(|item| &item.config_name);
 
-        let project_rescue = resp.project_config.refinable.rescue;
         let jwt_ecdsa = JwtEcdsa {
             private_key: resp.jwt_ecdsa.private_key.into(),
             public_key: resp.jwt_ecdsa.public_key.into(),
@@ -2714,7 +3135,7 @@ impl RequestsProcessor {
             .map(move |(config_name, configs)| {
                 let entry: &ConfigData = &configs
                     .into_iter()
-                    .map(|entry| (entry.instance_ids.len(), entry))
+                    .map(|entry| (entry.instances.len(), entry))
                     .sorted_by(|(left, _), (right, _)| left.cmp(&right).reverse())
                     .into_iter()
                     .next() //keep only revision with largest number of instances
@@ -2723,7 +3144,7 @@ impl RequestsProcessor {
 
                 let config = &entry.config;
                 let config_revision = &entry.revision;
-                let instance_ids = entry.instance_ids.clone();
+                let instances = entry.instances.clone();
                 let active_profile = entry.active_profile.clone();
 
                 let upstreams = &config.upstreams;
@@ -2742,9 +3163,9 @@ impl RequestsProcessor {
                             mp_name,
                             (
                                 Some(config_name.clone()),
-                                Some(config_revision.clone()),
+                                Some(*config_revision),
                                 Some(upstreams.clone()),
-                                Some(instance_ids.clone()),
+                                Some(instances.clone()),
                                 Some(active_profile.clone()),
                                 mp,
                             ),
@@ -2760,8 +3181,7 @@ impl RequestsProcessor {
             .collect::<Vec<_>>();
 
         let mount_point_name = grouped_mount_points
-            .iter()
-            .next()
+            .get(0)
             .ok_or_else(|| anyhow!("no mount points returned"))?
             .0
             .clone();
@@ -2778,22 +3198,19 @@ impl RequestsProcessor {
             maybe_identity: None,
         });
         let int_metered_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
-            public_counters_tx: public_counters_tx.clone(),
-            resolver: resolver.clone(),
-            counters: traffic_counters.clone(),
+            public_counters_tx,
+            resolver,
+            counters: traffic_counters,
             sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
             recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
             maybe_identity: maybe_identity.clone(),
         });
 
-        for (
-            _mp_name,
-            (config_name, config_revision, upstreams, instance_ids, active_profile, mp),
-        ) in grouped_mount_points.into_iter()
+        for (_mp_name, (config_name, config_revision, upstreams, instances, active_profile, mp)) in
+            grouped_mount_points.into_iter()
         {
             shadow_clone!(
-                instance_ids,
-                project_rescue,
+                instances,
                 jwt_ecdsa,
                 mount_point_fqdn,
                 google_oauth2_client,
@@ -2807,14 +3224,12 @@ impl RequestsProcessor {
                 project_unique_id,
                 project_name,
                 rules_counter,
-                resolver,
-                traffic_counters,
                 presence_client,
                 params,
                 active_profile
             );
 
-            let client_config_info = config_name.clone().zip(config_revision.clone());
+            let client_config_info = config_name.clone().zip(config_revision);
 
             let mut r = mp.handlers
                 .into_iter()
@@ -2836,7 +3251,7 @@ impl RequestsProcessor {
                             .unwrap_or_default();
 
                         let handler_scope = Scope::handler(
-                            config_name.clone().zip(config_revision.clone()),
+                            config_name.clone().zip(config_revision),
                             &mount_point_name,
                             &handler_name,
                         );
@@ -2904,14 +3319,24 @@ impl RequestsProcessor {
                                         },
                                         config: static_dir,
                                         handler_name: handler_name.clone(),
-                                        instance_ids: {
+                                        instances: instances
+                                            .as_ref()
+                                            .expect("try to access instances on project-level config")
+                                            .iter()
+                                            .map(|(instance_id, instance_info)| {
+                                                (*instance_id, instance_info.labels.clone())
+                                            })
+                                            .collect(),
+                                        balancer: {
                                             let mut balancer = SmoothWeight::<InstanceId>::new();
-                                            let instance_ids = instance_ids
+
+                                            let instance_ids = instances
                                                 .as_ref()
                                                 .expect("[BUG] try to access instance_ids on project-level config")
                                                 .keys();
+
                                             for instance_id in instance_ids {
-                                                balancer.add(instance_id.clone(), 1);
+                                                balancer.add(*instance_id, 1);
                                             }
 
                                             Mutex::new(balancer)
@@ -2919,7 +3344,7 @@ impl RequestsProcessor {
                                         client_tunnels: client_tunnels.clone(),
                                         config_id: ConfigId {
                                             account_name: account_name.clone(),
-                                            account_unique_id: account_unique_id.clone(),
+                                            account_unique_id,
                                             project_name: project_name.clone(),
                                             config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
                                         },
@@ -2929,6 +3354,7 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::Proxy(proxy) => {
                                     ResolvedHandlerVariant::Proxy(proxy::ResolvedProxy {
+                                        handler_name: handler_name.clone(),
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: proxy
@@ -2957,16 +3383,23 @@ impl RequestsProcessor {
                                             )
                                             .get(&proxy.upstream)
                                             .cloned()?,
-                                        instance_is: instance_ids.as_ref().map(|ids| ids.keys().cloned().collect()).unwrap_or_default(),
+                                        instances: instances
+                                            .as_ref()
+                                            .expect("[BUG] try to access instances on project-level config")
+                                            .iter()
+                                            .map(|(instance_id, instance_info)| {
+                                                (*instance_id, instance_info.labels.clone())
+                                            })
+                                            .collect(),
                                         balancer: {
                                             let mut balancer = SmoothWeight::<InstanceId>::new();
-                                            let instance_ids = instance_ids
+                                            let instances = instances
                                                 .as_ref()
                                                 .expect("[BUG] try to access instance_ids on project-level config")
                                                 .iter();
-                                            for (instance_id, health_status) in instance_ids {
-                                                if health_status.get(&proxy.upstream) == Some(&true) {
-                                                    balancer.add(instance_id.clone(), 1);
+                                            for (instance_id, instance_info) in instances {
+                                                if instance_info.upstreams.get(&proxy.upstream) == Some(&true) {
+                                                    balancer.add(*instance_id, 1);
                                                 }
                                             }
 
@@ -2975,7 +3408,7 @@ impl RequestsProcessor {
                                         client_tunnels: client_tunnels.clone(),
                                         config_id: ConfigId {
                                             account_name: account_name.clone(),
-                                            account_unique_id: account_unique_id.clone(),
+                                            account_unique_id,
                                             project_name: project_name.clone(),
                                             config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
                                         },
@@ -2988,6 +3421,7 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {
                                     ResolvedHandlerVariant::S3Bucket(s3_bucket::ResolvedS3Bucket {
+                                        handler_name: handler_name.clone(),
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: s3_bucket
@@ -3044,6 +3478,7 @@ impl RequestsProcessor {
                                 }
                                 ClientHandlerVariant::GcsBucket(gcs_bucket) => {
                                     let bucket = gcs_bucket::ResolvedGcsBucket {
+                                        handler_name: handler_name.clone(),
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: gcs_bucket
@@ -3101,7 +3536,7 @@ impl RequestsProcessor {
                                 }
                             },
                             priority: handler.priority,
-                            catches: resolve_rescue_items(
+                            rescues: resolve_rescue_items(
                                 &client_config_info,
                                 &params,
                                 &refinable,
@@ -3120,7 +3555,7 @@ impl RequestsProcessor {
                                 })
                                 .map(|(rule_num, rule)| {
                                     let rule_scope = Scope::rule(
-                                        config_name.clone().zip(config_revision.clone()),
+                                        config_name.clone().zip(config_revision),
                                         &mount_point_name,
                                         &handler_name,
                                         rule_num,
@@ -3156,16 +3591,15 @@ impl RequestsProcessor {
                                             .collect(),
                                         action: match rule.action {
                                             Action::Invoke {  .. } => ResolvedRuleAction::Invoke {
-                                                rescue: {
-                                                    let rescue = resolve_rescue_items(
+                                                rescues: {
+                                                    resolve_rescue_items(
                                                         &client_config_info,
                                                         &params,
                                                         &refinable,
                                                         &rule_scope,
-                                                    )?;
-
-                                                    rescue
+                                                    )?
                                                 },
+                                                scope: handler_scope.clone(),
                                             },
                                             Action::NextHandler => ResolvedRuleAction::NextHandler,
                                             Action::Throw { exception, data } => ResolvedRuleAction::Throw {
@@ -3174,28 +3608,28 @@ impl RequestsProcessor {
                                             },
                                             Action::Respond {
                                                 static_response, status_code, data, ..
-                                            } => ResolvedRuleAction::Respond(ResolvedStaticResponseAction {
+                                            } => ResolvedRuleAction::Respond(Box::new(ResolvedStaticResponseAction {
                                                 static_response: resolve_static_response(
                                                     static_response,
                                                     &status_code,
                                                     &data,
                                                     &params,
                                                     &refinable,
-                                                    &handler_scope
+                                                    &rule_scope
                                                 ),
-                                                rescue: resolve_rescue_items(
+                                                rescues: resolve_rescue_items(
                                                     &client_config_info,
                                                     &params,
                                                     &refinable,
                                                     &rule_scope,
                                                 )?,
-                                            }),
+                                            })),
                                         },
                                     })
                                 })
                                 .collect::<Option<_>>()?,
                             account_unique_id,
-                            project_unique_id: project_unique_id.clone(),
+                            project_unique_id,
                             rules_counter: rules_counter.clone(),
                             languages: None, //handler.languages,
                         })
@@ -3217,7 +3651,7 @@ impl RequestsProcessor {
             } else {
                 vec![]
             },
-            project_unique_id: project_unique_id.clone(),
+            project_unique_id,
             generated_at: resp.generated_at,
             google_oauth2_client,
             github_oauth2_client,
@@ -3228,7 +3662,7 @@ impl RequestsProcessor {
             account_unique_id,
             cache,
             project_name,
-            fqdn: mount_point_fqdn.clone(),
+            fqdn: mount_point_fqdn,
             mount_point_name,
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,
@@ -3238,7 +3672,7 @@ impl RequestsProcessor {
                 transformer_base_url,
                 gcs_credentials_file,
                 int_metered_client,
-                maybe_identity.clone(),
+                maybe_identity,
             )?,
             log_messages_tx,
             dbip,
@@ -3334,6 +3768,7 @@ struct ResolvedStaticResponse {
     headers: HeaderMap,
     data: HashMap<SmolStr, SmolStr>,
     maybe_redirect: Option<ResolvedRedirectResponse>,
+    container_scope: ContainerScope,
 }
 
 impl ResolvedStaticResponse {
@@ -3393,13 +3828,13 @@ impl ResolvedStaticResponse {
                 Err(_e) => {
                     return Err((
                         exceptions::STATIC_RESPONSE_REDIRECT_ERROR.clone(),
-                        merged_data.clone(),
+                        merged_data,
                     ));
                 }
             }
         }
 
-        *res.status_mut() = self.status_code.clone();
+        *res.status_mut() = self.status_code;
 
         if self.body.is_empty() {
             // no body defined, just respond with the status code
@@ -3414,13 +3849,13 @@ impl ResolvedStaticResponse {
             (Err(_), _) => {
                 return Err((
                     exceptions::STATIC_RESPONSE_BAD_ACCEPT_HEADER.clone(),
-                    merged_data.clone(),
+                    merged_data,
                 ));
             }
             (Ok(None), _) => {
                 return Err((
                     exceptions::STATIC_RESPONSE_NO_ACCEPT_HEADER.clone(),
-                    merged_data.clone(),
+                    merged_data,
                 ));
             }
         };
@@ -3428,7 +3863,7 @@ impl ResolvedStaticResponse {
         match best_content_type {
             Some((resp_content_type, resp)) => {
                 res.headers_mut()
-                    .typed_insert::<ContentType>(&ContentType(resp_content_type.clone()));
+                    .typed_insert::<ContentType>(&ContentType(resp_content_type));
                 let body = match &resp.engine {
                     None => resp.content.to_string(),
 
@@ -3436,7 +3871,7 @@ impl ResolvedStaticResponse {
                         let handlebars = Handlebars::new();
 
                         let rendering_data = json!({
-                            "data": merged_data.clone(),
+                            "data": merged_data,
                             "facts": facts,
                             "url": requested_url.to_string(),
                             "matches": matches,
@@ -3474,6 +3909,7 @@ pub enum ResolvedCatchMatcher {
 pub struct ResolvedRescueItem {
     catch: ResolvedCatchMatcher,
     handle: ResolvedCatchAction,
+    container_scope: ContainerScope,
 }
 
 #[derive(Debug)]

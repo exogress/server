@@ -1,10 +1,10 @@
 use itertools::Itertools;
 use typed_headers::{Quality, QualityItem};
 
-pub fn ordered_by_quality<T>(quality_items: &Vec<QualityItem<T>>) -> impl Iterator<Item = &T> {
+pub fn ordered_by_quality<T>(quality_items: &[QualityItem<T>]) -> impl Iterator<Item = &T> {
     quality_items
         .iter()
-        .filter(|a| &a.quality > &Quality::from_u16(0))
+        .filter(|a| a.quality > Quality::from_u16(0))
         .sorted_by(|&a, &b| a.quality.cmp(&b.quality).reverse())
         .map(|qi| &qi.item)
 }

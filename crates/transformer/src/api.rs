@@ -101,10 +101,10 @@ pub fn api_handler(
         .and(warp::post())
         .and(warp::body::json())
         .and_then({
-            shadow_clone!(mongodb_client, webapp_client, gcs_bucket);
+            shadow_clone!(mongodb_client);
 
             move |body: ProcessRequest| {
-                shadow_clone!(mongodb_client, webapp_client, gcs_bucket);
+                shadow_clone!(mongodb_client);
 
                 async move {
                     let account_unique_id = body.account_unique_id;

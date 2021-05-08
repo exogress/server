@@ -1,12 +1,11 @@
-use anyhow::anyhow;
 use elasticsearch::{
     cert::{Certificate, CertificateValidation},
     cluster::ClusterHealthParts,
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
-    BulkOperation, BulkParts, Elasticsearch,
+    Elasticsearch, SearchParts,
 };
-use exogress_server_common::logging::LogMessage;
-use serde_json::Value;
+use exogress_common::entities::{AccountUniqueId, Ulid};
+use serde_json::{json, Value};
 use tokio::{fs::File, io::AsyncReadExt};
 
 #[derive(Clone)]
@@ -70,39 +69,24 @@ impl ElasticsearchClient {
         }
     }
 
-    pub async fn save_log_messages(
+    pub(crate) async fn find_request_by_request_id(
         &self,
-        index: String,
-        messages: Vec<LogMessage>,
-    ) -> anyhow::Result<()> {
-        let body: Vec<BulkOperation<_>> = messages
-            .into_iter()
-            .map(|msg| BulkOperation::create(msg.request_id, msg).into())
-            .collect();
-
-        match self
-            .client
-            .bulk(BulkParts::Index(index.as_str()))
-            .body(body)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status_code = resp.status_code();
-                if status_code.is_success() {
-                    let response_body = resp.json::<Value>().await?;
-                    let successful = !response_body["errors"].as_bool().unwrap();
-                    if successful {
-                        Ok(())
-                    } else {
-                        error!("elastic save error: {:?}", response_body);
-                        Err(anyhow!("couldn't save to elastic: error"))
+        account_unique_id: &AccountUniqueId,
+        request_id: &Ulid,
+    ) -> Result<Value, elasticsearch::Error> {
+        let ds = format!("account-{}", account_unique_id.to_string().to_lowercase());
+        self.client
+            .search(SearchParts::Index(&[&ds]))
+            .body(json!({
+                "query": {
+                    "match": {
+                        "request_id.keyword": request_id.to_string()
                     }
-                } else {
-                    Err(anyhow!("bad response: {}", status_code))
                 }
-            }
-            Err(e) => Err(anyhow!("Error saving to elasticsearch: {}", e)),
-        }
+            }))
+            .send()
+            .await?
+            .json::<Value>()
+            .await
     }
 }

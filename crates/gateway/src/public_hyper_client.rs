@@ -113,7 +113,7 @@ pub enum Error {
     Tls(#[from] tokio_rustls::rustls::TLSError),
 
     #[error("lookup error: {_0}")]
-    Lookup(#[from] trust_dns_resolver::error::ResolveError),
+    Lookup(#[from] Box<trust_dns_resolver::error::ResolveError>),
 
     #[error("IO error: {_0}")]
     Io(#[from] std::io::Error),
@@ -147,7 +147,8 @@ impl hyper::service::Service<Uri> for MeteredHttpConnector {
 
             let ip = resolver
                 .lookup_ip(host)
-                .await?
+                .await
+                .map_err(Box::new)?
                 .into_iter()
                 .choose(&mut thread_rng())
                 .ok_or(Error::NotResolved)?;

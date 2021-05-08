@@ -1,4 +1,4 @@
-FROM rust:1.51 as dirs
+FROM rust:1.52 as dirs
 
 RUN rustup component add clippy rustfmt
 RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
@@ -40,6 +40,12 @@ COPY --from=builder /code/crates/target/release/exogress-transformer /usr/local/
 RUN exogress-transformer autocompletion bash > /etc/profile.d/exogress-transformer.sh && \
     echo "source /etc/profile.d/exogress-transformer.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-transformer"]
+
+FROM base as api
+COPY --from=builder /code/crates/target/release/exogress-api /usr/local/bin/
+RUN exogress-api autocompletion bash > /etc/profile.d/exogress-api.sh && \
+    echo "source /etc/profile.d/exogress-api.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-api"]
 
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/

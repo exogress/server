@@ -145,10 +145,10 @@ pub async fn server(
     app_stop_wait: AppStopWait,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
     public_gw_base_url: Url,
+    gw_location: SmolStr,
     individual_hostname: SmolStr,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
-    transformer_base_url: Url,
     assistant_base_url: Url,
     maybe_identity: Option<Vec<u8>>,
     https_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
@@ -197,7 +197,6 @@ pub async fn server(
             let listener = TcpListener::bind(listen_https_addr).await?;
             loop {
                 shadow_clone!(
-                    transformer_base_url,
                     tls_gw_common,
                     incoming_https_connections_tx,
                     public_gw_base_url,
@@ -211,12 +210,7 @@ pub async fn server(
                     shadow_clone!(mut incoming_https_connections_tx);
 
                     async move {
-                        shadow_clone!(
-                            transformer_base_url,
-                            tls_gw_common,
-                            public_gw_base_url,
-                            webapp_client
-                        );
+                        shadow_clone!(tls_gw_common, public_gw_base_url, webapp_client);
 
                         let handshake = async {
                             conn.set_nodelay(true)?;
@@ -338,10 +332,8 @@ pub async fn server(
                         let metered = if let Some((account_unique_id, project_unique_id)) =
                             maybe_account_info
                         {
-                            let counters = TrafficCounters::new(
-                                account_unique_id.clone(),
-                                project_unique_id.clone(),
-                            );
+                            let counters =
+                                TrafficCounters::new(account_unique_id, project_unique_id);
                             let counted_stream = TrafficCountedStream::new(
                                 conn,
                                 counters.clone(),
@@ -352,7 +344,7 @@ pub async fn server(
                             let (stop_flusher_tx, stop_flusher_rx) = oneshot::channel();
 
                             let flush_counters = TrafficCounters::spawn_flusher(
-                                counters.clone(),
+                                counters,
                                 https_counters_tx,
                                 stop_flusher_rx,
                             );
@@ -391,25 +383,27 @@ pub async fn server(
     });
 
     let http_make_service = make_service_fn::<_, AcceptedIo<_>, _>({
-        shadow_clone!(webapp_client);
+        shadow_clone!(webapp_client, gw_location);
 
         move |socket| {
-            shadow_clone!(webapp_client);
+            shadow_clone!(webapp_client, gw_location);
 
             let _local_addr = socket.local_addr();
             let _remote_addr = socket.remote_addr();
 
             async move {
                 Ok::<_, hyper::Error>(service_fn({
-                    shadow_clone!(webapp_client);
+                    shadow_clone!(webapp_client, gw_location);
 
                     move |req: Request<Body>| {
-                        shadow_clone!(webapp_client);
+                        shadow_clone!(webapp_client, gw_location);
 
                         async move {
                             let mut res = Response::new(Body::empty());
                             res.headers_mut()
                                 .insert("server", "exogress".parse().unwrap());
+                            res.headers_mut()
+                                .insert("x-exg-location", gw_location.parse().unwrap());
 
                             if req.uri().path() == "/_exg/health" {
                                 *res.body_mut() = hyper::Body::from("Healthy");
@@ -425,9 +419,7 @@ pub async fn server(
                                     Ok(format!("http://{}{}", host.to_str().unwrap(), uri)
                                         .parse()?)
                                 } else {
-                                    return Err::<_, anyhow::Error>(anyhow!(
-                                        "unable to restore url"
-                                    ));
+                                    Err::<_, anyhow::Error>(anyhow!("unable to restore url"))
                                 }
                             }) {
                                 Ok(url) => url,
@@ -584,112 +576,26 @@ pub async fn server(
                         let host_without_port = requested_url.host().expect("FIXME");
 
                         if req.uri().host() == public_gw_base_url.host_str() {
-                            let url = requested_url.clone();
-
-                            let path_segments = url.path_segments();
-
-                            if path_segments.len() == 3
-                                && path_segments[0] == "_exg"
-                                && path_segments[2] == "callback"
+                            if let Err(e) = handle_public_gw_request(
+                                requested_url,
+                                &req,
+                                &mut res,
+                                google_oauth2_client,
+                                github_oauth2_client,
+                                assistant_base_url.clone(),
+                                maybe_identity.clone(),
+                            )
+                            .await
                             {
-                                let query_pairs = url.query_pairs();
-                                let provider = path_segments[1];
-
-                                let oauth2_result = match provider {
-                                    "google" => {
-                                        google_oauth2_client.process_callback(query_pairs).await
-                                    }
-                                    "github" => {
-                                        github_oauth2_client.process_callback(query_pairs).await
-                                    }
-                                    _ => {
-                                        *res.status_mut() = StatusCode::NOT_FOUND;
-                                        *res.body_mut() = Body::from("not found");
-
-                                        return Ok(res);
-                                    }
-                                };
-
-                                match oauth2_result {
-                                    Ok(callback_result) => {
-                                        info!("oauth2 callback result: {:?}", callback_result);
-                                        let secret: String = String::from_utf8(
-                                            thread_rng()
-                                                .sample_iter(&Alphanumeric)
-                                                .take(30)
-                                                .collect(),
-                                        )
-                                        .unwrap();
-
-                                        save_assistant_key(
-                                            &assistant_base_url,
-                                            &secret,
-                                            &AuthFinalizer {
-                                                identities: callback_result.identities,
-                                                oauth2_flow_data: callback_result
-                                                    .oauth2_flow_data
-                                                    .clone(),
-                                            },
-                                            Duration::from_secs(15),
-                                            maybe_identity.clone(),
-                                        )
-                                        .await
-                                        .expect("FIXME");
-
-                                        let mut redirect_to: Url = format!(
-                                            "https://{}/",
-                                            callback_result.oauth2_flow_data.fqdn
-                                        )
-                                        .parse()?;
-
-                                        // FIXME: Broken logic here!
-                                        redirect_to
-                                            .set_port(
-                                                callback_result
-                                                    .oauth2_flow_data
-                                                    .requested_url
-                                                    .port(),
-                                            )
-                                            .unwrap();
-
-                                        redirect_to
-                                            .path_segments_mut()
-                                            .unwrap()
-                                            .push("_exg")
-                                            .push("check_auth");
-
-                                        redirect_to.set_query(None);
-                                        redirect_to
-                                            .query_pairs_mut()
-                                            .append_pair("secret", secret.as_str());
-
-                                        redirect_to.set_fragment(None);
-                                        redirect_to.set_scheme("https").unwrap();
-
-                                        res.headers_mut()
-                                            .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
-
-                                        res.headers_mut().insert(
-                                            LOCATION,
-                                            redirect_to.to_string().try_into().unwrap(),
-                                        );
-
-                                        *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-                                    }
-                                    Err(e) => {
-                                        warn!("Error from Identity Provider: {:?}", e);
-
-                                        *res.status_mut() = StatusCode::FORBIDDEN;
-                                        *res.body_mut() = Body::from("Forbidden");
-                                    }
-                                }
-
-                                return Ok(res);
+                                *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                *res.body_mut() = Body::from("internal server error");
+                                error!("error handling public URL: {}", e);
                             }
+                            return Ok(res);
                         }
 
                         let matchable_url = MatchableUrl::from_components(
-                            host_without_port.as_ref(),
+                            host_without_port,
                             requested_url.path().as_ref(),
                             requested_url.query().unwrap_or(""),
                         )
@@ -719,7 +625,7 @@ pub async fn server(
                                         .await;
                                 })
                                 .await;
-                                if let Err(_) = result {
+                                if result.is_err() {
                                     res = Response::new(Body::from(
                                         "timeout while processing request",
                                     ));
@@ -749,7 +655,7 @@ pub async fn server(
                             let cause = e
                                 .downcast_ref::<String>()
                                 .map(|e| &**e)
-                                .or_else(|| e.downcast_ref::<&'static str>().map(|e| *e))
+                                .or_else(|| e.downcast_ref::<&'static str>().copied())
                                 .unwrap_or("unknown panic error");
 
                             error!("server error, panic: {}", cause);
@@ -790,4 +696,94 @@ pub async fn server(
             info!("https_acceptor stopped: {:?}", r);
         },
     }
+}
+
+async fn handle_public_gw_request(
+    url: http::Uri,
+    _req: &Request<Body>,
+    res: &mut Response<Body>,
+    google_oauth2_client: auth::google::GoogleOauth2Client,
+    github_oauth2_client: auth::github::GithubOauth2Client,
+    assistant_base_url: Url,
+    maybe_identity: Option<Vec<u8>>,
+) -> anyhow::Result<()> {
+    let path_segments = url.path_segments();
+
+    if path_segments.len() == 3 && path_segments[0] == "_exg" && path_segments[2] == "callback" {
+        let query_pairs = url.query_pairs();
+        let provider = path_segments[1];
+
+        let oauth2_result = match provider {
+            "google" => google_oauth2_client.process_callback(query_pairs).await,
+            "github" => github_oauth2_client.process_callback(query_pairs).await,
+            _ => {
+                *res.status_mut() = StatusCode::NOT_FOUND;
+                *res.body_mut() = Body::from("not found");
+
+                return Ok(());
+            }
+        };
+
+        match oauth2_result {
+            Ok(callback_result) => {
+                info!("oauth2 callback result: {:?}", callback_result);
+                let secret: String =
+                    String::from_utf8(thread_rng().sample_iter(&Alphanumeric).take(30).collect())
+                        .unwrap();
+
+                save_assistant_key(
+                    &assistant_base_url,
+                    &secret,
+                    &AuthFinalizer {
+                        identities: callback_result.identities,
+                        oauth2_flow_data: callback_result.oauth2_flow_data.clone(),
+                    },
+                    Duration::from_secs(15),
+                    maybe_identity.clone(),
+                )
+                .await?;
+
+                let mut redirect_to: Url =
+                    format!("https://{}/", callback_result.oauth2_flow_data.fqdn).parse()?;
+
+                // FIXME: Broken logic here!
+                redirect_to
+                    .set_port(callback_result.oauth2_flow_data.requested_url.port())
+                    .unwrap();
+
+                redirect_to
+                    .path_segments_mut()
+                    .unwrap()
+                    .push("_exg")
+                    .push("check_auth");
+
+                redirect_to.set_query(None);
+                redirect_to
+                    .query_pairs_mut()
+                    .append_pair("secret", secret.as_str());
+
+                redirect_to.set_fragment(None);
+                redirect_to.set_scheme("https").unwrap();
+
+                res.headers_mut()
+                    .insert(CACHE_CONTROL, "no-cache".try_into().unwrap());
+
+                res.headers_mut()
+                    .insert(LOCATION, redirect_to.to_string().try_into().unwrap());
+
+                *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+            }
+            Err(e) => {
+                warn!("Error from Identity Provider: {:?}", e);
+
+                *res.status_mut() = StatusCode::FORBIDDEN;
+                *res.body_mut() = Body::from("Forbidden");
+            }
+        }
+    } else {
+        *res.status_mut() = StatusCode::NOT_FOUND;
+        *res.body_mut() = Body::from("not found");
+    };
+
+    Ok(())
 }

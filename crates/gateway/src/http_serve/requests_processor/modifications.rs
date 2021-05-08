@@ -64,7 +64,7 @@ impl Replaced {
 impl ToString for Replaced {
     fn to_string(&self) -> String {
         match self {
-            Replaced::Multiple(multiple) => multiple.join("/").into(),
+            Replaced::Multiple(multiple) => multiple.join("/"),
             Replaced::Single(single) => single.as_str().into(),
             Replaced::Empty => "".into(),
         }
@@ -113,40 +113,22 @@ fn replace_single_substitution(
 
     match second {
         None => match m {
-            Matched::Multiple(_multiple) => {
-                return Err(MatchPathModificationError::NotSegments);
-            }
-            Matched::Single(single) => {
-                return Ok(Replaced::Single(single.clone()));
-            }
-            Matched::None => {
-                return Ok(Replaced::Empty);
-            }
-            Matched::Segments(segments) => {
-                return Ok(Replaced::Multiple(segments.clone()));
-            }
+            Matched::Multiple(_multiple) => Err(MatchPathModificationError::NotSegments),
+            Matched::Single(single) => Ok(Replaced::Single(single.clone())),
+            Matched::None => Ok(Replaced::Empty),
+            Matched::Segments(segments) => Ok(Replaced::Multiple(segments.clone())),
         },
         Some(s) => {
             let ref_num = s.parse::<u8>()?;
 
             match m {
                 Matched::Multiple(multiple) => match multiple.get(&ref_num) {
-                    Some(matched) => {
-                        return Ok(Replaced::Single(matched.clone()));
-                    }
-                    None => {
-                        return Err(MatchPathModificationError::NothingMatched);
-                    }
+                    Some(matched) => Ok(Replaced::Single(matched.clone())),
+                    None => Err(MatchPathModificationError::NothingMatched),
                 },
-                Matched::Single(_) => {
-                    return Err(MatchPathModificationError::SingleNotIndexable);
-                }
-                Matched::None => {
-                    return Err(MatchPathModificationError::NothingMatched);
-                }
-                Matched::Segments(_segments) => {
-                    return Err(MatchPathModificationError::NotMatches);
-                }
+                Matched::Single(_) => Err(MatchPathModificationError::SingleNotIndexable),
+                Matched::None => Err(MatchPathModificationError::NothingMatched),
+                Matched::Segments(_segments) => Err(MatchPathModificationError::NotMatches),
             }
         }
     }
@@ -178,20 +160,16 @@ pub fn substitute_str_with_filter_matches(
                     if error.is_none() {
                         error = Some(MatchPathModificationError::MultipleSegments);
                     };
-                    return Cow::Borrowed("");
+                    Cow::Borrowed("")
                 }
-                Replaced::Single(single) => {
-                    return Cow::Owned(single.to_string());
-                }
-                Replaced::Empty => {
-                    return Cow::Borrowed("");
-                }
+                Replaced::Single(single) => Cow::Owned(single.to_string()),
+                Replaced::Empty => Cow::Borrowed(""),
             },
             Err(e) => {
                 if error.is_none() {
                     error = Some(e);
                 };
-                return Cow::Borrowed("");
+                Cow::Borrowed("")
             }
         }
     });

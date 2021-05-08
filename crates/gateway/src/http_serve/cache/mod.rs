@@ -22,6 +22,7 @@ use hyper::Body;
 use ledb::Primary;
 use pin_utils::pin_mut;
 use sha2::Digest;
+use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
 use std::{
     collections::BTreeSet,
@@ -46,6 +47,7 @@ pub struct Cache {
     in_flights: Arc<DashSet<(AccountUniqueId, String)>>,
     space_used: Arc<AtomicU32>,
     max_allowed_size: Byte,
+    gw_location: SmolStr,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -100,7 +102,11 @@ pub struct CacheItem {
 }
 
 impl Cache {
-    pub async fn new(cache_dir: PathBuf, max_size: Byte) -> Result<Cache, anyhow::Error> {
+    pub async fn new(
+        cache_dir: PathBuf,
+        max_size: Byte,
+        gw_location: SmolStr,
+    ) -> Result<Cache, anyhow::Error> {
         let cache_dir = tokio::fs::canonicalize(&cache_dir).await?;
 
         info!(
@@ -153,6 +159,7 @@ impl Cache {
             in_flights: Arc::new(Default::default()),
             space_used,
             max_allowed_size: max_size,
+            gw_location,
         };
 
         tokio::spawn({
@@ -410,7 +417,7 @@ impl Cache {
         if !res_headers.contains_key(ETAG) {
             res_headers.insert(
                 ETAG,
-                EntityTag::from_hash(content_hash.as_ref())
+                EntityTag::from_data(content_hash.as_ref())
                     .to_string()
                     .parse()
                     .unwrap(),
@@ -419,7 +426,7 @@ impl Cache {
 
         let meta = Meta {
             headers: res_headers.clone(),
-            status: status.clone(),
+            status,
         };
 
         let meta_json = serde_json::to_vec(&meta).expect("Serialization should never fail");
@@ -485,7 +492,7 @@ impl Cache {
             files_collection
                 .insert(&CacheItem {
                     id: None,
-                    account_unique_id: account_unique_id.clone(),
+                    account_unique_id: *account_unique_id,
                     request_hash: file_name.to_string(),
                     vary: vary_json,
                     vary_hash: vary_hash.to_string(),
@@ -553,10 +560,10 @@ impl Cache {
         valid_till: DateTime<Utc>,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
         temp_file_path: PathBuf,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let file_name = processing_identifier.to_string();
 
-        let key = (account_unique_id.clone(), file_name.clone());
+        let key = (*account_unique_id, file_name.clone());
 
         if self.in_flights.insert(key.clone()) {
             let r = async move {
@@ -609,7 +616,7 @@ impl Cache {
                 )
                 .await?;
 
-                Ok(())
+                Ok(true)
             }
             .await;
 
@@ -618,7 +625,7 @@ impl Cache {
             r
         } else {
             error!("Will not save since another saving is in progress");
-            Ok(())
+            Ok(false)
         }
     }
 
@@ -633,7 +640,7 @@ impl Cache {
             return Ok(None);
         }
 
-        if req.method() != &Method::GET && req.method() != &Method::HEAD {
+        if req.method() != Method::GET && req.method() != Method::HEAD {
             return Ok(None);
         }
 
@@ -652,7 +659,7 @@ impl Cache {
                 where request_hash == file_name.as_str() && account_unique_id == account_unique_id.to_string()
             )
                 .map_err(|e| anyhow!("{}", e))?
-                .filter(|row_result| {
+                .find(|row_result| {
                     if let Ok(row) = row_result.as_ref().map_err(|e| anyhow!("{}", e)) {
                         let vary_json = &row.vary;
                         let stored_vary_hash = &row.vary_hash;
@@ -677,7 +684,6 @@ impl Cache {
                         true
                     }
                 })
-                .next()
         };
 
         if let Some(variation_result) = maybe_variation {
@@ -740,7 +746,7 @@ impl Cache {
 
             let req_last_modified = request_headers
                 .get(IF_MODIFIED_SINCE)
-                .and_then(|date| Some(DateTime::parse_from_rfc2822(date.to_str().ok()?).ok()?));
+                .and_then(|date| DateTime::parse_from_rfc2822(date.to_str().ok()?).ok());
 
             let mut conditional_response_matches = false;
             if !req_if_none_match.is_empty() {
@@ -752,15 +758,13 @@ impl Cache {
                         conditional_response_matches = true;
                     }
                 }
-            } else {
-                if let (Some(stored_cached_last_modified), Some(if_modified_since)) =
-                    (maybe_stored_last_modified, req_last_modified)
-                {
-                    // If user provided if-modified-since header, which is equal or in the future
-                    // compared to our cache - respond with not-modified
-                    if if_modified_since >= stored_cached_last_modified {
-                        conditional_response_matches = true;
-                    }
+            } else if let (Some(stored_cached_last_modified), Some(if_modified_since)) =
+                (maybe_stored_last_modified, req_last_modified)
+            {
+                // If user provided if-modified-since header, which is equal or in the future
+                // compared to our cache - respond with not-modified
+                if if_modified_since >= stored_cached_last_modified {
+                    conditional_response_matches = true;
                 }
             }
 
@@ -781,6 +785,11 @@ impl Cache {
             let mut resp = Response::new(body);
             *resp.status_mut() = meta.status;
             *resp.headers_mut() = meta.headers;
+
+            resp.headers_mut()
+                .insert("server", "exogress".parse().unwrap());
+            resp.headers_mut()
+                .insert("x-exg-location", self.gw_location.parse().unwrap());
 
             if conditional_response_matches {
                 let mut conditional_resp = Response::new(hyper::Body::empty());
@@ -870,5 +879,9 @@ impl CacheResponse {
 
     pub fn as_full_resp(&self) -> &Response<hyper::Body> {
         &self.full
+    }
+
+    pub fn is_transformed(&self) -> bool {
+        self.full.headers().contains_key("x-exg-transformed")
     }
 }

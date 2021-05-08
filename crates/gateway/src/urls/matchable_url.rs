@@ -48,7 +48,7 @@ impl MatchableUrl {
         path: &str,
         query: &str,
     ) -> Result<Self, UrlForRewritingError> {
-        if host_without_port.contains(":") {
+        if host_without_port.contains(':') {
             return Err(UrlForRewritingError::PortFound);
         }
 
@@ -63,12 +63,12 @@ impl MatchableUrl {
         s.push_str(path);
 
         if !query.is_empty() {
-            s.push_str("?");
+            s.push('?');
             s.push_str(query);
         }
 
         Ok(MatchableUrl {
-            inner: s.into(),
+            inner: s,
             password: None,
             username: "".into(),
             host,

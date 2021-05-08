@@ -17,6 +17,7 @@ env:
   IMAGE_ASSISTANT: quay.io/exogress/assistant
   IMAGE_DIRECTOR: quay.io/exogress/director
   IMAGE_TRANSFORMER: quay.io/exogress/transformer
+  IMAGE_API: quay.io/exogress/api
   IMAGE_POSTFIX: ""
   TAG: dev
 
@@ -122,6 +123,11 @@ jobs:
         run:
           docker build --pull --target=transformer -t ${IMAGE_TRANSFORMER}${IMAGE_POSTFIX}:${TAG} .
 
+      - name: Build API server
+        if: env.BRANCH_NAME == 'develop'
+        run:
+          docker build --pull --target=api -t ${IMAGE_API}${IMAGE_POSTFIX}:${TAG} .
+
       - name: Tag and push signaler
         if: env.BRANCH_NAME == 'develop'
         run: |
@@ -161,4 +167,12 @@ jobs:
           docker tag ${IMAGE_TRANSFORMER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_TRANSFORMER}${IMAGE_POSTFIX}:${GITHUB_SHA}
           docker push ${IMAGE_TRANSFORMER}${IMAGE_POSTFIX}:latest
           docker push ${IMAGE_TRANSFORMER}${IMAGE_POSTFIX}:${GITHUB_SHA}
+
+      - name: Tag and push API server 
+        if: env.BRANCH_NAME == 'develop'
+        run: |
+          docker tag ${IMAGE_API}${IMAGE_POSTFIX}:${TAG} ${IMAGE_API}${IMAGE_POSTFIX}:latest
+          docker tag ${IMAGE_API}${IMAGE_POSTFIX}:${TAG} ${IMAGE_API}${IMAGE_POSTFIX}:${GITHUB_SHA}
+          docker push ${IMAGE_API}${IMAGE_POSTFIX}:latest
+          docker push ${IMAGE_API}${IMAGE_POSTFIX}:${GITHUB_SHA}
 

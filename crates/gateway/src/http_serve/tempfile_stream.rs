@@ -24,7 +24,7 @@ pub async fn save_stream<
 > {
     let mut digest = H::new();
 
-    let file = spawn_blocking(|| tempfile::tempfile()).await??;
+    let file = spawn_blocking(tempfile::tempfile).await??;
     let mut tokio_file = tokio::fs::File::from_std(file);
     let (done_tx, done_rx) = oneshot::channel();
 

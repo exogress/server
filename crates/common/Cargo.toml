@@ -1,6 +1,6 @@
 [package]
 name = "exogress-server-common"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
@@ -21,7 +21,7 @@ anyhow = "1.0.34"
 tracing-subscriber = "0.2.11"
 futures = "0.3"
 sha2 = "0.9"
-hashbrown = "0.9.1"
+hashbrown = "0.11"
 reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns"] }
 urlencoding = "1.1.1"
 lazy_static = "1.4.0"
@@ -40,8 +40,14 @@ trust-dns-resolver = "0.20"
 bytes = "1.0.1"
 rand = "0.8.3"
 mime = "0.3.16"
+http-serde = "1.0.1"
+typed-headers = { git = "https://github.com/glebpom/typed-headers.git", branch = "master" }
 
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "config-core", "signaling"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.0.1-beta", features = ["entities", "config-core", "signaling", "common-utils"], default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "test-util"] }
+
 
 [features]
 crypto = ["sodiumoxide", "tokio-util", "tokio", "async-stream"]

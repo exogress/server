@@ -601,15 +601,21 @@ fn main() {
                     .and_then(|c| c.iso_code)
                     .unwrap_or_default(),
                 loc.city
-                    .clone()
-                    .and_then(|c| c.names.and_then(|n| n.en))
+                    .as_ref()
+                    .and_then(|c| c.names.as_ref().and_then(|n| n.en.clone()))
                     .unwrap_or_default()
             );
 
             dbip
         });
 
-        let cache = Cache::new(cache_dir, disk_cache_max_size)
+        let gw_location: SmolStr = matches
+            .value_of("location")
+            .expect("Please provide --location")
+            .to_string()
+            .into();
+
+        let cache = Cache::new(cache_dir, disk_cache_max_size, gw_location.clone())
             .await
             .expect("Failed to initialize cache");
 
@@ -651,7 +657,7 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
-        let (log_messages_tx, log_messages_rx) = mpsc::channel(16536);
+        let (log_messages_tx, log_messages_rx) = mpsc::unbounded();
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (public_counters_tx, public_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
@@ -675,12 +681,6 @@ fn main() {
         );
 
         let account_rules_counters = AccountCounters::new();
-
-        let gw_location: SmolStr = matches
-            .value_of("location")
-            .expect("Please provide --location")
-            .to_string()
-            .into();
 
         let api_client = Client::new(
             cache_ttl,
@@ -725,7 +725,7 @@ fn main() {
             .to_string();
 
         let dump_log_messages = {
-            shadow_clone!(individual_hostname, mut gw_to_assistant_messages_tx);
+            shadow_clone!(mut gw_to_assistant_messages_tx);
 
             const CHUNK: usize = 2048;
             let mut ready_chunks = log_messages_rx.ready_chunks(CHUNK);
@@ -749,7 +749,7 @@ fn main() {
         };
 
         let dump_traffic_statistics = {
-            shadow_clone!(individual_hostname, mut gw_to_assistant_messages_tx);
+            shadow_clone!(mut gw_to_assistant_messages_tx);
 
             const CHUNK: usize = 2048;
             let mut ready_chunks = futures::stream::select(
@@ -769,8 +769,8 @@ fn main() {
                             records: ready_chunks
                                 .into_iter()
                                 .map(|statistics| TrafficRecord {
-                                    account_unique_id: statistics.account_unique_id().clone(),
-                                    project_unique_id: statistics.project_unique_id().clone(),
+                                    account_unique_id: *statistics.account_unique_id(),
+                                    project_unique_id: *statistics.project_unique_id(),
 
                                     tunnel_bytes_gw_tx: if statistics.is_tunnel() {
                                         *statistics.bytes_written()
@@ -805,7 +805,7 @@ fn main() {
                                         0
                                     },
 
-                                    flushed_at: statistics.to().clone(),
+                                    flushed_at: *statistics.to(),
                                 })
                                 .collect(),
                         },
@@ -909,10 +909,10 @@ fn main() {
             app_stop_wait,
             tls_gw_common,
             public_base_url,
+            gw_location.clone(),
             individual_hostname.into(),
             google_oauth2_client,
             github_oauth2_client,
-            transformer_base_url,
             assistant_base_url,
             int_client_cert,
             https_counters_tx,

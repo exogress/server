@@ -1,34 +1,42 @@
 use crate::{
     clients::{ClientTunnels, HttpConnector},
-    http_serve::requests_processor::{
-        helpers::{
-            add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
+    http_serve::{
+        logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
+        requests_processor::{
+            helpers::{
+                add_forwarded_headers, copy_headers_from_proxy_res_to_res,
+                copy_headers_to_proxy_req,
+            },
+            post_processing::ResolvedPostProcessing,
+            HandlerInvocationResult,
         },
-        post_processing::ResolvedPostProcessing,
-        HandlerInvocationResult,
     },
 };
+use chrono::Utc;
 use core::fmt;
 use exogress_common::{
     config_core::StaticDir,
-    entities::{exceptions, ConfigId, HandlerName, InstanceId},
+    entities::{exceptions, ConfigId, HandlerName, InstanceId, LabelName, LabelValue},
     tunnel::ConnectTarget,
 };
 use exogress_server_common::logging::{
-    HandlerProcessingStep, LogMessage, ProcessingStep, StaticDirHandlerLogMessage,
+    HttpBodyLog, InstanceLog, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
+    ProxyRequestToOriginInfo, StaticDirHandlerLogMessage,
 };
+use hashbrown::HashMap;
 use http::{Method, Request, Response};
 use hyper::Body;
 use langtag::LanguageTagBuf;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use weighted_rs::{SmoothWeight, Weight};
 
 pub struct ResolvedStaticDir {
     pub config: StaticDir,
     pub handler_name: HandlerName,
-    pub instance_ids: Mutex<SmoothWeight<InstanceId>>,
+    pub instances: HashMap<InstanceId, HashMap<LabelName, LabelValue>>,
+    pub balancer: Mutex<SmoothWeight<InstanceId>>,
     pub client_tunnels: ClientTunnels,
     pub config_id: ConfigId,
     pub individual_hostname: SmolStr,
@@ -58,7 +66,8 @@ impl ResolvedStaticDir {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        handler_log: &mut Option<StaticDirHandlerLogMessage>,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
@@ -67,24 +76,40 @@ impl ResolvedStaticDir {
             };
         }
 
-        if req.method() != &Method::GET && req.method() != &Method::HEAD {
+        if req.method() != Method::GET && req.method() != Method::HEAD {
             return HandlerInvocationResult::ToNextHandler;
         }
 
         let instance_id = try_option_or_exception!(
-            Weight::next(&mut *self.instance_ids.lock()),
+            Weight::next(&mut *self.balancer.lock()),
             exceptions::PROXY_NO_INSTANCES
         );
 
-        log_message
-            .steps
-            .push(ProcessingStep::Invoked(HandlerProcessingStep::StaticDir(
-                StaticDirHandlerLogMessage {
-                    instance_id: instance_id.clone(),
-                    config_name: self.config_id.config_name.clone(),
-                    language: language.clone(),
+        let labels = self.instances.get(&instance_id).expect(
+            "should never happen. instance exist in balancer, but doesn't exist in hashmap",
+        );
+
+        let proxy_response_body = HttpBodyLog::default();
+
+        *handler_log = Some(StaticDirHandlerLogMessage {
+            handler_name: self.handler_name.clone(),
+            config_name: self.config_id.config_name.clone(),
+            language: language.clone(),
+            attempts: vec![ProxyAttemptLogMessage {
+                attempt: 0,
+                attempted_at: Utc::now(),
+                instance: Some(InstanceLog {
+                    instance_id,
+                    labels: labels.clone(),
+                }),
+                request: ProxyRequestToOriginInfo {
+                    body: Default::default(),
                 },
-            )));
+                response: ProxyOriginResponseInfo {
+                    body: proxy_response_body.clone(),
+                },
+            }],
+        });
 
         let mut proxy_to = rebased_url.clone();
 
@@ -130,7 +155,14 @@ impl ResolvedStaticDir {
         res.headers_mut()
             .append("x-exg-proxied", "1".parse().unwrap());
         *res.status_mut() = proxy_res.status();
-        *res.body_mut() = proxy_res.into_body();
+
+        let instrumented_response = save_body_info_to_log_message(
+            proxy_res.into_body(),
+            log_message_container.clone(),
+            proxy_response_body,
+        );
+
+        *res.body_mut() = instrumented_response;
 
         HandlerInvocationResult::Responded
     }

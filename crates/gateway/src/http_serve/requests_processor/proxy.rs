@@ -9,10 +9,7 @@ use exogress_common::{
     tunnel::{Compression, ConnectTarget},
 };
 
-use exogress_server_common::{
-    logging::{HandlerProcessingStep, LogMessage, ProcessingStep, ProxyHandlerLogMessage},
-    presence,
-};
+use exogress_server_common::{logging::ProxyHandlerLogMessage, presence};
 use futures::SinkExt;
 use http::{
     header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE},
@@ -27,20 +24,33 @@ use weighted_rs::{SmoothWeight, Weight};
 use super::helpers::{
     add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
 };
-use crate::http_serve::requests_processor::post_processing::ResolvedPostProcessing;
-use exogress_common::{common_utils::uri_ext::UriExt, config_core::UpstreamDefinition};
+use crate::http_serve::{
+    logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
+    requests_processor::post_processing::ResolvedPostProcessing,
+};
+use chrono::Utc;
+use exogress_common::{
+    common_utils::uri_ext::UriExt,
+    config_core::UpstreamDefinition,
+    entities::{HandlerName, LabelName, LabelValue},
+};
+use exogress_server_common::logging::{
+    HttpBodyLog, InstanceLog, ProtocolUpgrade, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
+    ProxyRequestToOriginInfo,
+};
 use futures::StreamExt;
-use hashbrown::HashSet;
+use hashbrown::HashMap;
 use langtag::LanguageTagBuf;
 use rand::{thread_rng, RngCore};
-use std::{io, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tokio_tungstenite::WebSocketStream;
 
 pub struct ResolvedProxy {
     pub name: Upstream,
+    pub handler_name: HandlerName,
     pub upstream: UpstreamDefinition,
-    pub instance_is: HashSet<InstanceId>,
+    pub instances: HashMap<InstanceId, HashMap<LabelName, LabelValue>>,
     pub balancer: Mutex<SmoothWeight<InstanceId>>,
     pub client_tunnels: ClientTunnels,
     pub config_id: ConfigId,
@@ -80,7 +90,8 @@ impl ResolvedProxy {
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
         language: &Option<LanguageTagBuf>,
-        log_message: &mut LogMessage,
+        handler_log: &mut Option<ProxyHandlerLogMessage>,
+        log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
         if req.headers().contains_key("x-exg-proxied") {
             return HandlerInvocationResult::Exception {
@@ -140,11 +151,35 @@ impl ResolvedProxy {
             .headers_mut()
             .append("x-exg", "1".parse().unwrap());
 
-        'instances: for _ in 0..4 {
+        let mut attempts = Vec::new();
+
+        'instances: for attempt in 0..4 {
             let selected_instance_id = Weight::next(&mut *self.balancer.lock());
 
             match selected_instance_id {
                 Some(instance_id) => {
+                    let labels = self
+                        .instances
+                        .get(&instance_id)
+                        .expect("should never happen. instance exist in balancer, but doesn't exist in hashmap");
+                    let proxy_response_body = HttpBodyLog::default();
+                    let proxy_request_body = HttpBodyLog::default();
+
+                    attempts.push(ProxyAttemptLogMessage {
+                        attempted_at: Utc::now(),
+                        attempt,
+                        instance: Some(InstanceLog {
+                            instance_id,
+                            labels: labels.clone(),
+                        }),
+                        request: ProxyRequestToOriginInfo {
+                            body: proxy_request_body.clone(),
+                        },
+                        response: ProxyOriginResponseInfo {
+                            body: proxy_response_body.clone(),
+                        },
+                    });
+
                     let proxy_res = if is_websocket {
                         let mut ws_req = http::Request::new(());
 
@@ -252,9 +287,13 @@ impl ResolvedProxy {
 
                         hyper_res
                     } else {
-                        let request_body = mem::replace(req.body_mut(), Body::empty());
+                        let instrumented_request_body = save_body_info_to_log_message(
+                            mem::replace(req.body_mut(), Body::empty()),
+                            log_message_container.clone(),
+                            proxy_request_body,
+                        );
 
-                        *proxy_req.body_mut() = request_body;
+                        *proxy_req.body_mut() = instrumented_request_body;
 
                         let http_client = match self
                             .client_tunnels
@@ -299,18 +338,27 @@ impl ResolvedProxy {
                         .append("x-exg-proxied", "1".parse().unwrap());
 
                     *res.status_mut() = proxy_res.status();
-                    *res.body_mut() = proxy_res.into_body();
 
-                    log_message
-                        .steps
-                        .push(ProcessingStep::Invoked(HandlerProcessingStep::Proxy(
-                            ProxyHandlerLogMessage {
-                                upstream: self.name.clone(),
-                                instance_id,
-                                config_name: self.config_id.config_name.clone(),
-                                language: language.clone(),
-                            },
-                        )));
+                    let instrumented_response_body = save_body_info_to_log_message(
+                        proxy_res.into_body(),
+                        log_message_container.clone(),
+                        proxy_response_body,
+                    );
+
+                    *res.body_mut() = instrumented_response_body;
+
+                    *handler_log = Some(ProxyHandlerLogMessage {
+                        upstream: self.name.clone(),
+                        config_name: self.config_id.config_name.clone(),
+                        handler_name: self.handler_name.clone(),
+                        upgrade: if is_websocket {
+                            Some(ProtocolUpgrade::WebSocket)
+                        } else {
+                            None
+                        },
+                        language: language.clone(),
+                        attempts,
+                    });
 
                     return HandlerInvocationResult::Responded;
                 }

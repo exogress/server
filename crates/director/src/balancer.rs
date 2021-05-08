@@ -27,7 +27,7 @@ impl fmt::Debug for GwSelectionPolicy {
                 &self
                     .unhealthy
                     .peek_iter()
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, _)| k)
                     .collect::<Vec<_>>(),
             )
             .finish()
@@ -71,7 +71,7 @@ impl ShardedGateways {
             return Err(Error::DuplicatesDetected);
         }
 
-        if weighted.iter().find(|(_, weight)| *weight == 0).is_some() {
+        if weighted.iter().any(|(_, weight)| *weight == 0) {
             return Err(Error::ZeroWeightFound);
         }
 
@@ -184,14 +184,10 @@ impl ShardedGateways {
 
 impl GwSelectionPolicy {
     pub fn next(&mut self) -> Option<IpAddr> {
-        let is_unhealthy_expired = self
-            .unhealthy
-            .notify_iter()
-            .find(|entry| match entry {
-                TimedEntry::Valid(_, _) => false,
-                TimedEntry::Expired(_, _) => true,
-            })
-            .is_some();
+        let is_unhealthy_expired = self.unhealthy.notify_iter().any(|entry| match entry {
+            TimedEntry::Valid(_, _) => false,
+            TimedEntry::Expired(_, _) => true,
+        });
 
         if is_unhealthy_expired {
             self.gen_balancer();
@@ -219,7 +215,7 @@ impl GwSelectionPolicy {
         while new_active.len() < self.active_pool_len {
             if let Some(reserved) = reserved_iter.next() {
                 if !self.unhealthy.contains_key(reserved) {
-                    new_active.insert(reserved.clone());
+                    new_active.insert(*reserved);
                 }
             } else {
                 break;
@@ -233,7 +229,7 @@ impl GwSelectionPolicy {
             return;
         }
 
-        self.unhealthy.insert(addr.clone(), ());
+        self.unhealthy.insert(*addr, ());
         self.gen_balancer();
     }
 
@@ -289,7 +285,7 @@ mod test {
             seed,
             max_main_gateways.into(),
             max_reserved_gateways.into(),
-            Duration::from_secs(60),
+            Duration::from_secs(10),
         );
 
         if policy_result.is_err() && max_main_gateways == 0 {
