@@ -193,7 +193,7 @@ async fn forwarder(
                                         Ok(mut forward_to) => {
                                             forward_to.set_nodelay(true)?;
 
-                                            let source_info = bincode::serialize(&SourceInfo {
+                                            let source_info = serde_cbor::to_vec(&SourceInfo {
                                                 local_addr,
                                                 remote_addr: incoming_addr,
                                                 alpn_domain: sni_hostname.clone(),

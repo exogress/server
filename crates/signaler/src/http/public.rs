@@ -53,6 +53,7 @@ struct ChannelConnectParams {
     account: AccountName,
     labels: String,
     active_profile: Option<ProfileName>,
+    exogress_version: String,
 }
 
 pub async fn server(
@@ -117,6 +118,7 @@ pub async fn server(
                                         &authorization,
                                         &channel_connect_params.project,
                                         &channel_connect_params.account,
+                                        &channel_connect_params.exogress_version,
                                         &channel_connect_params.labels,
                                         &config,
                                         &channel_connect_params.active_profile,

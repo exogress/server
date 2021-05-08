@@ -9,7 +9,7 @@ use byte_unit::Byte;
 use chrono::{serde::ts_milliseconds, DateTime, Utc};
 use dashmap::DashMap;
 use exogress_common::{
-    access_tokens::{generate_jwt_token, JwtError},
+    access_tokens::JwtError,
     config_core::{
         referenced::Parameter,
         refinable::{Refinable, RefinableSet},
@@ -791,21 +791,13 @@ impl Client {
             .append_pair("project", tunnel_hello.project_name.as_str())
             .append_pair("instance_id", &tunnel_hello.instance_id.to_string());
 
-        let token = if let Some(token) = &tunnel_hello.jwt_token {
-            token.clone()
-        } else {
-            error!("insecure tunnel authorization is used!");
-            generate_jwt_token(
-                tunnel_hello.secret_access_key.as_ref(),
-                &tunnel_hello.access_key_id,
-            )?
-            .into()
-        };
-
         let res = self
             .reqwest
             .post(url)
-            .header("Authorization", format!("Bearer {}", token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", tunnel_hello.jwt_token),
+            )
             .send()
             .await?;
 

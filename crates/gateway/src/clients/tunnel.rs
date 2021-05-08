@@ -208,7 +208,7 @@ pub async fn tunnels_acceptor(
                                 let len = upgraded.read_u16().await?;
                                 let mut payload = vec![0u8; len.into()];
                                 upgraded.read_exact(&mut payload).await?;
-                                let tunnel_hello = bincode::deserialize::<TunnelHello>(&payload)?;
+                                let tunnel_hello = serde_cbor::from_slice::<TunnelHello>(&payload)?;
 
                                 let AuthorizeTunnelResponse {
                                     account_unique_id,
@@ -222,7 +222,7 @@ pub async fn tunnels_acceptor(
 
                                 let resp = TunnelHelloResponse::Ok { tunnel_id };
 
-                                let resp_bytes = bincode::serialize(&resp)?;
+                                let resp_bytes = serde_cbor::to_vec(&resp)?;
                                 upgraded
                                     .write_u16(resp_bytes.len().try_into().unwrap())
                                     .await?;

@@ -200,15 +200,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "904dfeac50f3cdaba28fc6f57fdcddb75f49ed61346676a78c4ffe55877802fd"
 
 [[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bitflags"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,11 +878,10 @@ dependencies = [
 
 [[package]]
 name = "exogress-common"
-version = "0.0.1-beta.1"
-source = "git+https://github.com/exogress/exogress.git?branch=master#4f5d90b4dfe7ccb9be68a244c6e7a61152387eec"
+version = "0.1.0"
+source = "git+https://github.com/exogress/exogress.git?branch=master#ccc78059722a908299d0d64a9b7abf7b9be67f75"
 dependencies = [
  "anyhow",
- "bincode",
  "bs58",
  "bytes 1.0.1",
  "clap",
@@ -933,6 +923,7 @@ dependencies = [
  "serde",
  "serde-value",
  "serde-value-flatten",
+ "serde_cbor",
  "serde_json",
  "serde_with",
  "serde_yaml",
@@ -961,7 +952,6 @@ name = "exogress-director"
 version = "0.8.1"
 dependencies = [
  "anyhow",
- "bincode",
  "bytes 1.0.1",
  "clap",
  "derive_builder",
@@ -985,6 +975,7 @@ dependencies = [
  "seahash",
  "sentry",
  "serde",
+ "serde_cbor",
  "shadow-clone",
  "stop-handle",
  "sys-info",
@@ -1009,7 +1000,6 @@ dependencies = [
  "async-compression",
  "async-stream",
  "base64 0.13.0",
- "bincode",
  "bs58",
  "byte-unit",
  "byteorder",
@@ -1061,6 +1051,7 @@ dependencies = [
  "seahash",
  "sentry",
  "serde",
+ "serde_cbor",
  "serde_derive",
  "serde_json",
  "serde_qs",
@@ -1634,9 +1625,9 @@ dependencies = [
 
 [[package]]
 name = "http-body"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dfb77c123b4e2f72a2069aeae0b4b4949cc7e966df277813fc16347e7549737"
+checksum = "60daa14be0e0786db0f03a9e57cb404c9d756eed2b6c62b9ea98ec5743ec75a9"
 dependencies = [
  "bytes 1.0.1",
  "http",

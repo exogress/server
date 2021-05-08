@@ -173,7 +173,7 @@ pub async fn server(
                         let header_len = conn.read_u16().await?;
                         let mut buf = vec![0u8; header_len.try_into().unwrap()];
                         conn.read_exact(&mut buf).await?;
-                        let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
+                        let source_info = serde_cbor::from_slice::<SourceInfo>(&buf)?;
                         let conn = director::Connection::new(conn, source_info.clone());
                         incoming_http_connections_tx
                             .send(Ok::<_, io::Error>((conn, source_info)))
@@ -217,7 +217,7 @@ pub async fn server(
                             let header_len = conn.read_u16().await?;
                             let mut buf = vec![0u8; header_len.try_into().unwrap()];
                             conn.read_exact(&mut buf).await?;
-                            let source_info = bincode::deserialize::<SourceInfo>(&buf)?;
+                            let source_info = serde_cbor::from_slice::<SourceInfo>(&buf)?;
 
                             Ok::<_, anyhow::Error>((conn, source_info))
                         };
