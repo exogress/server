@@ -122,8 +122,8 @@ impl TrafficCounters {
 
         let now = Utc::now();
         Ok(Some(RecordedTrafficStatistics {
-            account_unique_id: self.account_unique_id.clone(),
-            project_unique_id: self.project_unique_id.clone(),
+            account_unique_id: self.account_unique_id,
+            project_unique_id: self.project_unique_id,
             bytes_read,
             bytes_written,
             from: mem::replace(&mut self.initiated_at.lock(), now),

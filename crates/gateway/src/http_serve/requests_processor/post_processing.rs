@@ -93,9 +93,9 @@ impl RequestsProcessor {
         // FIXME: remove clone
         let mime_types = encoding.mime_types.clone()?;
 
-        let maybe_compression = if maybe_content_type.is_none() {
-            None
-        } else if !mime_types.contains(maybe_content_type.unwrap().essence_str()) {
+        let maybe_compression = if maybe_content_type.is_none()
+            || !mime_types.contains(maybe_content_type.unwrap().essence_str())
+        {
             None
         } else if let Some(accept_encoding) = maybe_accept_encoding {
             accept_encoding

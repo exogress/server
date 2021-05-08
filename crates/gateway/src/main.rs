@@ -601,8 +601,8 @@ fn main() {
                     .and_then(|c| c.iso_code)
                     .unwrap_or_default(),
                 loc.city
-                    .clone()
-                    .and_then(|c| c.names.and_then(|n| n.en))
+                    .as_ref()
+                    .and_then(|c| c.names.as_ref().and_then(|n| n.en.clone()))
                     .unwrap_or_default()
             );
 
@@ -769,8 +769,8 @@ fn main() {
                             records: ready_chunks
                                 .into_iter()
                                 .map(|statistics| TrafficRecord {
-                                    account_unique_id: statistics.account_unique_id().clone(),
-                                    project_unique_id: statistics.project_unique_id().clone(),
+                                    account_unique_id: *statistics.account_unique_id(),
+                                    project_unique_id: *statistics.project_unique_id(),
 
                                     tunnel_bytes_gw_tx: if statistics.is_tunnel() {
                                         *statistics.bytes_written()
@@ -805,7 +805,7 @@ fn main() {
                                         0
                                     },
 
-                                    flushed_at: statistics.to().clone(),
+                                    flushed_at: *statistics.to(),
                                 })
                                 .collect(),
                         },
@@ -913,7 +913,6 @@ fn main() {
             individual_hostname.into(),
             google_oauth2_client,
             github_oauth2_client,
-            transformer_base_url,
             assistant_base_url,
             int_client_cert,
             https_counters_tx,

@@ -126,12 +126,7 @@ fn main() {
 
     let logger_bg = rt
         .block_on({
-            exogress_server_common::clap::log::handle(
-                matches.clone(),
-                "api",
-                resolver.clone(),
-                None,
-            )
+            exogress_server_common::clap::log::handle(matches.clone(), "api", resolver, None)
         })
         .expect("error initializing logger");
 

@@ -37,7 +37,7 @@ fn dump_prometheus() -> String {
 }
 
 pub async fn spawn(addr: SocketAddr) -> Result<(), anyhow::Error> {
-    warp::serve(warp::path!("metrics").map(|| dump_prometheus()))
+    warp::serve(warp::path!("metrics").map(dump_prometheus))
         .run(addr)
         .await;
 

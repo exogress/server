@@ -121,12 +121,7 @@ fn main() {
 
     let logger_bg = rt
         .block_on({
-            exogress_server_common::clap::log::handle(
-                matches.clone(),
-                "signaler",
-                resolver.clone(),
-                None,
-            )
+            exogress_server_common::clap::log::handle(matches.clone(), "signaler", resolver, None)
         })
         .expect("error initializing logger");
 
@@ -155,7 +150,7 @@ fn main() {
         })
         .unwrap();
 
-    let signaler_id: String = Ulid::new().to_string().into();
+    let signaler_id: String = Ulid::new().to_string();
 
     let maybe_panic = rt.block_on({
         shadow_clone!(webapp_base_url, int_client_cert, signaler_id);

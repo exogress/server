@@ -56,7 +56,6 @@ pub async fn server(
     common_gw_tls_config: GatewayCommonTlsConfig,
     https_config: Option<HttpsConfig>,
     redis: redis::Client,
-    webapp_client: crate::webapp::Client,
     presence_client: crate::presence::Client,
     db_client: MongoDbClient,
     elastic_client: ElasticsearchClient,
@@ -197,8 +196,8 @@ pub async fn server(
                                                 // info!("received from WS: {:?}", msg);
 
                                                 if msg.is_text() {
-                                                    let mut txt = msg.to_str().unwrap().to_string();
-                                                    match serde_json::from_str::<WsFromGwMessage>(&mut txt) {
+                                                    let txt = msg.to_str().unwrap().to_string();
+                                                    match serde_json::from_str::<WsFromGwMessage>(&txt) {
                                                         Ok(msg) => {
                                                             crate::statistics::GW_MESSAGES_PARSED
                                                                 .with_label_values(&[
@@ -259,9 +258,9 @@ pub async fn server(
                                                             async move {
                                                                 while let Some(msg) = messages.next().await {
                                                                     match msg.get_payload::<String>() {
-                                                                        Ok(mut p) => {
+                                                                        Ok(p) => {
                                                                             info!("redis -> assistant: {:?}", p);
-                                                                            match serde_json::from_str::<Notification>(&mut p) {
+                                                                            match serde_json::from_str::<Notification>(&p) {
                                                                                 Ok(notification) => {
                                                                                     let outgoing_msg = serde_json::to_string(&WsToGwMessage::WebAppNotification(notification))
                                                                                         .expect("could not serialize");
@@ -516,7 +515,7 @@ pub async fn server(
             }
         });
 
-    let metrics = warp::path!("metrics").map(|| crate::statistics::dump_prometheus());
+    let metrics = warp::path!("metrics").map(crate::statistics::dump_prometheus);
 
     info!("Spawning...");
 

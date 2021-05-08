@@ -80,7 +80,7 @@ impl ResolvedGcsBucket {
         handler_log: &mut Option<GcsBucketHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
-        if req.method() != &Method::GET && req.method() != &Method::HEAD {
+        if req.method() != Method::GET && req.method() != Method::HEAD {
             return HandlerInvocationResult::ToNextHandler;
         }
 

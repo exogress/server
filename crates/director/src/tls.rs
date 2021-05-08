@@ -6,35 +6,29 @@ pub fn extract_sni_hostname(buf: &[u8]) -> Result<Option<Option<String>>, anyhow
                 .msg
                 .into_iter()
                 .filter_map(|msg| match msg {
-                    tls_parser::TlsMessage::Handshake(handshake) => match handshake {
-                        tls_parser::TlsMessageHandshake::ClientHello(hello) => {
-                            if let Some(ext) = hello.ext {
-                                tls_parser::parse_tls_extensions(ext)
-                                    .ok()
-                                    .and_then(|(_, ext)| {
-                                        ext.into_iter()
-                                            .filter_map(|ext| match ext {
-                                                tls_parser::TlsExtension::SNI(snis) => snis
-                                                    .into_iter()
-                                                    .filter_map(|(sni_type, value)| {
-                                                        if tls_parser::SNIType::HostName == sni_type
-                                                        {
-                                                            Some(value)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    })
-                                                    .next(),
-                                                _ => None,
-                                            })
-                                            .next()
-                                    })
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    },
+                    tls_parser::TlsMessage::Handshake(
+                        tls_parser::TlsMessageHandshake::ClientHello(
+                            tls_parser::TlsClientHelloContents { ext: Some(ext), .. },
+                        ),
+                    ) => tls_parser::parse_tls_extensions(ext)
+                        .ok()
+                        .and_then(|(_, ext)| {
+                            ext.into_iter()
+                                .filter_map(|ext| match ext {
+                                    tls_parser::TlsExtension::SNI(snis) => snis
+                                        .into_iter()
+                                        .filter_map(|(sni_type, value)| {
+                                            if tls_parser::SNIType::HostName == sni_type {
+                                                Some(value)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .next(),
+                                    _ => None,
+                                })
+                                .next()
+                        }),
                     _ => None,
                 })
                 .next()

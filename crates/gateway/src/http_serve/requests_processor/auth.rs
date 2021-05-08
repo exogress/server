@@ -160,186 +160,176 @@ impl ResolvedAuth {
 
         let path_segments_len = path_segments.len();
 
-        if path_segments_len >= 2 {
-            if path_segments[path_segments_len - 2] == "_exg" {
-                if path_segments[path_segments_len - 1] == "auth" {
-                    let result = (|| {
-                        let requested_url: Url =
-                            percent_encoding::percent_decode_str(query.get("url")?)
-                                .decode_utf8()
-                                .ok()?
-                                .parse()
-                                .ok()?;
-                        let handler_name: HandlerName =
-                            query.get("handler")?.as_str().parse().ok()?;
+        if path_segments_len >= 2 && path_segments[path_segments_len - 2] == "_exg" {
+            if path_segments[path_segments_len - 1] == "auth" {
+                let result = (|| {
+                    let requested_url: Url =
+                        percent_encoding::percent_decode_str(query.get("url")?)
+                            .decode_utf8()
+                            .ok()?
+                            .parse()
+                            .ok()?;
+                    let handler_name: HandlerName = query.get("handler")?.as_str().parse().ok()?;
 
-                        let provided_oauth2_provider: Option<Oauth2Provider> =
-                            query.get("provider").cloned().map(|p| p.parse().unwrap());
+                    let provided_oauth2_provider: Option<Oauth2Provider> =
+                        query.get("provider").cloned().map(|p| p.parse().unwrap());
 
-                        Some((requested_url, handler_name, provided_oauth2_provider))
-                    })();
+                    Some((requested_url, handler_name, provided_oauth2_provider))
+                })();
 
-                    match result {
-                        Some((requested_url, handler_name, provided_oauth2_provider)) => {
-                            if handler_name != self.handler_name {
-                                return Some(HandlerInvocationResult::ToNextHandler);
-                            }
-
-                            respond_with_login(
-                                res,
-                                &self.mount_point_fqdn,
-                                &provided_oauth2_provider,
-                                &requested_url,
-                                &handler_name,
-                                &self.enabled_providers(),
-                                &self.jwt_ecdsa,
-                                &self.google_oauth2_client,
-                                &self.github_oauth2_client,
-                            )
-                            .await;
-
-                            return Some(HandlerInvocationResult::Responded);
+                match result {
+                    Some((requested_url, handler_name, provided_oauth2_provider)) => {
+                        if handler_name != self.handler_name {
+                            return Some(HandlerInvocationResult::ToNextHandler);
                         }
-                        None => {
-                            *res.status_mut() = StatusCode::NOT_FOUND;
 
-                            return Some(HandlerInvocationResult::Responded);
-                        }
+                        respond_with_login(
+                            res,
+                            &self.mount_point_fqdn,
+                            &provided_oauth2_provider,
+                            &requested_url,
+                            &handler_name,
+                            &self.enabled_providers(),
+                            &self.jwt_ecdsa,
+                            &self.google_oauth2_client,
+                            &self.github_oauth2_client,
+                        )
+                        .await;
+
+                        return Some(HandlerInvocationResult::Responded);
                     }
-                } else if path_segments[path_segments_len - 1] == "check_auth" {
-                    match query.get("secret") {
-                        Some(secret) => {
-                            match retrieve_assistant_key::<AuthFinalizer>(
-                                &self.assistant_base_url,
-                                &secret,
-                                self.maybe_identity.clone(),
-                            )
-                            .await
-                            {
-                                Ok(retrieved_flow_data) => {
-                                    let handler_name =
-                                        retrieved_flow_data.oauth2_flow_data.handler_name.clone();
-                                    let used_provider =
-                                        retrieved_flow_data.oauth2_flow_data.provider.clone();
+                    None => {
+                        *res.status_mut() = StatusCode::NOT_FOUND;
 
-                                    if handler_name != self.handler_name {
-                                        return Some(HandlerInvocationResult::ToNextHandler);
-                                    }
+                        return Some(HandlerInvocationResult::Responded);
+                    }
+                }
+            } else if path_segments[path_segments_len - 1] == "check_auth" {
+                match query.get("secret") {
+                    Some(secret) => {
+                        match retrieve_assistant_key::<AuthFinalizer>(
+                            &self.assistant_base_url,
+                            &secret,
+                            self.maybe_identity.clone(),
+                        )
+                        .await
+                        {
+                            Ok(retrieved_flow_data) => {
+                                let handler_name =
+                                    retrieved_flow_data.oauth2_flow_data.handler_name.clone();
+                                let used_provider = retrieved_flow_data.oauth2_flow_data.provider;
 
-                                    let maybe_auth_definition =
-                                        self.auth_definition(&used_provider);
+                                if handler_name != self.handler_name {
+                                    return Some(HandlerInvocationResult::ToNextHandler);
+                                }
 
-                                    match maybe_auth_definition {
-                                        Some(acl_result) => {
-                                            let acl = match &acl_result {
-                                                Ok(val) => val,
-                                                Err(err) => {
-                                                    let (exception, data) = err.to_exception();
-                                                    return Some(
-                                                        HandlerInvocationResult::Exception {
-                                                            name: exception,
-                                                            data,
-                                                        },
-                                                    );
-                                                }
-                                            };
+                                let maybe_auth_definition = self.auth_definition(&used_provider);
 
-                                            let acl_allow_to = self.acl_allowed_to(
-                                                &retrieved_flow_data.identities,
-                                                &acl.0,
+                                match maybe_auth_definition {
+                                    Some(acl_result) => {
+                                        let acl = match &acl_result {
+                                            Ok(val) => val,
+                                            Err(err) => {
+                                                let (exception, data) = err.to_exception();
+                                                return Some(HandlerInvocationResult::Exception {
+                                                    name: exception,
+                                                    data,
+                                                });
+                                            }
+                                        };
+
+                                        let acl_allow_to = self.acl_allowed_to(
+                                            &retrieved_flow_data.identities,
+                                            &acl.0,
+                                        );
+
+                                        let redirect_to = retrieved_flow_data
+                                            .oauth2_flow_data
+                                            .requested_url
+                                            .to_string();
+
+                                        if let (Some(allowed_identity), _) = acl_allow_to {
+                                            res.headers_mut().insert(
+                                                CACHE_CONTROL,
+                                                "no-cache".try_into().unwrap(),
                                             );
 
-                                            let redirect_to = retrieved_flow_data
-                                                .oauth2_flow_data
-                                                .requested_url
-                                                .to_string();
+                                            res.headers_mut()
+                                                .insert(LOCATION, redirect_to.try_into().unwrap());
 
-                                            if let (Some(allowed_identity), _) = acl_allow_to {
-                                                res.headers_mut().insert(
-                                                    CACHE_CONTROL,
-                                                    "no-cache".try_into().unwrap(),
-                                                );
+                                            *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
 
-                                                res.headers_mut().insert(
-                                                    LOCATION,
-                                                    redirect_to.try_into().unwrap(),
-                                                );
+                                            let claims = Claims {
+                                                idp: retrieved_flow_data
+                                                    .oauth2_flow_data
+                                                    .provider
+                                                    .to_string(),
+                                                sub: allowed_identity.to_string(),
+                                                exp: (Utc::now() + chrono::Duration::hours(24))
+                                                    .timestamp()
+                                                    .try_into()
+                                                    .unwrap(),
+                                            };
 
-                                                *res.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-
-                                                let claims = Claims {
-                                                    idp: retrieved_flow_data
-                                                        .oauth2_flow_data
-                                                        .provider
-                                                        .to_string(),
-                                                    sub: allowed_identity.to_string(),
-                                                    exp: (Utc::now() + chrono::Duration::hours(24))
-                                                        .timestamp()
-                                                        .try_into()
-                                                        .unwrap(),
-                                                };
-
-                                                let token = try_or_exception!(
-                                                    jsonwebtoken::encode(
-                                                        &Header {
-                                                            alg: jsonwebtoken::Algorithm::ES256,
-                                                            ..Default::default()
-                                                        },
-                                                        &claims,
-                                                        &try_or_exception!(
-                                                            EncodingKey::from_ec_pem(
-                                                                retrieved_flow_data
-                                                                    .oauth2_flow_data
-                                                                    .jwt_ecdsa
-                                                                    .private_key
-                                                                    .as_ref(),
-                                                            ),
-                                                            exceptions::AUTH_INTERNAL_ERROR
+                                            let token = try_or_exception!(
+                                                jsonwebtoken::encode(
+                                                    &Header {
+                                                        alg: jsonwebtoken::Algorithm::ES256,
+                                                        ..Default::default()
+                                                    },
+                                                    &claims,
+                                                    &try_or_exception!(
+                                                        EncodingKey::from_ec_pem(
+                                                            retrieved_flow_data
+                                                                .oauth2_flow_data
+                                                                .jwt_ecdsa
+                                                                .private_key
+                                                                .as_ref(),
                                                         ),
+                                                        exceptions::AUTH_INTERNAL_ERROR
                                                     ),
-                                                    exceptions::AUTH_INTERNAL_ERROR
-                                                );
+                                                ),
+                                                exceptions::AUTH_INTERNAL_ERROR
+                                            );
 
-                                                let auth_cookie_name = self.cookie_name();
+                                            let auth_cookie_name = self.cookie_name();
 
-                                                let set_cookie =
-                                                    Cookie::build(auth_cookie_name, token)
-                                                        .path("/")
-                                                        .max_age(time::Duration::hours(24))
-                                                        .http_only(true)
-                                                        .secure(true)
-                                                        .finish();
+                                            let set_cookie = Cookie::build(auth_cookie_name, token)
+                                                .path("/")
+                                                .max_age(time::Duration::hours(24))
+                                                .http_only(true)
+                                                .secure(true)
+                                                .finish();
 
-                                                res.headers_mut().insert(
-                                                    SET_COOKIE,
-                                                    set_cookie.to_string().try_into().unwrap(),
-                                                );
-                                            } else {
-                                                *res.status_mut() = StatusCode::FORBIDDEN;
-                                                *res.body_mut() =
-                                                    Body::from(render_access_denied(redirect_to));
-                                            }
-                                        }
-                                        None => {
-                                            *res.status_mut() = StatusCode::BAD_REQUEST;
-                                            *res.body_mut() = Body::from("bad request");
+                                            res.headers_mut().insert(
+                                                SET_COOKIE,
+                                                set_cookie.to_string().try_into().unwrap(),
+                                            );
+                                        } else {
+                                            *res.status_mut() = StatusCode::FORBIDDEN;
+                                            *res.body_mut() =
+                                                Body::from(render_access_denied(redirect_to));
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    info!("could not retrieve assistant oauth2 key: {}", e);
-                                    *res.status_mut() = StatusCode::UNAUTHORIZED;
-                                    *res.body_mut() = Body::from("error");
+                                    None => {
+                                        *res.status_mut() = StatusCode::BAD_REQUEST;
+                                        *res.body_mut() = Body::from("bad request");
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                info!("could not retrieve assistant oauth2 key: {}", e);
+                                *res.status_mut() = StatusCode::UNAUTHORIZED;
+                                *res.body_mut() = Body::from("error");
+                            }
                         }
-                        None => {
-                            *res.status_mut() = StatusCode::NOT_FOUND;
-                        }
-                    };
+                    }
+                    None => {
+                        *res.status_mut() = StatusCode::NOT_FOUND;
+                    }
+                };
 
-                    return Some(HandlerInvocationResult::Responded);
-                }
+                return Some(HandlerInvocationResult::Responded);
             }
         }
 

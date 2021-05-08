@@ -149,7 +149,6 @@ pub async fn server(
     individual_hostname: SmolStr,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,
-    transformer_base_url: Url,
     assistant_base_url: Url,
     maybe_identity: Option<Vec<u8>>,
     https_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
@@ -333,10 +332,8 @@ pub async fn server(
                         let metered = if let Some((account_unique_id, project_unique_id)) =
                             maybe_account_info
                         {
-                            let counters = TrafficCounters::new(
-                                account_unique_id.clone(),
-                                project_unique_id.clone(),
-                            );
+                            let counters =
+                                TrafficCounters::new(account_unique_id, project_unique_id);
                             let counted_stream = TrafficCountedStream::new(
                                 conn,
                                 counters.clone(),
@@ -347,7 +344,7 @@ pub async fn server(
                             let (stop_flusher_tx, stop_flusher_rx) = oneshot::channel();
 
                             let flush_counters = TrafficCounters::spawn_flusher(
-                                counters.clone(),
+                                counters,
                                 https_counters_tx,
                                 stop_flusher_rx,
                             );
@@ -422,9 +419,7 @@ pub async fn server(
                                     Ok(format!("http://{}{}", host.to_str().unwrap(), uri)
                                         .parse()?)
                                 } else {
-                                    return Err::<_, anyhow::Error>(anyhow!(
-                                        "unable to restore url"
-                                    ));
+                                    Err::<_, anyhow::Error>(anyhow!("unable to restore url"))
                                 }
                             }) {
                                 Ok(url) => url,
@@ -600,7 +595,7 @@ pub async fn server(
                         }
 
                         let matchable_url = MatchableUrl::from_components(
-                            host_without_port.as_ref(),
+                            host_without_port,
                             requested_url.path().as_ref(),
                             requested_url.query().unwrap_or(""),
                         )
@@ -630,7 +625,7 @@ pub async fn server(
                                         .await;
                                 })
                                 .await;
-                                if let Err(_) = result {
+                                if result.is_err() {
                                     res = Response::new(Body::from(
                                         "timeout while processing request",
                                     ));
@@ -660,7 +655,7 @@ pub async fn server(
                             let cause = e
                                 .downcast_ref::<String>()
                                 .map(|e| &**e)
-                                .or_else(|| e.downcast_ref::<&'static str>().map(|e| *e))
+                                .or_else(|| e.downcast_ref::<&'static str>().copied())
                                 .unwrap_or("unknown panic error");
 
                             error!("server error, panic: {}", cause);
@@ -705,7 +700,7 @@ pub async fn server(
 
 async fn handle_public_gw_request(
     url: http::Uri,
-    req: &Request<Body>,
+    _req: &Request<Body>,
     res: &mut Response<Body>,
     google_oauth2_client: auth::google::GoogleOauth2Client,
     github_oauth2_client: auth::github::GithubOauth2Client,

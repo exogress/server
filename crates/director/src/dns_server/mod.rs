@@ -112,10 +112,10 @@ impl DnsServer {
         let mut server = ServerFuture::new(catalog);
 
         for addr in bind_to {
-            let udp = UdpSocket::bind(SocketAddr::from((addr.clone(), port))).await?;
+            let udp = UdpSocket::bind(SocketAddr::from((*addr, port))).await?;
             server.register_socket(udp);
 
-            let tcp = TcpListener::bind(SocketAddr::from((addr.clone(), port))).await?;
+            let tcp = TcpListener::bind(SocketAddr::from((*addr, port))).await?;
             server.register_listener(tcp, Duration::from_secs(5));
         }
 

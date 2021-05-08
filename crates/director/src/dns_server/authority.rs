@@ -273,9 +273,7 @@ impl ShortZoneAuthority {
                     let rdata: Option<_> = (|| match record_type {
                         RecordType::CNAME => Some(RData::CNAME(res.parse().ok()?)),
                         RecordType::TXT => Some(RData::TXT(TXT::new(vec![res]))),
-                        _ => {
-                            return None;
-                        }
+                        _ => None,
                     })();
 
                     let rdata = match rdata {
@@ -701,7 +699,7 @@ fn maybe_next_name(
 ) -> Option<(LowerName, RecordType)> {
     // This is disabled because it produces the recursion
     // Should be addressed in the future if short zone requires more features
-    return None;
+    None
 
     // match (record_set.record_type(), query_type) {
     //     // ANAME is similar to CNAME,

@@ -72,7 +72,7 @@ pub(crate) async fn convert(
     let src_path = src_tempfile.path().to_path_buf();
     cmd.arg(src_path.to_str().unwrap());
 
-    let dst_tempfile = spawn_blocking(move || tempfile::NamedTempFile::new()).await??;
+    let dst_tempfile = spawn_blocking(tempfile::NamedTempFile::new).await??;
 
     cmd.arg(format!(
         "{}:{}",

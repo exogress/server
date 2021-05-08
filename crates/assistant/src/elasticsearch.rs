@@ -91,7 +91,7 @@ impl ElasticsearchClient {
                 let status_code = resp.status_code();
                 if status_code.is_success() {
                     let response_body = resp.json::<Value>().await?;
-                    let successful = response_body["errors"].as_bool().unwrap() == false;
+                    let successful = !response_body["errors"].as_bool().unwrap();
                     if successful {
                         Ok(())
                     } else {

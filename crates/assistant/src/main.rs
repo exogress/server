@@ -31,7 +31,6 @@ mod presence;
 mod reporting;
 mod statistics;
 mod termination;
-mod webapp;
 
 pub struct HttpsConfig {
     int_tls_cert: Vec<u8>,
@@ -199,20 +198,11 @@ fn main() {
 
     let logger_bg = rt
         .block_on({
-            exogress_server_common::clap::log::handle(
-                matches.clone(),
-                "assistant",
-                resolver.clone(),
-                None,
-            )
+            exogress_server_common::clap::log::handle(matches.clone(), "assistant", resolver, None)
         })
         .expect("error initializing logger");
 
     rt.spawn(logger_bg);
-
-    info!("Use Webapp url at {}", webapp_base_url);
-    let webapp_client =
-        crate::webapp::Client::new(webapp_base_url.clone(), int_client_cert.clone());
 
     let elasticsearch_url = matches
         .value_of("elasticsearch_url")
@@ -271,7 +261,7 @@ fn main() {
         })
         .unwrap();
 
-    let assistant_id: String = Ulid::new().to_string().into();
+    let assistant_id: String = Ulid::new().to_string();
 
     let maybe_panic = rt.block_on({
         shadow_clone!(webapp_base_url, assistant_id, int_client_cert);
@@ -331,7 +321,6 @@ fn main() {
                 },
                 tls_config,
                 redis_client,
-                webapp_client,
                 presence_client,
                 mongodb_client,
                 elastic_client,

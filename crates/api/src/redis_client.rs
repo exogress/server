@@ -6,6 +6,24 @@ pub struct RedisClient {
     connection_manager: redis::aio::ConnectionManager,
 }
 
+impl RedisClient {
+    pub async fn health(&self) -> bool {
+        let res = async move {
+            let mut redis_conn = self.redis.get_async_connection().await?;
+            let r = redis_conn.set("api_healthcheck", "1").await?;
+            Ok::<String, redis::RedisError>(r)
+        }
+        .await;
+
+        if let Err(e) = res {
+            error!("health check: redis error: {}", e);
+            false
+        } else {
+            true
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Provider {
     #[serde(rename = "auth0")]

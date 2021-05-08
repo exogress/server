@@ -318,7 +318,7 @@ pub enum CacheableInvocationProcessingStep {
 
 impl CacheableInvocationProcessingStep {
     pub fn is_not_empty(&self) -> bool {
-        if let &CacheableInvocationProcessingStep::Empty { .. } = self {
+        if let CacheableInvocationProcessingStep::Empty { .. } = *self {
             return false;
         }
 
@@ -348,7 +348,8 @@ pub struct HandlerProcessingStep {
 
     pub path: SmolStr,
 
-    pub cache: Option<CacheSaveStatus>,
+    #[serde(rename = "save-to-cache")]
+    pub save_to_cache: Option<CacheSavingStatus>,
 
     pub transformation: Option<TransformationStatus>,
 }
@@ -376,7 +377,7 @@ pub struct CacheSaveStep {
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "status")]
-pub enum CacheSaveStatus {
+pub enum CacheSavingStatus {
     #[serde(rename = "disabled")]
     Disabled,
 

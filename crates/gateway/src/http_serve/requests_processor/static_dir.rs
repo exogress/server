@@ -76,7 +76,7 @@ impl ResolvedStaticDir {
             };
         }
 
-        if req.method() != &Method::GET && req.method() != &Method::HEAD {
+        if req.method() != Method::GET && req.method() != Method::HEAD {
             return HandlerInvocationResult::ToNextHandler;
         }
 
@@ -99,7 +99,7 @@ impl ResolvedStaticDir {
                 attempt: 0,
                 attempted_at: Utc::now(),
                 instance: Some(InstanceLog {
-                    instance_id: instance_id.clone(),
+                    instance_id,
                     labels: labels.clone(),
                 }),
                 request: ProxyRequestToOriginInfo {

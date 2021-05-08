@@ -102,7 +102,7 @@ pub async fn server(
             }
         });
 
-    let metrics = warp::path!("metrics").map(|| crate::statistics::dump_prometheus());
+    let metrics = warp::path!("metrics").map(crate::statistics::dump_prometheus);
 
     info!("Spawning...");
     let (_, server) = warp::serve(

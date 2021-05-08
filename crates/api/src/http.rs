@@ -70,7 +70,7 @@ pub async fn run_http_server(
                         if let Some(token) = auth_header.strip_prefix("Bearer ") {
                             match service.find_account_by_bearer_token(token).await {
                                 Ok(Some(found_account)) => {
-                                    if &account_name == &found_account.name {
+                                    if account_name == found_account.name {
                                         account = Some(found_account)
                                     }
                                 }
@@ -118,48 +118,36 @@ pub async fn run_http_server(
         }
     });
 
-    // let health = warp::path!("int" / "healthcheck")
-    //     .and(warp::filters::method::get())
-    //     .and_then({
-    //         move || {
-    //
-    //             async move {
-    //                 let res = async move {
-    //                     let mut redis_conn = redis.get_async_connection().await?;
-    //                     let r = redis_conn.set("assistant_healthcheck", "1").await?;
-    //                     Ok::<String, redis::RedisError>(r)
-    //                 }
-    //                     .await;
-    //
-    //                 if let Err(e) = res {
-    //                     error!("health check: redis error: {}", e);
-    //                     return Ok::<_, warp::reject::Rejection>(
-    //                         warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-    //                     );
-    //                 }
-    //
-    //                 if !elastic_client.health().await {
-    //                     return Ok::<_, warp::reject::Rejection>(
-    //                         warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-    //                     );
-    //                 }
-    //
-    //                 if !db_client.health().await {
-    //                     return Ok::<_, warp::reject::Rejection>(
-    //                         warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-    //                     );
-    //                 }
-    //
-    //                 Ok::<_, warp::reject::Rejection>(warp::http::StatusCode::OK)
-    //             }
-    //         }
-    //     });
+    let health = warp::path!("int" / "healthcheck")
+        .and(warp::filters::method::get())
+        .and_then({
+            shadow_clone!(service);
 
-    let metrics = warp::path!("metrics").map(|| crate::statistics::dump_prometheus());
+            move || {
+                shadow_clone!(service);
+
+                async move {
+                    if !service.health().await {
+                        return Ok::<_, warp::reject::Rejection>(
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        );
+                    }
+
+                    Ok::<_, warp::reject::Rejection>(warp::http::StatusCode::OK)
+                }
+            }
+        });
+
+    let metrics = warp::path!("metrics").map(crate::statistics::dump_prometheus);
 
     info!("Spawning...");
 
-    let combined = warp::serve(request_info.or(metrics).recover(handle_rejection));
+    let combined = warp::serve(
+        request_info
+            .or(health)
+            .or(metrics)
+            .recover(handle_rejection),
+    );
 
     combined
         .bind_with_graceful_shutdown(

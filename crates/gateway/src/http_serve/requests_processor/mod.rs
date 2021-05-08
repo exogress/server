@@ -53,7 +53,7 @@ use exogress_server_common::{
     crypto,
     crypto::decrypt_reader,
     logging::{
-        CacheSaveStatus, CacheableInvocationProcessingStep, CatchProcessingStep,
+        CacheSavingStatus, CacheableInvocationProcessingStep, CatchProcessingStep,
         CatchProcessingVariantStep, ExceptionProcessingStep, HandlerProcessingStep,
         HandlerProcessingStepVariant, HttpBodyLog, LogMessage, ProcessingStep, RequestMetaInfo,
         ResponseMetaInfo, ScopeLog, StaticResponseProcessingStep, TransformationStatus,
@@ -281,16 +281,16 @@ impl RequestsProcessor {
                                         let req_headers = req.headers().clone();
 
                                         let cache = self.cache.clone();
-                                        let account_unique_id = self.account_unique_id.clone();
+                                        let account_unique_id = self.account_unique_id;
                                         let project_name = self.project_name.clone();
-                                        let project_unique_id = self.project_unique_id.clone();
+                                        let project_unique_id = self.project_unique_id;
                                         let mount_point_name = self.mount_point_name.clone();
                                         let max_pop_cache_size_bytes =
-                                            self.max_pop_cache_size_bytes.clone();
+                                            self.max_pop_cache_size_bytes;
                                         let xchacha20poly1305_secret_key =
                                             self.xchacha20poly1305_secret_key.clone();
                                         let handler_name = handler.handler_name.clone();
-                                        let handler_checksum = handler.handler_checksum.clone();
+                                        let handler_checksum = handler.handler_checksum;
                                         let requested_url = requested_url.clone();
                                         let log_message_container = log_message_container.clone();
                                         let invocation_log = invocation_log.clone();
@@ -393,7 +393,7 @@ impl RequestsProcessor {
                                 if let Some(rest) =
                                     supported_lang.as_str().strip_prefix(accepted.as_str())
                                 {
-                                    if rest.is_empty() || rest.starts_with("-") {
+                                    if rest.is_empty() || rest.starts_with('-') {
                                         return true;
                                     }
                                 }
@@ -445,91 +445,85 @@ impl RequestsProcessor {
                     if let CacheableInvocationProcessingStep::Invoked(step) =
                         &mut *invocation_log.lock()
                     {
-                        step.cache = Some(CacheSaveStatus::Disabled);
+                        step.save_to_cache = Some(CacheSavingStatus::Disabled);
                     }
                     *invocation_log.lock().transformation_mut() =
                         Some(TransformationStatus::CacheDisabled);
-                } else {
-                    if !self.is_transformations_limited
-                        && res.status().is_success()
-                        && is_eligible_for_transformation_not_considering_status_code(
-                            res,
-                            handler.resolved_variant.post_processing(),
-                        )
-                    {
-                        if !self.cache.is_enough_space() {
-                            crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
-                            warn!(
+                } else if !self.is_transformations_limited
+                    && res.status().is_success()
+                    && is_eligible_for_transformation_not_considering_status_code(
+                        res,
+                        handler.resolved_variant.post_processing(),
+                    )
+                {
+                    if !self.cache.is_enough_space() {
+                        crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
+                        warn!(
                                 "Not triggering transformation, because cache dir reached global limit in size"
                             );
-                        } else {
-                            if let Some(max_age) = cache_max_age_if_eligible(req, res) {
-                                match clone_response_through_tempfile(res).await {
-                                    Ok(on_response_finished) => {
-                                        let transformer_client = self.transformer_client.clone();
-                                        let account_secret_key =
-                                            self.xchacha20poly1305_secret_key.clone();
+                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res) {
+                        match clone_response_through_tempfile(res).await {
+                            Ok(on_response_finished) => {
+                                let transformer_client = self.transformer_client.clone();
+                                let account_secret_key = self.xchacha20poly1305_secret_key.clone();
 
-                                        let req_uri = req.uri().clone();
-                                        let req_method = req.method().clone();
-                                        let req_headers = req.headers().clone();
+                                let req_uri = req.uri().clone();
+                                let req_method = req.method().clone();
+                                let req_headers = req.headers().clone();
 
-                                        let cache = self.cache.clone();
-                                        let account_unique_id = self.account_unique_id.clone();
-                                        let project_name = self.project_name.clone();
-                                        let project_unique_id = self.project_unique_id.clone();
-                                        let mount_point_name = self.mount_point_name.clone();
-                                        let max_pop_cache_size_bytes =
-                                            self.max_pop_cache_size_bytes.clone();
-                                        let xchacha20poly1305_secret_key =
-                                            self.xchacha20poly1305_secret_key.clone();
-                                        let handler_name = handler.handler_name.clone();
-                                        let handler_checksum = handler.handler_checksum.clone();
-                                        let requested_url = requested_url.clone();
-                                        let log_message_container = log_message_container.clone();
-                                        let invocation_log = invocation_log.clone();
+                                let cache = self.cache.clone();
+                                let account_unique_id = self.account_unique_id;
+                                let project_name = self.project_name.clone();
+                                let project_unique_id = self.project_unique_id;
+                                let mount_point_name = self.mount_point_name.clone();
+                                let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
+                                let xchacha20poly1305_secret_key =
+                                    self.xchacha20poly1305_secret_key.clone();
+                                let handler_name = handler.handler_name.clone();
+                                let handler_checksum = handler.handler_checksum;
+                                let requested_url = requested_url.clone();
+                                let log_message_container = log_message_container.clone();
+                                let invocation_log = invocation_log.clone();
 
-                                        tokio::spawn(async move {
-                                            if let Some(cloned_resp) = on_response_finished.await {
-                                                trigger_transformation_if_required(
-                                                    max_age,
-                                                    &req_headers,
-                                                    req_method,
-                                                    &req_uri,
-                                                    cloned_resp,
-                                                    account_secret_key,
-                                                    transformer_client,
-                                                    cache,
-                                                    account_unique_id,
-                                                    project_name,
-                                                    project_unique_id,
-                                                    mount_point_name,
-                                                    max_pop_cache_size_bytes,
-                                                    xchacha20poly1305_secret_key,
-                                                    handler_name,
-                                                    handler_checksum,
-                                                    &requested_url,
-                                                    invocation_log,
-                                                    log_message_container.clone(),
-                                                )
-                                                .await;
-                                            }
-                                        });
+                                tokio::spawn(async move {
+                                    if let Some(cloned_resp) = on_response_finished.await {
+                                        trigger_transformation_if_required(
+                                            max_age,
+                                            &req_headers,
+                                            req_method,
+                                            &req_uri,
+                                            cloned_resp,
+                                            account_secret_key,
+                                            transformer_client,
+                                            cache,
+                                            account_unique_id,
+                                            project_name,
+                                            project_unique_id,
+                                            mount_point_name,
+                                            max_pop_cache_size_bytes,
+                                            xchacha20poly1305_secret_key,
+                                            handler_name,
+                                            handler_checksum,
+                                            &requested_url,
+                                            invocation_log,
+                                            log_message_container.clone(),
+                                        )
+                                        .await;
                                     }
-                                    Err(e) => {
-                                        error!("Failed to clone response through tempfile: {}", e);
-                                    }
-                                }
+                                });
+                            }
+                            Err(e) => {
+                                error!("Failed to clone response through tempfile: {}", e);
                             }
                         }
-                    } else {
-                        *invocation_log.lock().transformation_mut() =
-                            Some(if self.is_transformations_limited {
-                                TransformationStatus::Limited
-                            } else {
-                                TransformationStatus::NotEligible
-                            });
-                    };
+                    }
+                } else {
+                    *invocation_log.lock().transformation_mut() =
+                        Some(if self.is_transformations_limited {
+                            TransformationStatus::Limited
+                        } else {
+                            TransformationStatus::NotEligible
+                        });
                 };
 
                 if let Err(e) = self.compress_if_applicable(
@@ -558,48 +552,44 @@ impl RequestsProcessor {
                         if let CacheableInvocationProcessingStep::Invoked(step) =
                             &mut *invocation_log.lock()
                         {
-                            step.cache = Some(CacheSaveStatus::SaveError);
+                            step.save_to_cache = Some(CacheSavingStatus::SaveError);
                         }
-                    } else {
-                        if let Some(max_age) = cache_max_age_if_eligible(req, res) {
-                            let cache = self.cache.clone();
-                            let account_unique_id = self.account_unique_id.clone();
-                            let project_name = self.project_name.clone();
-                            let mount_point_name = self.mount_point_name.clone();
-                            let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes.clone();
-                            let xchacha20poly1305_secret_key =
-                                self.xchacha20poly1305_secret_key.clone();
-                            let handler_name = handler.handler_name.clone();
-                            let handler_checksum = handler.handler_checksum.clone();
+                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res) {
+                        let cache = self.cache.clone();
+                        let account_unique_id = self.account_unique_id;
+                        let project_name = self.project_name.clone();
+                        let mount_point_name = self.mount_point_name.clone();
+                        let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
+                        let xchacha20poly1305_secret_key =
+                            self.xchacha20poly1305_secret_key.clone();
+                        let handler_name = handler.handler_name.clone();
+                        let handler_checksum = handler.handler_checksum;
 
-                            let req_headers = req.headers();
-                            let req_method = req.method().clone();
-                            let req_uri = req.uri();
+                        let req_headers = req.headers();
+                        let req_method = req.method().clone();
+                        let req_uri = req.uri();
 
-                            save_to_cache(
-                                max_age,
-                                req_headers,
-                                req_method,
-                                req_uri,
-                                res,
-                                cache,
-                                account_unique_id,
-                                project_name,
-                                mount_point_name,
-                                max_pop_cache_size_bytes,
-                                xchacha20poly1305_secret_key,
-                                handler_name,
-                                handler_checksum,
-                                Some(invocation_log.clone()),
-                                &log_message_container,
-                            );
-                        } else {
-                            if let CacheableInvocationProcessingStep::Invoked(step) =
-                                &mut *invocation_log.lock()
-                            {
-                                step.cache = Some(CacheSaveStatus::NotEligible);
-                            }
-                        }
+                        save_to_cache(
+                            max_age,
+                            req_headers,
+                            req_method,
+                            req_uri,
+                            res,
+                            cache,
+                            account_unique_id,
+                            project_name,
+                            mount_point_name,
+                            max_pop_cache_size_bytes,
+                            xchacha20poly1305_secret_key,
+                            handler_name,
+                            handler_checksum,
+                            Some(invocation_log.clone()),
+                            &log_message_container,
+                        );
+                    } else if let CacheableInvocationProcessingStep::Invoked(step) =
+                        &mut *invocation_log.lock()
+                    {
+                        step.save_to_cache = Some(CacheSavingStatus::NotEligible);
                     }
                 }
             }
@@ -642,9 +632,9 @@ impl RequestsProcessor {
             let log_message = LogMessage {
                 request_id,
                 gw_location: self.gw_location.clone(),
-                project_unique_id: self.project_unique_id.clone(),
+                project_unique_id: self.project_unique_id,
                 remote_addr: remote_addr.ip(),
-                account_unique_id: self.account_unique_id.clone(),
+                account_unique_id: self.account_unique_id,
                 project: self.project_name.clone(),
                 mount_point: self.mount_point_name.clone(),
                 request: RequestMetaInfo {
@@ -747,7 +737,7 @@ fn save_to_cache(
         warn!("Not saving content to cache, because cache reached the limit in size");
         if let Some(invocation_log) = &invocation_log {
             if let CacheableInvocationProcessingStep::Invoked(step) = &mut *invocation_log.lock() {
-                step.cache = Some(CacheSaveStatus::SaveError);
+                step.save_to_cache = Some(CacheSavingStatus::SaveError);
             }
         }
     }
@@ -756,10 +746,10 @@ fn save_to_cache(
 
     let path_and_query = req_uri.path_and_query().unwrap().to_string();
 
-    let method = req_method.clone();
+    let method = req_method;
     let req_headers = req_headers.clone();
     let mut res_headers = res.headers().clone();
-    let status = res.status().clone();
+    let status = res.status();
 
     let (mut resp_tx, resp_rx) = mpsc::channel(1);
 
@@ -769,7 +759,7 @@ fn save_to_cache(
 
     tokio::spawn(async move {
         let r = async move {
-            let tempdir = tokio::task::spawn_blocking(|| tempfile::tempdir()).await??;
+            let tempdir = tokio::task::spawn_blocking(tempfile::tempdir).await??;
 
             let tempfile_path = tempdir.path().to_owned().join("req");
             let mut original_file_size = 0;
@@ -842,7 +832,7 @@ fn save_to_cache(
                             if let CacheableInvocationProcessingStep::Invoked(step) =
                                 &mut *invocation_log.lock()
                             {
-                                step.cache = Some(CacheSaveStatus::SaveError);
+                                step.save_to_cache = Some(CacheSavingStatus::SaveError);
                             }
                         }
                     }
@@ -851,7 +841,7 @@ fn save_to_cache(
                             if let CacheableInvocationProcessingStep::Invoked(step) =
                                 &mut *invocation_log.lock()
                             {
-                                step.cache = Some(CacheSaveStatus::Saved {
+                                step.save_to_cache = Some(CacheSavingStatus::Saved {
                                     max_age: max_age.to_std().unwrap(),
                                 });
                             }
@@ -862,7 +852,7 @@ fn save_to_cache(
                             if let CacheableInvocationProcessingStep::Invoked(step) =
                                 &mut *invocation_log.lock()
                             {
-                                step.cache = Some(CacheSaveStatus::Skipped);
+                                step.save_to_cache = Some(CacheSavingStatus::Skipped);
                             }
                         }
                     }
@@ -1025,7 +1015,7 @@ async fn trigger_transformation_if_required(
                                 // FIXME: this is ugly, but we need to consume whole body stream in order
                                 // to successfully complete cache saving
                                 let mut body_to_consume = resp.into_body();
-                                while let Some(_) = body_to_consume.next().await {}
+                                while body_to_consume.next().await.is_some() {}
                             }
                         } else {
                             // no appropriate conversion is available to the provided Accept header.
@@ -1054,7 +1044,7 @@ async fn trigger_transformation_if_required(
 
                             // FIXME: this is ugly, but we need to consume whole body stream in order to successfuly complete cache saving
                             let mut body_to_consume = resp.into_body();
-                            while let Some(_) = body_to_consume.next().await {}
+                            while body_to_consume.next().await.is_some() {}
                         };
 
                         *invocation_log.lock().transformation_mut() =
@@ -1115,13 +1105,8 @@ fn is_eligible_for_transformation_not_considering_status_code(
 
             match content_type_result {
                 Ok(Some(mime_type)) => {
-                    if mime_type.0 == IMAGE_JPEG && post_processing.image.is_jpeg {
-                        true
-                    } else if mime_type.0 == IMAGE_PNG && post_processing.image.is_png {
-                        true
-                    } else {
-                        false
-                    }
+                    (mime_type.0 == IMAGE_JPEG && post_processing.image.is_jpeg)
+                        || (mime_type.0 == IMAGE_PNG && post_processing.image.is_png)
                 }
                 Ok(None) => {
                     error!("no content-type while checking transformation eligibility");
@@ -1178,7 +1163,7 @@ impl Rebase {
             }
         }
 
-        return Some(rebased_url);
+        Some(rebased_url)
     }
 }
 
@@ -1219,7 +1204,7 @@ pub fn cache_max_age_if_eligible(
     req: &Request<Body>,
     res: &Response<Body>,
 ) -> Option<chrono::Duration> {
-    if req.method() != &Method::GET && req.method() != &Method::HEAD {
+    if req.method() != Method::GET && req.method() != Method::HEAD {
         return None;
     };
 
@@ -1357,9 +1342,9 @@ impl ResolvedHandlerVariant {
                     let mut locked = cacheable_invocation_log.lock();
                     let current = locked.transformation_mut().clone();
                     *locked = HandlerProcessingStep {
-                        variant: HandlerProcessingStepVariant::Proxy(log.into()),
+                        variant: HandlerProcessingStepVariant::Proxy(log),
                         path: modified_url.path_and_query().unwrap().as_str().into(),
-                        cache: None,
+                        save_to_cache: None,
                         transformation: current,
                     }
                     .into();
@@ -1388,9 +1373,9 @@ impl ResolvedHandlerVariant {
                     let mut locked = cacheable_invocation_log.lock();
                     let current = locked.transformation_mut().clone();
                     *locked = HandlerProcessingStep {
-                        variant: HandlerProcessingStepVariant::StaticDir(log.into()),
+                        variant: HandlerProcessingStepVariant::StaticDir(log),
                         path: modified_url.path_and_query().unwrap().as_str().into(),
-                        cache: None,
+                        save_to_cache: None,
                         transformation: current,
                     }
                     .into();
@@ -1409,9 +1394,9 @@ impl ResolvedHandlerVariant {
                     let mut locked = cacheable_invocation_log.lock();
                     let current = locked.transformation_mut().clone();
                     *locked = HandlerProcessingStep {
-                        variant: HandlerProcessingStepVariant::Auth(log.into()),
+                        variant: HandlerProcessingStepVariant::Auth(log),
                         path: modified_url.path_and_query().unwrap().as_str().into(),
-                        cache: None,
+                        save_to_cache: None,
                         transformation: current,
                     }
                     .into();
@@ -1437,9 +1422,9 @@ impl ResolvedHandlerVariant {
                     let mut locked = cacheable_invocation_log.lock();
                     let current = locked.transformation_mut().clone();
                     *locked = HandlerProcessingStep {
-                        variant: HandlerProcessingStepVariant::S3Bucket(log.into()),
+                        variant: HandlerProcessingStepVariant::S3Bucket(log),
                         path: modified_url.path_and_query().unwrap().as_str().into(),
-                        cache: None,
+                        save_to_cache: None,
                         transformation: current,
                     }
                     .into();
@@ -1466,9 +1451,9 @@ impl ResolvedHandlerVariant {
                     let mut locked = cacheable_invocation_log.lock();
                     let current = locked.transformation_mut().clone();
                     *locked = HandlerProcessingStep {
-                        variant: HandlerProcessingStepVariant::GcsBucket(log.into()),
+                        variant: HandlerProcessingStepVariant::GcsBucket(log),
                         path: modified_url.path_and_query().unwrap().as_str().into(),
-                        cache: None,
+                        save_to_cache: None,
                         transformation: current,
                     }
                     .into();
@@ -1496,7 +1481,7 @@ enum ResolvedRuleAction {
         exception: Exception,
         data: HashMap<SmolStr, SmolStr>,
     },
-    Respond(ResolvedStaticResponseAction),
+    Respond(Box<ResolvedStaticResponseAction>),
 }
 
 impl ResolvedRuleAction {
@@ -1505,9 +1490,7 @@ impl ResolvedRuleAction {
             ResolvedRuleAction::Invoke { rescues, .. } => rescues.clone(),
             ResolvedRuleAction::NextHandler => Default::default(),
             ResolvedRuleAction::Throw { .. } => Default::default(),
-            ResolvedRuleAction::Respond(ResolvedStaticResponseAction {
-                rescues: rescue, ..
-            }) => rescue.clone(),
+            ResolvedRuleAction::Respond(action) => action.rescues.clone(),
         }
     }
 }
@@ -1547,16 +1530,16 @@ impl ResolvedStaticResponseAction {
                     data,
                 };
 
-                return handler.handle_rescuable(
+                handler.handle_rescuable(
                     req,
                     res,
                     requested_url,
-                    rescuable.clone(),
+                    rescuable,
                     true,
                     &self.rescues,
                     &language,
                     log_message_container,
-                );
+                )
             }
             Ok(static_response) => {
                 let mut data = if let Some(d) = additional_data {
@@ -1600,7 +1583,7 @@ impl ResolvedStaticResponseAction {
                                 req,
                                 res,
                                 requested_url,
-                                rescuable.clone(),
+                                rescuable,
                                 false,
                                 &self.rescues,
                                 &language,
@@ -1657,7 +1640,7 @@ pub enum ResolvedMatchQueryValue {
     MayBeAnyMultipleSegments,
     Exact(SmolStr),
     Regex(Box<Regex>),
-    Choice(AhoCorasick),
+    Choice(Box<AhoCorasick>),
 }
 
 impl From<MatchQueryValue> for ResolvedMatchQueryValue {
@@ -1679,7 +1662,7 @@ impl From<MatchQueryValue> for ResolvedMatchQueryValue {
                 let aho_corasick = AhoCorasickBuilder::new()
                     .match_kind(MatchKind::LeftmostLongest)
                     .build(variants.iter().map(|s| s.as_str()));
-                ResolvedMatchQueryValue::Choice(aho_corasick)
+                ResolvedMatchQueryValue::Choice(Box::new(aho_corasick))
             }
         }
     }
@@ -1737,7 +1720,7 @@ impl From<MatchPathSegment> for ResolvedMatchPathSegment {
                 let aho_corasick = AhoCorasickBuilder::new()
                     .match_kind(MatchKind::LeftmostLongest)
                     .build(variants);
-                ResolvedMatchPathSegment::Choice(aho_corasick)
+                ResolvedMatchPathSegment::Choice(Box::new(aho_corasick))
             }
         }
     }
@@ -1748,7 +1731,7 @@ pub enum ResolvedMatchPathSegment {
     Any,
     Exact(UrlPathSegment),
     Regex(Box<Regex>),
-    Choice(AhoCorasick),
+    Choice(Box<AhoCorasick>),
 }
 
 #[derive(Debug, Clone)]
@@ -1936,7 +1919,7 @@ impl ResolvedFilter {
         url: &http::Uri,
         method: &http::Method,
     ) -> Option<(HashMap<SmolStr, Matched>, usize)> {
-        let is_trailing_slash = url.path().ends_with("/");
+        let is_trailing_slash = url.path().ends_with('/');
 
         if !self.method.is_match(method) {
             return None;
@@ -1954,9 +1937,9 @@ impl ResolvedFilter {
         let mut segments = vec![];
         {
             let mut path_segments = url.path_segments().into_iter();
-            let mut base_segments = self.base_path_replacement.iter();
+            let base_segments = self.base_path_replacement.iter();
 
-            while let Some(expected_base_segment) = base_segments.next() {
+            for expected_base_segment in base_segments {
                 if let Some(segment) = path_segments.next() {
                     if segment != expected_base_segment.as_str() {
                         return None;
@@ -1966,7 +1949,7 @@ impl ResolvedFilter {
                 }
             }
 
-            while let Some(segment) = path_segments.next() {
+            for segment in path_segments {
                 if !segment.is_empty() {
                     segments.push(SmolStr::from(segment.to_string()));
                 }
@@ -1978,12 +1961,9 @@ impl ResolvedFilter {
 
             match &self.path {
                 ResolvedMatchingPath::Root
-                    if segments.len() == 0 || (segments.len() == 1 && segments[0].is_empty()) => {}
+                    if segments.is_empty() || (segments.len() == 1 && segments[0].is_empty()) => {}
                 ResolvedMatchingPath::Wildcard => {
-                    matches.insert(
-                        "0".to_string().into(),
-                        Matched::Segments(segments.iter().cloned().collect()),
-                    );
+                    matches.insert("0".to_string().into(), Matched::Segments(segments.to_vec()));
                 }
                 ResolvedMatchingPath::Strict(match_segments) => {
                     if match_segments.len() != segments.len() {
@@ -2036,7 +2016,7 @@ impl ResolvedFilter {
                     if !wildcard_part.is_empty() {
                         matches.insert(
                             left_ends.to_string().into(),
-                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                            Matched::Segments(wildcard_part.to_vec()),
                         );
                     }
                 }
@@ -2061,7 +2041,7 @@ impl ResolvedFilter {
                     if !wildcard_part.is_empty() {
                         matches.insert(
                             num.to_string().into(),
-                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                            Matched::Segments(wildcard_part.to_vec()),
                         );
                     }
                 }
@@ -2088,7 +2068,7 @@ impl ResolvedFilter {
                     if !wildcard_part.is_empty() {
                         matches.insert(
                             0.to_string().into(),
-                            Matched::Segments(wildcard_part.iter().cloned().collect()),
+                            Matched::Segments(wildcard_part.to_vec()),
                         );
                     }
                 }
@@ -2101,10 +2081,10 @@ impl ResolvedFilter {
         let path_match = (matcher)()?;
 
         match self.trailing_slash {
-            TrailingSlashFilterRule::Require if is_trailing_slash == false => {
+            TrailingSlashFilterRule::Require if !is_trailing_slash => {
                 return None;
             }
-            TrailingSlashFilterRule::Deny if is_trailing_slash == true => {
+            TrailingSlashFilterRule::Deny if is_trailing_slash => {
                 return None;
             }
             _ => {}
@@ -2228,7 +2208,6 @@ pub struct ResolvedHandler {
     priority: u16,
 
     rescues: Vec<ResolvedRescueItem>,
-    scope: Scope,
 
     resolved_rules: Vec<ResolvedRule>,
 
@@ -2271,7 +2250,7 @@ fn container_scope_to_log(container_scope: &ContainerScope) -> ScopeLog {
             Scope::ProjectConfig => ScopeLog::ProjectConfig,
             Scope::ClientConfig { config, revision } => ScopeLog::ClientConfig {
                 config_name: config.clone(),
-                revision: revision.clone(),
+                revision: *revision,
             },
             Scope::ProjectMount { mount_point } => ScopeLog::ProjectMount {
                 mount_point: mount_point.clone(),
@@ -2282,7 +2261,7 @@ fn container_scope_to_log(container_scope: &ContainerScope) -> ScopeLog {
                 mount_point,
             } => ScopeLog::ClientMount {
                 config_name: config.clone(),
-                revision: revision.clone(),
+                revision: *revision,
                 mount_point: mount_point.clone(),
             },
             Scope::ProjectHandler {
@@ -2299,7 +2278,7 @@ fn container_scope_to_log(container_scope: &ContainerScope) -> ScopeLog {
                 handler,
             } => ScopeLog::ClientHandler {
                 config_name: config.clone(),
-                revision: revision.clone(),
+                revision: *revision,
                 mount_point: mount_point.clone(),
                 handler_name: handler.clone(),
             },
@@ -2320,7 +2299,7 @@ fn container_scope_to_log(container_scope: &ContainerScope) -> ScopeLog {
                 rule_num,
             } => ScopeLog::ClientRule {
                 config_name: config.clone(),
-                revision: revision.clone(),
+                revision: *revision,
                 mount_point: mount_point.clone(),
                 handler_name: handler.clone(),
                 rule_num: *rule_num,
@@ -2357,13 +2336,12 @@ impl ResolvedHandler {
             }
             StatusCodeRange::List(codes) => codes
                 .iter()
-                .find(|code| code.as_u16() == status_code.as_u16())
-                .is_some(),
+                .any(|code| code.as_u16() == status_code.as_u16()),
         }
     }
 
     fn find_exception_handler(
-        rescues: &Vec<ResolvedRescueItem>,
+        rescues: &[ResolvedRescueItem],
         rescuable: &Rescuable,
     ) -> Option<ResolvedRescueItem> {
         error!("find_exception_handler {:?} => {:?}", rescues, rescuable);
@@ -2399,7 +2377,7 @@ impl ResolvedHandler {
         requested_url: &http::uri::Uri,
         mut rescuable: Rescuable,
         is_in_exception: bool,
-        rescues: &Vec<ResolvedRescueItem>,
+        rescues: &[ResolvedRescueItem],
         language: &Option<LanguageTagBuf>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
@@ -2440,7 +2418,7 @@ impl ResolvedHandler {
                     ) => CatchProcessingStep {
                         catch_matcher: exception_matcher.to_string(),
                         variant: CatchProcessingVariantStep::Exception {
-                            exception: exception.to_string().into(),
+                            exception: exception.to_string(),
                         },
                         scope: container_scope_to_log(&rescue_item.container_scope),
                     },
@@ -2450,7 +2428,7 @@ impl ResolvedHandler {
                     ) => CatchProcessingStep {
                         catch_matcher: status_code_range.to_string(),
                         variant: CatchProcessingVariantStep::StatusCode {
-                            status_code: status_code.clone(),
+                            status_code: *status_code,
                         },
                         scope: container_scope_to_log(&rescue_item.container_scope),
                     },
@@ -2523,7 +2501,7 @@ impl ResolvedHandler {
                         // FIXME: merged data should be stored to the container, so that on exception new exception queue is processed
                         break RescuableHandleResult::StaticResponse(
                             ResolvedStaticResponseAction {
-                                static_response: static_response.clone(),
+                                static_response,
                                 rescues,
                             },
                         );
@@ -2605,8 +2583,8 @@ impl ResolvedHandler {
         language: &Option<LanguageTagBuf>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
         filter_matches: HashMap<SmolStr, Matched>,
-        rescues: &Vec<ResolvedRescueItem>,
-        on_response: &Vec<OnResponse>,
+        rescues: &[ResolvedRescueItem],
+        on_response: &[OnResponse],
     ) -> ResolvedHandlerProcessingResult {
         match invocation_result {
             HandlerInvocationResult::Responded => {
@@ -2628,7 +2606,7 @@ impl ResolvedHandler {
                                     req,
                                     res,
                                     requested_url,
-                                    rescuable.clone(),
+                                    rescuable,
                                     false,
                                     rescues,
                                     &language,
@@ -2645,7 +2623,7 @@ impl ResolvedHandler {
                     req,
                     res,
                     requested_url,
-                    rescuable.clone(),
+                    rescuable,
                     false,
                     rescues,
                     &language,
@@ -2662,7 +2640,7 @@ impl ResolvedHandler {
                     req,
                     res,
                     requested_url,
-                    rescuable.clone(),
+                    rescuable,
                     false,
                     rescues,
                     &language,
@@ -2699,7 +2677,7 @@ impl ResolvedHandler {
                 log_message_container,
                 Default::default(),
                 &self.rescues,
-                &Default::default(),
+                &[],
             );
         }
 
@@ -2735,7 +2713,7 @@ impl ResolvedHandler {
                             req,
                             res,
                             requested_url,
-                            rescuable.clone(),
+                            rescuable,
                             false,
                             &action.rescues(),
                             &language,
@@ -2763,7 +2741,7 @@ impl ResolvedHandler {
 
         match request_modification.trailing_slash {
             TrailingSlashModification::Keep => {
-                modified_url.ensure_trailing_slash(requested_url.path().ends_with("/"));
+                modified_url.ensure_trailing_slash(requested_url.path().ends_with('/'));
             }
             TrailingSlashModification::Set => modified_url.ensure_trailing_slash(true),
             TrailingSlashModification::Unset => modified_url.ensure_trailing_slash(false),
@@ -2784,7 +2762,7 @@ impl ResolvedHandler {
                     req,
                     res,
                     requested_url,
-                    rescuable.clone(),
+                    rescuable,
                     false,
                     &action.rescues(),
                     &language,
@@ -2812,7 +2790,7 @@ impl ResolvedHandler {
                     req,
                     res,
                     requested_url,
-                    rescuable.clone(),
+                    rescuable,
                     false,
                     &action.rescues(),
                     &language,
@@ -2874,7 +2852,7 @@ impl ResolvedHandler {
                     req,
                     res,
                     requested_url,
-                    rescuable.clone(),
+                    rescuable,
                     false,
                     &self.rescues,
                     &language,
@@ -3128,16 +3106,12 @@ impl RequestsProcessor {
         crate::statistics::ACTIVE_REQUESTS_PROCESSORS.inc();
 
         let max_pop_cache_size_bytes = resp.max_pop_cache_size_bytes;
-        let traffic_counters = TrafficCounters::new(
-            resp.account_unique_id.clone(),
-            resp.project_unique_id.clone(),
-        );
+        let traffic_counters = TrafficCounters::new(resp.account_unique_id, resp.project_unique_id);
 
         let refinable = Arc::new(resp.refinable());
 
         let grouped = resp.configs.iter().group_by(|item| &item.config_name);
 
-        let project_rescue = resp.project_config.refinable.rescue;
         let jwt_ecdsa = JwtEcdsa {
             private_key: resp.jwt_ecdsa.private_key.into(),
             public_key: resp.jwt_ecdsa.public_key.into(),
@@ -3189,7 +3163,7 @@ impl RequestsProcessor {
                             mp_name,
                             (
                                 Some(config_name.clone()),
-                                Some(config_revision.clone()),
+                                Some(*config_revision),
                                 Some(upstreams.clone()),
                                 Some(instances.clone()),
                                 Some(active_profile.clone()),
@@ -3207,8 +3181,7 @@ impl RequestsProcessor {
             .collect::<Vec<_>>();
 
         let mount_point_name = grouped_mount_points
-            .iter()
-            .next()
+            .get(0)
             .ok_or_else(|| anyhow!("no mount points returned"))?
             .0
             .clone();
@@ -3225,9 +3198,9 @@ impl RequestsProcessor {
             maybe_identity: None,
         });
         let int_metered_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
-            public_counters_tx: public_counters_tx.clone(),
-            resolver: resolver.clone(),
-            counters: traffic_counters.clone(),
+            public_counters_tx,
+            resolver,
+            counters: traffic_counters,
             sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
             recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
             maybe_identity: maybe_identity.clone(),
@@ -3256,7 +3229,7 @@ impl RequestsProcessor {
                 active_profile
             );
 
-            let client_config_info = config_name.clone().zip(config_revision.clone());
+            let client_config_info = config_name.clone().zip(config_revision);
 
             let mut r = mp.handlers
                 .into_iter()
@@ -3278,7 +3251,7 @@ impl RequestsProcessor {
                             .unwrap_or_default();
 
                         let handler_scope = Scope::handler(
-                            config_name.clone().zip(config_revision.clone()),
+                            config_name.clone().zip(config_revision),
                             &mount_point_name,
                             &handler_name,
                         );
@@ -3351,7 +3324,7 @@ impl RequestsProcessor {
                                             .expect("try to access instances on project-level config")
                                             .iter()
                                             .map(|(instance_id, instance_info)| {
-                                                (instance_id.clone(), instance_info.labels.clone())
+                                                (*instance_id, instance_info.labels.clone())
                                             })
                                             .collect(),
                                         balancer: {
@@ -3363,7 +3336,7 @@ impl RequestsProcessor {
                                                 .keys();
 
                                             for instance_id in instance_ids {
-                                                balancer.add(instance_id.clone(), 1);
+                                                balancer.add(*instance_id, 1);
                                             }
 
                                             Mutex::new(balancer)
@@ -3371,7 +3344,7 @@ impl RequestsProcessor {
                                         client_tunnels: client_tunnels.clone(),
                                         config_id: ConfigId {
                                             account_name: account_name.clone(),
-                                            account_unique_id: account_unique_id.clone(),
+                                            account_unique_id,
                                             project_name: project_name.clone(),
                                             config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
                                         },
@@ -3426,7 +3399,7 @@ impl RequestsProcessor {
                                                 .iter();
                                             for (instance_id, instance_info) in instances {
                                                 if instance_info.upstreams.get(&proxy.upstream) == Some(&true) {
-                                                    balancer.add(instance_id.clone(), 1);
+                                                    balancer.add(*instance_id, 1);
                                                 }
                                             }
 
@@ -3435,7 +3408,7 @@ impl RequestsProcessor {
                                         client_tunnels: client_tunnels.clone(),
                                         config_id: ConfigId {
                                             account_name: account_name.clone(),
-                                            account_unique_id: account_unique_id.clone(),
+                                            account_unique_id,
                                             project_name: project_name.clone(),
                                             config_name: config_name.as_ref().expect("[BUG] try to access config_name on project-level config").clone(),
                                         },
@@ -3569,7 +3542,6 @@ impl RequestsProcessor {
                                 &refinable,
                                 &handler_scope,
                             )?,
-                            scope: handler_scope.clone(),
                             resolved_rules: handler
                                 .rules
                                 .into_iter()
@@ -3583,7 +3555,7 @@ impl RequestsProcessor {
                                 })
                                 .map(|(rule_num, rule)| {
                                     let rule_scope = Scope::rule(
-                                        config_name.clone().zip(config_revision.clone()),
+                                        config_name.clone().zip(config_revision),
                                         &mount_point_name,
                                         &handler_name,
                                         rule_num,
@@ -3620,14 +3592,12 @@ impl RequestsProcessor {
                                         action: match rule.action {
                                             Action::Invoke {  .. } => ResolvedRuleAction::Invoke {
                                                 rescues: {
-                                                    let rescue = resolve_rescue_items(
+                                                    resolve_rescue_items(
                                                         &client_config_info,
                                                         &params,
                                                         &refinable,
                                                         &rule_scope,
-                                                    )?;
-
-                                                    rescue
+                                                    )?
                                                 },
                                                 scope: handler_scope.clone(),
                                             },
@@ -3638,7 +3608,7 @@ impl RequestsProcessor {
                                             },
                                             Action::Respond {
                                                 static_response, status_code, data, ..
-                                            } => ResolvedRuleAction::Respond(ResolvedStaticResponseAction {
+                                            } => ResolvedRuleAction::Respond(Box::new(ResolvedStaticResponseAction {
                                                 static_response: resolve_static_response(
                                                     static_response,
                                                     &status_code,
@@ -3653,13 +3623,13 @@ impl RequestsProcessor {
                                                     &refinable,
                                                     &rule_scope,
                                                 )?,
-                                            }),
+                                            })),
                                         },
                                     })
                                 })
                                 .collect::<Option<_>>()?,
                             account_unique_id,
-                            project_unique_id: project_unique_id.clone(),
+                            project_unique_id,
                             rules_counter: rules_counter.clone(),
                             languages: None, //handler.languages,
                         })
@@ -3681,7 +3651,7 @@ impl RequestsProcessor {
             } else {
                 vec![]
             },
-            project_unique_id: project_unique_id.clone(),
+            project_unique_id,
             generated_at: resp.generated_at,
             google_oauth2_client,
             github_oauth2_client,
@@ -3692,7 +3662,7 @@ impl RequestsProcessor {
             account_unique_id,
             cache,
             project_name,
-            fqdn: mount_point_fqdn.clone(),
+            fqdn: mount_point_fqdn,
             mount_point_name,
             xchacha20poly1305_secret_key,
             max_pop_cache_size_bytes,
@@ -3702,7 +3672,7 @@ impl RequestsProcessor {
                 transformer_base_url,
                 gcs_credentials_file,
                 int_metered_client,
-                maybe_identity.clone(),
+                maybe_identity,
             )?,
             log_messages_tx,
             dbip,
@@ -3858,13 +3828,13 @@ impl ResolvedStaticResponse {
                 Err(_e) => {
                     return Err((
                         exceptions::STATIC_RESPONSE_REDIRECT_ERROR.clone(),
-                        merged_data.clone(),
+                        merged_data,
                     ));
                 }
             }
         }
 
-        *res.status_mut() = self.status_code.clone();
+        *res.status_mut() = self.status_code;
 
         if self.body.is_empty() {
             // no body defined, just respond with the status code
@@ -3879,13 +3849,13 @@ impl ResolvedStaticResponse {
             (Err(_), _) => {
                 return Err((
                     exceptions::STATIC_RESPONSE_BAD_ACCEPT_HEADER.clone(),
-                    merged_data.clone(),
+                    merged_data,
                 ));
             }
             (Ok(None), _) => {
                 return Err((
                     exceptions::STATIC_RESPONSE_NO_ACCEPT_HEADER.clone(),
-                    merged_data.clone(),
+                    merged_data,
                 ));
             }
         };
@@ -3893,7 +3863,7 @@ impl ResolvedStaticResponse {
         match best_content_type {
             Some((resp_content_type, resp)) => {
                 res.headers_mut()
-                    .typed_insert::<ContentType>(&ContentType(resp_content_type.clone()));
+                    .typed_insert::<ContentType>(&ContentType(resp_content_type));
                 let body = match &resp.engine {
                     None => resp.content.to_string(),
 
@@ -3901,7 +3871,7 @@ impl ResolvedStaticResponse {
                         let handlebars = Handlebars::new();
 
                         let rendering_data = json!({
-                            "data": merged_data.clone(),
+                            "data": merged_data,
                             "facts": facts,
                             "url": requested_url.to_string(),
                             "matches": matches,

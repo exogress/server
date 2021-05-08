@@ -5,6 +5,7 @@ use exogress_common::{
     access_tokens::{validate_jwt_token, Claims},
     entities::{AccessKeyId, AccountName, AccountUniqueId, ProjectName, Ulid},
 };
+use futures::future::join3;
 use serde_json::Value;
 use typed_builder::TypedBuilder;
 
@@ -13,6 +14,19 @@ pub struct Service {
     redis: crate::redis_client::RedisClient,
     elasticsearch: crate::elasticsearch::ElasticsearchClient,
     mongodb: crate::mongodb::MongoDbClient,
+}
+
+impl Service {
+    pub(crate) async fn health(&self) -> bool {
+        let (elastic, mongo, redis) = join3(
+            self.elasticsearch.health(),
+            self.mongodb.health(),
+            self.redis.health(),
+        )
+        .await;
+
+        elastic && mongo && redis
+    }
 }
 
 impl Service {

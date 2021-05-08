@@ -6,7 +6,7 @@ pub async fn spawn(
     tls_cert_path: String,
     tls_key_path: String,
 ) -> Result<(), anyhow::Error> {
-    warp::serve(warp::path!("metrics").map(|| crate::statistics::dump_prometheus()))
+    warp::serve(warp::path!("metrics").map(crate::statistics::dump_prometheus))
         .tls()
         .cert_path(tls_cert_path)
         .key_path(tls_key_path)

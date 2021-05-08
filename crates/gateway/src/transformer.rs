@@ -78,7 +78,7 @@ impl TransformerClient {
             mount_point_name: mount_point_name.clone(),
             project_name: project_name.clone(),
             handler_name: handler_name.clone(),
-            project_unique_id: project_unique_id.clone(),
+            project_unique_id: *project_unique_id,
         };
 
         let json = serde_json::to_string(&body).unwrap();
@@ -169,14 +169,13 @@ impl TransformerClient {
                 }
             })
             .filter(|(processed, _)| processed.compression_ratio > 1.0)
-            .filter(|(_succeeded, content_type)| {
+            .find(|(_succeeded, content_type)| {
                 // we do strict match on specific transformed types
                 accept
                     .0
                     .iter()
                     .any(|accept| accept.item.essence_str() == content_type.as_str())
             })
-            .next()
             .map(|(s, c)| (s.clone(), c.clone()))
     }
 

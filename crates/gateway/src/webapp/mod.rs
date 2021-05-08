@@ -281,7 +281,7 @@ impl ConfigsResponse {
                 .add(
                     Scope::ClientConfig {
                         config: config_data.config_name.clone(),
-                        revision: config_data.config.revision.clone(),
+                        revision: config_data.config.revision,
                     },
                     &config_data.config.refinable,
                 )
@@ -291,7 +291,7 @@ impl ConfigsResponse {
                     .add(
                         Scope::ClientMount {
                             config: config_data.config_name.clone(),
-                            revision: config_data.config.revision.clone(),
+                            revision: config_data.config.revision,
                             mount_point: mount_point_name.clone(),
                         },
                         &mount.refinable,
@@ -302,7 +302,7 @@ impl ConfigsResponse {
                         .add(
                             Scope::ClientHandler {
                                 config: config_data.config_name.clone(),
-                                revision: config_data.config.revision.clone(),
+                                revision: config_data.config.revision,
                                 mount_point: mount_point_name.clone(),
                                 handler: handler_name.clone(),
                             },
@@ -315,7 +315,7 @@ impl ConfigsResponse {
                                 .add(
                                     Scope::ClientRule {
                                         config: config_data.config_name.clone(),
-                                        revision: config_data.config.revision.clone(),
+                                        revision: config_data.config.revision,
                                         mount_point: mount_point_name.clone(),
                                         handler: handler_name.clone(),
                                         rule_num,
@@ -473,7 +473,7 @@ impl Client {
         // take lock and deal with in_flight queries
         let in_flight_request = self
             .retrieve_configs
-            .entry(host.clone().into())
+            .entry(host.clone())
             .or_insert_with({
                 shadow_clone!(matchable_url, config_error, gw_location);
 
@@ -541,7 +541,7 @@ impl Client {
                                                 let fqdn =
                                                     configs_response.fqdn.clone();
                                                 let generated_at =
-                                                    configs_response.generated_at.clone();
+                                                    configs_response.generated_at;
 
                                                 let requests_processor =
                                                     match RequestsProcessor::new(
@@ -639,9 +639,7 @@ impl Client {
             return Err(Error::ConfigError);
         }
 
-        if let dashmap::mapref::entry::Entry::Occupied(entry) =
-            self.retrieve_configs.entry(host.into())
-        {
+        if let dashmap::mapref::entry::Entry::Occupied(entry) = self.retrieve_configs.entry(host) {
             if Arc::ptr_eq(entry.get(), &in_flight_request) {
                 // we are now sure that it's the same request
                 entry.remove_entry();
@@ -703,10 +701,9 @@ impl Client {
                             Ok(certs) => {
                                 crate::statistics::CERTIFICATES_RETRIEVAL_SUCCESS.inc();
 
-                                certificates.lock().insert(
-                                    domain,
-                                    CertificateRetrievalState::Found(certs.clone()),
-                                );
+                                certificates
+                                    .lock()
+                                    .insert(domain, CertificateRetrievalState::Found(certs));
                             }
                             Err(e) => {
                                 match e {
