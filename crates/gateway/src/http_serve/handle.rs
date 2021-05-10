@@ -431,12 +431,6 @@ pub async fn server(
                             };
 
                             {
-                                info!(
-                                    "Will read segments of URL: {}. segments: {:?}",
-                                    url,
-                                    url.path_segments()
-                                );
-
                                 if let Some(mut segments) = url.path_segments() {
                                     if segments.next() == Some(".well-known")
                                         && segments.next() == Some("acme-challenge")
