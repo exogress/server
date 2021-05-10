@@ -102,7 +102,6 @@ async fn forwarder(
                 incoming.set_nodelay(true)?;
                 let local_addr = incoming.local_addr()?;
 
-                info!("accepted connection from {}", incoming_addr);
                 tokio::spawn({
                     shadow_clone!(sharded_gateways, balancers);
 
@@ -181,7 +180,6 @@ async fn forwarder(
                             retry += 1;
                             let maybe_dst_addr = policy.lock().next();
                             if let Some(dst_addr) = maybe_dst_addr {
-                                info!("try proxy to {}", dst_addr);
                                 let try_connect = async {
                                     let conn_result = TcpStream::connect(SocketAddr::from((
                                         dst_addr,
@@ -271,11 +269,10 @@ async fn forwarder(
 
                                 match try_connect.await {
                                     Ok(()) => {
-                                        info!("connection finished");
                                         break;
                                     }
-                                    Err(e) => {
-                                        error!("could not serve connection to gateway: {}", e);
+                                    Err(_e) => {
+                                        // error!("could not serve connection to gateway: {}", e);
                                     }
                                 };
                             }
