@@ -140,6 +140,11 @@ lazy_static! {
         "Number of seconds since gateway was spawned"
     )
     .unwrap();
+    pub static ref NUM_OPENED_HTTPS_CONNECTIONS: Gauge = register_gauge!(
+        "gw_opened_https_connections",
+        "Number of opened HTTPS connections"
+    )
+    .unwrap();
 }
 
 pub fn dump_prometheus() -> String {

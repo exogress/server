@@ -373,9 +373,17 @@ pub async fn server(
                     }
                 };
 
-                tokio::spawn(handle_connection.map_err(|e| {
-                    warn!("connection closed: {}", e);
-                }));
+                tokio::spawn(async move {
+                    crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.inc();
+
+                    handle_connection
+                        .map_err(|e| {
+                            warn!("connection closed: {}", e);
+                        })
+                        .await;
+
+                    crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.dec();
+                });
             }
 
             Ok::<(), anyhow::Error>(())
