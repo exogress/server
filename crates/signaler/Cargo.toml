@@ -1,6 +1,6 @@
 [package]
 name = "exogress-signaler"
-version = "0.9.2"
+version = "0.9.3"
 authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
