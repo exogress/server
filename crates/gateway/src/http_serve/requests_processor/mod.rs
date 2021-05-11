@@ -1091,12 +1091,10 @@ fn is_eligible_for_transformation_not_considering_status_code(
                 resp.headers().typed_get::<typed_headers::ContentLength>()
             {
                 if content_len.0 > MAX_SIZE_FOR_TRANSFORMATION {
-                    info!("too large for transformation");
                     // too large file, no transformation
                     return false;
                 }
             } else {
-                info!("no content-length. skip transformation");
                 // no content-length, not transforming
                 return false;
             }

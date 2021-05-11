@@ -1015,7 +1015,6 @@ dependencies = [
  "lru_time_cache",
  "mimalloc",
  "nom",
- "object-pool",
  "parking_lot",
  "prometheus",
  "quickcheck",
@@ -1029,7 +1028,6 @@ dependencies = [
  "serde_cbor",
  "shadow-clone",
  "stop-handle",
- "sys-info",
  "thiserror",
  "tls-parser",
  "tokio",
@@ -2449,15 +2447,6 @@ name = "object"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a5b3dd1c072ee7963717671d1ca129f1048fda25edea6b752bfc71ac8854170"
-
-[[package]]
-name = "object-pool"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee9a3e7196d09ec86002b939f1576e8e446d58def8fd48fe578e2c72d5328d68"
-dependencies = [
- "parking_lot",
-]
 
 [[package]]
 name = "once_cell"
@@ -4105,16 +4094,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "sys-info"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33fcecee49339531cf6bd84ecf3ed94f9c8ef4a7e700f2a1cac9cc1ca485383a"
-dependencies = [
- "cc",
- "libc",
 ]
 
 [[package]]

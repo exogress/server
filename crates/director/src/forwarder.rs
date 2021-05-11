@@ -2,16 +2,13 @@ use crate::{
     balancer::{GwSelectionPolicy, ShardedGateways},
     tls::extract_sni_hostname,
 };
-use anyhow::Context;
 use exogress_server_common::director::SourceInfo;
 use lru_time_cache::LruCache;
-use object_pool::Pool;
 use parking_lot::Mutex;
 use std::{convert::TryInto, net::SocketAddr, sync::Arc, time::Duration};
-use sys_info::mem_info;
 use tokio::{
     io,
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
@@ -32,47 +29,6 @@ fn default_balancers() -> Arc<Mutex<LruCache<u64, Arc<Mutex<GwSelectionPolicy>>>
     )))
 }
 
-async fn forward(
-    mut incoming: impl AsyncRead + AsyncWrite + Unpin,
-    mut forward_to: impl AsyncRead + AsyncWrite + Unpin,
-    buf1: &mut [u8],
-    buf2: &mut [u8],
-) -> Result<(), anyhow::Error> {
-    loop {
-        tokio::select! {
-            bytes_read_result = incoming.read(buf1) => {
-                let bytes_read = bytes_read_result
-                    .with_context(|| "error reading from incoming")?;
-                if bytes_read == 0 {
-                    return Ok(());
-                } else {
-                    crate::statistics::BUF_FILL_BYTES.observe(bytes_read as f64);
-
-                    forward_to
-                        .write_all(&buf1[..bytes_read])
-                        .await
-                        .with_context(|| "error writing to forwarded")?;
-                }
-            },
-
-            bytes_read_result = forward_to.read(buf2) => {
-                let bytes_read = bytes_read_result
-                    .with_context(|| "error reading from forwarded")?;
-                if bytes_read == 0 {
-                    return Ok(());
-                } else {
-                    incoming
-                        .write_all(&buf2[..bytes_read])
-                        .await
-                        .with_context(|| "error writing to incoming")?;
-                }
-            }
-        }
-    }
-}
-
-const BUF_SIZE: usize = 1024;
-
 async fn forwarder(
     addr: SocketAddr,
     forward_to_port: u16,
@@ -80,14 +36,12 @@ async fn forwarder(
     balancers: Arc<Mutex<LruCache<u64, Arc<Mutex<GwSelectionPolicy>>>>>,
     is_tls: bool,
     max_retries: usize,
-    initial_buf_pool_size: usize,
 ) -> Result<(), io::Error> {
     info!("listen to {}", addr);
-    let buf_pool = Arc::new(Pool::new(initial_buf_pool_size, || [0u8; BUF_SIZE]));
 
     let tcp = TcpListener::bind(addr).await?;
     loop {
-        shadow_clone!(buf_pool, sharded_gateways, balancers);
+        shadow_clone!(sharded_gateways, balancers);
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {
@@ -206,37 +160,6 @@ async fn forwarder(
                                                     forward_to.write_all(header).await?;
                                                 }
 
-                                                let (reusable_buf1, reusable_buf2) = if buf_pool
-                                                    .len()
-                                                    > 2
-                                                {
-                                                    (
-                                                        buf_pool.pull(|| [0; BUF_SIZE]),
-                                                        buf_pool.pull(|| [0; BUF_SIZE]),
-                                                    )
-                                                } else {
-                                                    let mem = mem_info()
-                                                        .expect("could not retrieve memory info");
-                                                    let avail_mem = mem.avail as f32;
-                                                    let total_mem = mem.total as f32;
-                                                    let avail_percent = (1.0
-                                                        - (total_mem - avail_mem) / total_mem)
-                                                        * 100.0;
-                                                    if avail_percent < 80.0
-                                                        && avail_mem < 1.0 * 1024.0 * 1024.0
-                                                    {
-                                                        return Err(anyhow!("not enough free memory for buffer allocation. only {}% of memory is available ({} bytes)", avail_percent, avail_mem));
-                                                    }
-
-                                                    (
-                                                        buf_pool.pull(|| [0; BUF_SIZE]),
-                                                        buf_pool.pull(|| [0; BUF_SIZE]),
-                                                    )
-                                                };
-
-                                                let (_, mut buf1) = reusable_buf1.detach();
-                                                let (_, mut buf2) = reusable_buf2.detach();
-
                                                 is_any_gw_connected = true;
                                                 crate::statistics::NUM_PROXIED_CONNECTIONS
                                                     .with_label_values(&[
@@ -246,18 +169,11 @@ async fn forwarder(
                                                     ])
                                                     .inc();
 
-                                                let r = forward(
+                                                return Ok(copy_bidirectional(
                                                     &mut incoming,
                                                     &mut forward_to,
-                                                    &mut buf1,
-                                                    &mut buf2,
                                                 )
-                                                .await;
-
-                                                buf_pool.attach(buf1);
-                                                buf_pool.attach(buf2);
-
-                                                return r;
+                                                .await?);
                                             }
                                             Err(e) => {
                                                 warn!("could not connect to gateway: {}", e);
@@ -269,11 +185,11 @@ async fn forwarder(
                                     };
 
                                     match try_connect.await {
-                                        Ok(()) => {
+                                        Ok(_) => {
                                             break;
                                         }
-                                        Err(_e) => {
-                                            // error!("could not serve connection to gateway: {}", e);
+                                        Err(e) => {
+                                            error!("could not serve connection to gateway: {}", e);
                                         }
                                     };
                                 }
@@ -316,7 +232,6 @@ impl Forwarder {
             self.balancers.clone(),
             false,
             3,
-            1024,
         );
 
         let https = forwarder(
@@ -326,7 +241,6 @@ impl Forwarder {
             self.balancers.clone(),
             true,
             3,
-            1024,
         );
 
         tokio::select! {
