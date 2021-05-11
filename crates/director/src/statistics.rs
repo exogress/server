@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use prometheus::{
-    linear_buckets, register_histogram, register_int_counter_vec, Encoder, Histogram,
-    IntCounterVec, TextEncoder,
+    linear_buckets, register_gauge, register_histogram, register_int_counter_vec, Encoder, Gauge,
+    Histogram, IntCounterVec, TextEncoder,
 };
 use std::net::SocketAddr;
 use warp::Filter;
@@ -23,6 +23,11 @@ lazy_static! {
         "director_dns_requests",
         "Number of processed DNS requests",
         &["success"]
+    )
+    .unwrap();
+    pub static ref NUM_ACTIVE_FORWARDERS: Gauge = register_gauge!(
+        "director_active_forwarders",
+        "Number of active forwarders (opened pair of connections)"
     )
     .unwrap();
 }

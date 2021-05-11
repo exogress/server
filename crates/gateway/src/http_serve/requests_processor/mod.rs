@@ -459,8 +459,8 @@ impl RequestsProcessor {
                     if !self.cache.is_enough_space() {
                         crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
                         warn!(
-                                "Not triggering transformation, because cache dir reached global limit in size"
-                            );
+                            "Not triggering transformation, because cache dir reached global limit in size"
+                        );
                     } else if let Some(max_age) = cache_max_age_if_eligible(req, res) {
                         match clone_response_through_tempfile(res).await {
                             Ok(on_response_finished) => {

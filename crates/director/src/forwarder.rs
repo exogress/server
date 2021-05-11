@@ -52,10 +52,6 @@ async fn forward(
                         .write_all(&buf1[..bytes_read])
                         .await
                         .with_context(|| "error writing to forwarded")?;
-                    forward_to
-                        .flush()
-                        .await
-                        .with_context(|| "error flushing forward_to")?;
                 }
             },
 
@@ -69,10 +65,6 @@ async fn forward(
                         .write_all(&buf2[..bytes_read])
                         .await
                         .with_context(|| "error writing to incoming")?;
-                    incoming
-                        .flush()
-                        .await
-                        .with_context(|| "error flushing incoming")?;
                 }
             }
         }
@@ -106,189 +98,205 @@ async fn forwarder(
                     shadow_clone!(sharded_gateways, balancers);
 
                     async move {
-                        let mut consumed_bytes = None;
-                        let mut sni_hostname = None;
+                        crate::statistics::NUM_ACTIVE_FORWARDERS.inc();
 
-                        if is_tls {
-                            let mut header = vec![0u8; 512];
-                            let mut header_bytes_read = 0;
-                            sni_hostname = loop {
-                                let bytes_read =
-                                    incoming.read(&mut header[header_bytes_read..]).await?;
-                                if bytes_read == 0 {
-                                    return Err(anyhow!("connection closed while waiting for SNI"));
-                                }
+                        let perform_connection = async move {
+                            let mut consumed_bytes = None;
+                            let mut sni_hostname = None;
 
-                                header_bytes_read += bytes_read;
-
-                                let to_parse = header[..header_bytes_read].to_vec();
-
-                                let client_hello_parse_result = extract_sni_hostname(&to_parse[..]);
-
-                                const MAX_CLIENT_HELLO_LEN: usize = 16536;
-
-                                match client_hello_parse_result? {
-                                    None => {
-                                        if header_bytes_read < MAX_CLIENT_HELLO_LEN {
-                                            header.resize(
-                                                std::cmp::min(
-                                                    header.len() * 2,
-                                                    MAX_CLIENT_HELLO_LEN,
-                                                ),
-                                                0,
-                                            );
-                                        } else {
-                                            return Err(anyhow!(
-                                                "could not parse ClientHello: too long"
-                                            ));
-                                        }
+                            if is_tls {
+                                let mut header = vec![0u8; 512];
+                                let mut header_bytes_read = 0;
+                                sni_hostname = loop {
+                                    let bytes_read =
+                                        incoming.read(&mut header[header_bytes_read..]).await?;
+                                    if bytes_read == 0 {
+                                        return Err(anyhow!(
+                                            "connection closed while waiting for SNI"
+                                        ));
                                     }
-                                    Some(sni_hostname) => {
-                                        break sni_hostname;
-                                    }
-                                };
-                            };
-                            header.truncate(header_bytes_read);
-                            consumed_bytes = Some(header);
-                        };
 
-                        let balancer_seed = sni_hostname
-                            .as_ref()
-                            .map(|s| seahash::hash(s.as_ref()))
-                            .unwrap_or(1);
+                                    header_bytes_read += bytes_read;
 
-                        let policy = match balancers.lock().entry(balancer_seed) {
-                            lru_time_cache::Entry::Occupied(occupied) => {
-                                occupied.into_mut().clone()
-                            }
-                            lru_time_cache::Entry::Vacant(vacant) => {
-                                let policy = Arc::new(Mutex::new(sharded_gateways.policy(
-                                    balancer_seed,
-                                    2,
-                                    2,
-                                    Duration::from_secs(10),
-                                )?));
-                                vacant.insert(policy.clone());
-                                policy
-                            }
-                        };
+                                    let to_parse = header[..header_bytes_read].to_vec();
 
-                        let mut is_any_gw_connected = false;
-                        let mut retry = 0;
+                                    let client_hello_parse_result =
+                                        extract_sni_hostname(&to_parse[..]);
 
-                        while retry < max_retries {
-                            retry += 1;
-                            let maybe_dst_addr = policy.lock().next();
-                            if let Some(dst_addr) = maybe_dst_addr {
-                                let try_connect = async {
-                                    let conn_result = TcpStream::connect(SocketAddr::from((
-                                        dst_addr,
-                                        forward_to_port,
-                                    )))
-                                    .await;
+                                    const MAX_CLIENT_HELLO_LEN: usize = 16536;
 
-                                    match conn_result {
-                                        Ok(mut forward_to) => {
-                                            forward_to.set_nodelay(true)?;
-
-                                            let source_info = serde_cbor::to_vec(&SourceInfo {
-                                                local_addr,
-                                                remote_addr: incoming_addr,
-                                                alpn_domain: sni_hostname.clone(),
-                                            })
-                                            .unwrap();
-
-                                            forward_to
-                                                .write_u16(source_info.len().try_into().unwrap())
-                                                .await?;
-                                            forward_to.write_all(&source_info).await?;
-                                            if let Some(header) = &consumed_bytes {
-                                                forward_to.write_all(header).await?;
-                                            }
-
-                                            let (reusable_buf1, reusable_buf2) = if buf_pool.len()
-                                                > 2
-                                            {
-                                                (
-                                                    buf_pool.pull(|| [0; BUF_SIZE]),
-                                                    buf_pool.pull(|| [0; BUF_SIZE]),
-                                                )
+                                    match client_hello_parse_result? {
+                                        None => {
+                                            if header_bytes_read < MAX_CLIENT_HELLO_LEN {
+                                                header.resize(
+                                                    std::cmp::min(
+                                                        header.len() * 2,
+                                                        MAX_CLIENT_HELLO_LEN,
+                                                    ),
+                                                    0,
+                                                );
                                             } else {
-                                                let mem = mem_info()
-                                                    .expect("could not retrieve memory info");
-                                                let avail_mem = mem.avail as f32;
-                                                let total_mem = mem.total as f32;
-                                                let avail_percent = (1.0
-                                                    - (total_mem - avail_mem) / total_mem)
-                                                    * 100.0;
-                                                if avail_percent < 80.0
-                                                    && avail_mem < 1.0 * 1024.0 * 1024.0
-                                                {
-                                                    return Err(anyhow!("not enough free memory for buffer allocation. only {}% of memory is available ({} bytes)", avail_percent, avail_mem));
+                                                return Err(anyhow!(
+                                                    "could not parse ClientHello: too long"
+                                                ));
+                                            }
+                                        }
+                                        Some(sni_hostname) => {
+                                            break sni_hostname;
+                                        }
+                                    };
+                                };
+                                header.truncate(header_bytes_read);
+                                consumed_bytes = Some(header);
+                            };
+
+                            let balancer_seed = sni_hostname
+                                .as_ref()
+                                .map(|s| seahash::hash(s.as_ref()))
+                                .unwrap_or(1);
+
+                            let policy = match balancers.lock().entry(balancer_seed) {
+                                lru_time_cache::Entry::Occupied(occupied) => {
+                                    occupied.into_mut().clone()
+                                }
+                                lru_time_cache::Entry::Vacant(vacant) => {
+                                    let policy = Arc::new(Mutex::new(sharded_gateways.policy(
+                                        balancer_seed,
+                                        2,
+                                        2,
+                                        Duration::from_secs(10),
+                                    )?));
+                                    vacant.insert(policy.clone());
+                                    policy
+                                }
+                            };
+
+                            let mut is_any_gw_connected = false;
+                            let mut retry = 0;
+
+                            while retry < max_retries {
+                                retry += 1;
+                                let maybe_dst_addr = policy.lock().next();
+                                if let Some(dst_addr) = maybe_dst_addr {
+                                    let try_connect = async {
+                                        let conn_result = TcpStream::connect(SocketAddr::from((
+                                            dst_addr,
+                                            forward_to_port,
+                                        )))
+                                        .await;
+
+                                        match conn_result {
+                                            Ok(mut forward_to) => {
+                                                forward_to.set_nodelay(true)?;
+
+                                                let source_info = serde_cbor::to_vec(&SourceInfo {
+                                                    local_addr,
+                                                    remote_addr: incoming_addr,
+                                                    alpn_domain: sni_hostname.clone(),
+                                                })
+                                                .unwrap();
+
+                                                forward_to
+                                                    .write_u16(
+                                                        source_info.len().try_into().unwrap(),
+                                                    )
+                                                    .await?;
+                                                forward_to.write_all(&source_info).await?;
+                                                if let Some(header) = &consumed_bytes {
+                                                    forward_to.write_all(header).await?;
                                                 }
 
-                                                (
-                                                    buf_pool.pull(|| [0; BUF_SIZE]),
-                                                    buf_pool.pull(|| [0; BUF_SIZE]),
+                                                let (reusable_buf1, reusable_buf2) = if buf_pool
+                                                    .len()
+                                                    > 2
+                                                {
+                                                    (
+                                                        buf_pool.pull(|| [0; BUF_SIZE]),
+                                                        buf_pool.pull(|| [0; BUF_SIZE]),
+                                                    )
+                                                } else {
+                                                    let mem = mem_info()
+                                                        .expect("could not retrieve memory info");
+                                                    let avail_mem = mem.avail as f32;
+                                                    let total_mem = mem.total as f32;
+                                                    let avail_percent = (1.0
+                                                        - (total_mem - avail_mem) / total_mem)
+                                                        * 100.0;
+                                                    if avail_percent < 80.0
+                                                        && avail_mem < 1.0 * 1024.0 * 1024.0
+                                                    {
+                                                        return Err(anyhow!("not enough free memory for buffer allocation. only {}% of memory is available ({} bytes)", avail_percent, avail_mem));
+                                                    }
+
+                                                    (
+                                                        buf_pool.pull(|| [0; BUF_SIZE]),
+                                                        buf_pool.pull(|| [0; BUF_SIZE]),
+                                                    )
+                                                };
+
+                                                let (_, mut buf1) = reusable_buf1.detach();
+                                                let (_, mut buf2) = reusable_buf2.detach();
+
+                                                is_any_gw_connected = true;
+                                                crate::statistics::NUM_PROXIED_CONNECTIONS
+                                                    .with_label_values(&[
+                                                        retry.to_string().as_str(),
+                                                        max_retries.to_string().as_str(),
+                                                        "1",
+                                                    ])
+                                                    .inc();
+
+                                                let r = forward(
+                                                    &mut incoming,
+                                                    &mut forward_to,
+                                                    &mut buf1,
+                                                    &mut buf2,
                                                 )
-                                            };
+                                                .await;
 
-                                            let (_, mut buf1) = reusable_buf1.detach();
-                                            let (_, mut buf2) = reusable_buf2.detach();
+                                                buf_pool.attach(buf1);
+                                                buf_pool.attach(buf2);
 
-                                            is_any_gw_connected = true;
-                                            crate::statistics::NUM_PROXIED_CONNECTIONS
-                                                .with_label_values(&[
-                                                    retry.to_string().as_str(),
-                                                    max_retries.to_string().as_str(),
-                                                    "1",
-                                                ])
-                                                .inc();
-
-                                            let r = forward(
-                                                &mut incoming,
-                                                &mut forward_to,
-                                                &mut buf1,
-                                                &mut buf2,
-                                            )
-                                            .await;
-
-                                            buf_pool.attach(buf1);
-                                            buf_pool.attach(buf2);
-
-                                            return r;
+                                                return r;
+                                            }
+                                            Err(e) => {
+                                                warn!("could not connect to gateway: {}", e);
+                                                policy.lock().mark_unhealthy(&dst_addr);
+                                            }
                                         }
-                                        Err(e) => {
-                                            warn!("could not connect to gateway: {}", e);
-                                            policy.lock().mark_unhealthy(&dst_addr);
+
+                                        Err(anyhow!("could not connect to the gateway"))
+                                    };
+
+                                    match try_connect.await {
+                                        Ok(()) => {
+                                            break;
                                         }
-                                    }
-
-                                    Err(anyhow!("could not connect to the gateway"))
-                                };
-
-                                match try_connect.await {
-                                    Ok(()) => {
-                                        break;
-                                    }
-                                    Err(_e) => {
-                                        // error!("could not serve connection to gateway: {}", e);
-                                    }
-                                };
+                                        Err(_e) => {
+                                            // error!("could not serve connection to gateway: {}", e);
+                                        }
+                                    };
+                                }
                             }
+
+                            if !is_any_gw_connected {
+                                crate::statistics::NUM_PROXIED_CONNECTIONS
+                                    .with_label_values(&[
+                                        "",
+                                        max_retries.to_string().as_str(),
+                                        retry.to_string().as_str(),
+                                    ])
+                                    .inc();
+                            }
+
+                            Ok(())
+                        };
+
+                        if let Err(e) = perform_connection.await {
+                            warn!("Error forwarding connection: {}", e);
                         }
 
-                        if !is_any_gw_connected {
-                            crate::statistics::NUM_PROXIED_CONNECTIONS
-                                .with_label_values(&[
-                                    "",
-                                    max_retries.to_string().as_str(),
-                                    retry.to_string().as_str(),
-                                ])
-                                .inc();
-                        }
-
-                        Ok(())
+                        crate::statistics::NUM_ACTIVE_FORWARDERS.dec();
                     }
                 });
             }
