@@ -1,5 +1,5 @@
 use exogress_common::common_utils::uri_ext::UriExt;
-use futures::{ready, FutureExt, TryFutureExt};
+use futures::{ready, FutureExt};
 use futures_util::{sink::SinkExt, stream::Stream};
 use http::{
     header::{CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION},
@@ -38,6 +38,7 @@ use std::{
     io::{BufReader, Cursor},
     panic::AssertUnwindSafe,
     pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
 use tokio::{
@@ -142,6 +143,7 @@ pub async fn server(
     listen_https_addr: SocketAddr,
     external_https_port: u16,
     webapp_client: Client,
+    high_resource_consumption: Arc<AtomicBool>,
     app_stop_wait: AppStopWait,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
     public_gw_base_url: Url,
@@ -164,24 +166,26 @@ pub async fn server(
             loop {
                 let (mut conn, _director_addr) = listener.accept().await?;
 
-                tokio::spawn({
-                    shadow_clone!(mut incoming_http_connections_tx);
+                if !high_resource_consumption.load(Ordering::Relaxed) {
+                    tokio::spawn({
+                        shadow_clone!(mut incoming_http_connections_tx);
 
-                    async move {
-                        conn.set_nodelay(true)?;
+                        async move {
+                            conn.set_nodelay(true)?;
 
-                        let header_len = conn.read_u16().await?;
-                        let mut buf = vec![0u8; header_len.try_into().unwrap()];
-                        conn.read_exact(&mut buf).await?;
-                        let source_info = serde_cbor::from_slice::<SourceInfo>(&buf)?;
-                        let conn = director::Connection::new(conn, source_info.clone());
-                        incoming_http_connections_tx
-                            .send(Ok::<_, io::Error>((conn, source_info)))
-                            .await?;
+                            let header_len = conn.read_u16().await?;
+                            let mut buf = vec![0u8; header_len.try_into().unwrap()];
+                            conn.read_exact(&mut buf).await?;
+                            let source_info = serde_cbor::from_slice::<SourceInfo>(&buf)?;
+                            let conn = director::Connection::new(conn, source_info.clone());
+                            incoming_http_connections_tx
+                                .send(Ok::<_, io::Error>((conn, source_info)))
+                                .await?;
 
-                        Ok::<_, anyhow::Error>(())
-                    }
-                });
+                            Ok::<_, anyhow::Error>(())
+                        }
+                    });
+                }
             }
 
             Ok::<_, anyhow::Error>(())
@@ -376,11 +380,9 @@ pub async fn server(
                 tokio::spawn(async move {
                     crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.inc();
 
-                    handle_connection
-                        .map_err(|e| {
-                            warn!("connection closed: {}", e);
-                        })
-                        .await;
+                    if let Err(e) = handle_connection.await {
+                        warn!("connection closed: {}", e);
+                    }
 
                     crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.dec();
                 });

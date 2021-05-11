@@ -1,6 +1,6 @@
 [package]
 name = "exogress-director"
-version = "0.9.3"
+version = "0.9.4"
 authors = ["Gleb Pomykalov <gleb@exogress.com>"]
 edition = "2018"
 

@@ -38,6 +38,7 @@ use crate::{
         cache::Cache,
     },
     notification_listener::AssistantClient,
+    resources::ResourcesManager,
     stop_reasons::StopReason,
     webapp::Client,
 };
@@ -51,6 +52,7 @@ use futures::{
     SinkExt, StreamExt,
 };
 use parking_lot::RwLock;
+use std::sync::atomic::AtomicBool;
 use tokio::{runtime::Builder, time::sleep};
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
@@ -62,6 +64,7 @@ mod mime_helpers;
 mod notification_listener;
 mod public_hyper_client;
 mod registry;
+mod resources;
 mod rules_counter;
 mod statistics;
 mod stop_reasons;
@@ -702,12 +705,22 @@ fn main() {
             resolver.clone(),
         );
 
+        let high_resource_consumption = Arc::new(AtomicBool::new(false));
+
+        tokio::spawn(
+            ResourcesManager::builder()
+                .stop_trigger(high_resource_consumption.clone())
+                .build()
+                .run(),
+        );
+
         let acceptor = tunnels_acceptor(
             listen_tunnel_addr,
             individual_tls_cert_path.into(),
             individual_tls_key_path.into(),
             client_tunnels.clone(),
             api_client.clone(),
+            high_resource_consumption.clone(),
             tunnel_counters_tx,
         );
 
@@ -906,6 +919,7 @@ fn main() {
             listen_https_addr,
             external_https_port,
             api_client,
+            high_resource_consumption.clone(),
             app_stop_wait,
             tls_gw_common,
             public_base_url,
