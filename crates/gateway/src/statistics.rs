@@ -145,6 +145,11 @@ lazy_static! {
         "Number of opened HTTPS connections"
     )
     .unwrap();
+    pub static ref RESOURCES_HIGH: Gauge = register_gauge!(
+        "gw_resources_high",
+        "Resource consumption is high, connections are not accepted if == 1"
+    )
+    .unwrap();
 }
 
 pub fn dump_prometheus() -> String {

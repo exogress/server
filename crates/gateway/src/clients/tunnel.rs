@@ -49,6 +49,7 @@ use futures::{
 use std::{
     convert::TryInto,
     pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
 
@@ -111,6 +112,7 @@ pub async fn tunnels_acceptor(
     tls_key_path: String,
     tunnels: ClientTunnels,
     webapp: webapp::Client,
+    high_resource_consumption: Arc<AtomicBool>,
     tunnel_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
 ) -> io::Result<()> {
     let mut config = ServerConfig::new(NoClientAuth::new());
@@ -137,44 +139,47 @@ pub async fn tunnels_acceptor(
         shadow_clone!(tls_acceptor);
 
         while let Ok((tcp_stream, _)) = listener.accept().await {
-            shadow_clone!(tls_acceptor, mut accepted_connection_tx);
+            if !high_resource_consumption.load(Ordering::Relaxed) {
+                shadow_clone!(tls_acceptor, mut accepted_connection_tx);
+                tokio::spawn(async move {
+                    tcp_stream.set_nodelay(true)?;
 
-            tokio::spawn(async move {
-                tcp_stream.set_nodelay(true)?;
+                    let accept_result = tokio::time::timeout(
+                        Duration::from_secs(20),
+                        tls_acceptor.accept(tcp_stream),
+                    )
+                    .await;
 
-                let accept_result =
-                    tokio::time::timeout(Duration::from_secs(20), tls_acceptor.accept(tcp_stream))
-                        .await;
+                    let mut tls_conn = match accept_result {
+                        Err(_) => {
+                            return Ok(());
+                        }
+                        Ok(Err(_e)) => {
+                            return Ok(());
+                        }
+                        Ok(Ok(r)) => r,
+                    };
 
-                let mut tls_conn = match accept_result {
-                    Err(_) => {
-                        return Ok(());
+                    let is_alpn_error = tls_conn
+                        .get_mut()
+                        .1
+                        .get_alpn_protocol()
+                        .map(|p| {
+                            // info!("provided ALPN: {}", std::str::from_utf8(p).unwrap());
+                            p != *ALPN_PROTOCOL
+                        })
+                        // ALPN not provides should lead to Error as well
+                        .unwrap_or(true);
+
+                    if is_alpn_error {
+                        warn!("not accepting tunnel connection: ALPN mismatch");
+                    } else {
+                        accepted_connection_tx.send(tls_conn).await.unwrap();
                     }
-                    Ok(Err(_e)) => {
-                        return Ok(());
-                    }
-                    Ok(Ok(r)) => r,
-                };
 
-                let is_alpn_error = tls_conn
-                    .get_mut()
-                    .1
-                    .get_alpn_protocol()
-                    .map(|p| {
-                        // info!("provided ALPN: {}", std::str::from_utf8(p).unwrap());
-                        p != *ALPN_PROTOCOL
-                    })
-                    // ALPN not provides should lead to Error as well
-                    .unwrap_or(true);
-
-                if is_alpn_error {
-                    warn!("not accepting tunnel connection: ALPN mismatch");
-                } else {
-                    accepted_connection_tx.send(tls_conn).await.unwrap();
-                }
-
-                Ok::<_, anyhow::Error>(())
-            });
+                    Ok::<_, anyhow::Error>(())
+                });
+            };
         }
     });
 

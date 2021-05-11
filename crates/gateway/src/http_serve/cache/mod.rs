@@ -860,7 +860,7 @@ impl CacheResponse {
                 }))),
             ))
         } else {
-            info!("The response from cache is full. Clone it thorugh the temp file");
+            info!("The response from cache is full. Clone it through the temp file");
             let mut full = self.full;
 
             let cloned_future = clone_response_through_tempfile(&mut full).await?;
