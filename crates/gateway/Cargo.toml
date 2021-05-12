@@ -42,6 +42,7 @@ lru_time_cache = "0.11.0"
 maplit = "1.0.2"
 maxminddb = { version = "0.17.0", features = ["mmap"] }
 memmap = "0.7.0"
+memadvise = "0.1.2"
 mimalloc = "0.1.22"
 mime = "0.3.16"
 never = "0.1.0"

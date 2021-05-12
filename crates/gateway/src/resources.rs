@@ -20,7 +20,7 @@ impl State {
     pub fn is_limited(&self) -> bool {
         self.cpu_usage_triggered.load(Ordering::Relaxed)
             || self.la_triggered.load(Ordering::Relaxed)
-            || self.memory_triggered.load(Ordering::Relaxed)
+        // || self.memory_triggered.load(Ordering::Relaxed)
     }
 }
 
@@ -105,15 +105,15 @@ impl ResourcesManager {
             if free_mem_percent > self.memory_high_watermark_percent as f64 {
                 if !state.memory_triggered.swap(true, Ordering::Relaxed) {
                     warn!(
-                        "Memory usage % is higher than high watermark {}",
-                        self.memory_high_watermark_percent
+                        "Memory usage % is higher than high watermark {}. Free = {}, Total = {}",
+                        self.memory_high_watermark_percent, free_memory, total_memory
                     );
                 }
             } else if free_mem_percent < self.memory_low_watermark_percent as f64 {
                 if state.memory_triggered.swap(false, Ordering::Relaxed) {
                     info!(
-                        "Memory usage % now less than low watermark {}",
-                        self.memory_low_watermark_percent
+                        "Memory usage % now less than low watermark {}. Free = {}, Total = {}",
+                        self.memory_low_watermark_percent, free_memory, total_memory
                     );
                 }
             }

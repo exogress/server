@@ -1,6 +1,7 @@
 use crate::http_serve::cache::dir::storage_path;
 use exogress_common::entities::AccountUniqueId;
 use lru_time_cache::LruCache;
+use memadvise::Advice;
 use memmap::Mmap;
 use std::{fs::File, io, path::PathBuf, sync::Arc, time::Duration};
 
@@ -53,10 +54,14 @@ impl MappedFiles {
 
                 let file = std::fs::File::open(storage_path)?;
 
-                let mapped = Arc::new(MmapInner {
-                    mmap: unsafe { Mmap::map(&file) }?,
-                    _file: file,
-                });
+                let mut mmap = unsafe { Mmap::map(&file) }?.make_mut()?;
+
+                memadvise::advise(mmap.as_mut_ptr() as *mut (), mmap.len(), Advice::WillNeed)
+                    .map_err(|_e| io::Error::new(io::ErrorKind::Other, format!("madvise error")))?;
+
+                let mmap = mmap.make_read_only()?;
+
+                let mapped = Arc::new(MmapInner { mmap, _file: file });
 
                 let shared = SharedMmapInner(mapped);
 
