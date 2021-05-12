@@ -764,19 +764,18 @@ impl Cache {
                 }
             }
 
-            let mapped_file = self.mapped_files.open(
-                account_unique_id,
-                file_name.as_ref(),
-                variation.vary_hash.as_str(),
-            )?;
+            let mapped_file = self
+                .mapped_files
+                .open(
+                    account_unique_id,
+                    file_name.as_ref(),
+                    variation.vary_hash.as_str(),
+                    xchacha20poly1305_secret_key,
+                    &body_encryption_header,
+                )
+                .await?;
 
-            let rdr = Cursor::new(mapped_file);
-
-            let body = hyper::Body::wrap_stream(crypto::decrypt_reader(
-                rdr,
-                xchacha20poly1305_secret_key,
-                &body_encryption_header,
-            )?);
+            let body = mapped_file.into_hyper_body();
 
             let mut resp = Response::new(body);
             *resp.status_mut() = meta.status;
