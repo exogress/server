@@ -381,7 +381,7 @@ pub async fn server(
                     crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.inc();
 
                     if let Err(e) = handle_connection.await {
-                        warn!("connection closed: {}", e);
+                        // warn!("connection closed: {}", e);
                     }
 
                     crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.dec();

@@ -188,8 +188,8 @@ async fn forwarder(
                                         Ok(_) => {
                                             break;
                                         }
-                                        Err(e) => {
-                                            error!("could not serve connection to gateway: {}", e);
+                                        Err(_e) => {
+                                            // error!("could not serve connection to gateway: {}", e);
                                         }
                                     };
                                 }

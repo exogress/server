@@ -54,12 +54,10 @@ impl MappedFiles {
 
                 let file = std::fs::File::open(storage_path)?;
 
-                let mut mmap = unsafe { Mmap::map(&file) }?.make_mut()?;
+                let mmap = unsafe { Mmap::map(&file) }?;
 
-                memadvise::advise(mmap.as_mut_ptr() as *mut (), mmap.len(), Advice::WillNeed)
+                memadvise::advise(mmap.as_ptr() as *mut (), mmap.len(), Advice::WillNeed)
                     .map_err(|_e| io::Error::new(io::ErrorKind::Other, format!("madvise error")))?;
-
-                let mmap = mmap.make_read_only()?;
 
                 let mapped = Arc::new(MmapInner { mmap, _file: file });
 
