@@ -1,4 +1,5 @@
 use crate::http_serve::{
+    cache::{dir::storage_path, mapped_files::MappedFiles},
     helpers::{clone_response_through_tempfile, ClonedResponse},
     identifier::RequestProcessingIdentifier,
     RequestsProcessor, ResolvedHandler,
@@ -40,10 +41,14 @@ use std::{
 use tokio::time::sleep;
 use typed_headers::HeaderMapExt;
 
+mod dir;
+mod mapped_files;
+
 #[derive(Clone)]
 pub struct Cache {
     ledb: Arc<parking_lot::RwLock<ledb::Storage>>,
     cache_files_dir: Arc<PathBuf>,
+    mapped_files: MappedFiles,
     in_flights: Arc<DashSet<(AccountUniqueId, String)>>,
     space_used: Arc<AtomicU32>,
     max_allowed_size: Byte,
@@ -153,9 +158,12 @@ impl Cache {
 
         let space_used = Arc::new(AtomicU32::from(bytes_used));
 
+        let cache_files_dir = Arc::new(cache_files_dir);
+
         let cache = Cache {
             ledb: Arc::new(parking_lot::RwLock::new(ledb)),
-            cache_files_dir: Arc::new(cache_files_dir),
+            mapped_files: MappedFiles::new(&cache_files_dir),
+            cache_files_dir,
             in_flights: Arc::new(Default::default()),
             space_used,
             max_allowed_size: max_size,
@@ -182,24 +190,6 @@ impl Cache {
         Ok(cache)
     }
 
-    /// Path to the file
-    fn storage_path(
-        &self,
-        account_unique_id: &AccountUniqueId,
-        file_name: &str,
-        vary: &str,
-    ) -> PathBuf {
-        let mut path = (*self.cache_files_dir).clone();
-        path.push(account_unique_id.to_string());
-        let first = file_name[..2].to_string();
-        let second = file_name[2..4].to_string();
-        let last = file_name[4..].to_string();
-        path.push(first);
-        path.push(second);
-        path.push(format!("{}-{}", last, vary));
-        path
-    }
-
     async fn delete_evicted_files(&self, evicted_files: Vec<CacheItem>) -> anyhow::Result<()> {
         for evicted in evicted_files {
             info!("evict file {:?} from cache", evicted);
@@ -221,7 +211,8 @@ impl Cache {
                     .fetch_sub(evicted.original_file_size, Ordering::Relaxed);
             }
 
-            let mut storage_path = self.storage_path(
+            let mut storage_path = storage_path(
+                &self.cache_files_dir,
                 &evicted.account_unique_id,
                 evicted.request_hash.as_str(),
                 evicted.vary.as_str(),
@@ -515,7 +506,12 @@ impl Cache {
                 .fetch_add(original_file_size, Ordering::Relaxed);
         }
 
-        let storage_path = self.storage_path(account_unique_id, file_name, vary_hash.as_ref());
+        let storage_path = storage_path(
+            &self.cache_files_dir,
+            account_unique_id,
+            file_name,
+            vary_hash.as_ref(),
+        );
         let mut parent_dir = storage_path.clone();
         parent_dir.pop();
 
@@ -768,16 +764,16 @@ impl Cache {
                 }
             }
 
-            let storage_path = self.storage_path(
+            let mapped_file = self.mapped_files.open(
                 account_unique_id,
                 file_name.as_ref(),
                 variation.vary_hash.as_str(),
-            );
+            )?;
 
-            let reader = tokio::fs::File::open(&storage_path).await?;
+            let rdr = Cursor::new(mapped_file);
 
             let body = hyper::Body::wrap_stream(crypto::decrypt_reader(
-                reader,
+                rdr,
                 xchacha20poly1305_secret_key,
                 &body_encryption_header,
             )?);

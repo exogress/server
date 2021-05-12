@@ -347,7 +347,6 @@ impl RequestsProcessor {
                                 Some(if resp_from_cache.is_transformed() {
                                     TransformationStatus::Transformed
                                 } else {
-                                    error!("Set transformation NotEligible 2");
                                     TransformationStatus::NotEligible
                                 });
 
