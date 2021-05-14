@@ -186,8 +186,6 @@ impl NetZoneAuthority {
                 .inc();
 
             return if let Ok(gws) = self.rules_processor.find_gateways(src, 2) {
-                info!("gws = {:?}", gws);
-
                 let mut rs = RecordSet::new(&name.clone().into(), RecordType::A, 1);
 
                 for gw in gws {

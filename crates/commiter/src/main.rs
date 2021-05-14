@@ -170,6 +170,7 @@ fn main() {
             let kafka_consumer_future = crate::kafka::spawn(
                 kafka_brokers.as_str(),
                 "commiter",
+                num_threads * 8,
                 mongodb_client,
                 elastic_client,
             );

@@ -287,7 +287,7 @@ async fn lookup<R: ResponseHandler + Unpin>(
     //  the current impl will return on the first query result
     for (query_idx, authority) in queries_and_authorities {
         let query = &request.queries()[query_idx];
-        info!(
+        debug!(
             "request: {} found authority: {}",
             request.id(),
             authority.origin()

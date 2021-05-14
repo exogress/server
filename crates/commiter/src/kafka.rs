@@ -1,4 +1,5 @@
 use crate::{elasticsearch::ElasticsearchClient, reporting::MongoDbClient};
+use core::mem;
 use exogress_server_common::{
     kafka::{GwStatisticsReport, LOGS_TOPIC, STATISTICS_TOPIC},
     logging::LogMessage,
@@ -10,7 +11,7 @@ use rdkafka::{
     error::KafkaResult,
     ClientConfig, ClientContext, Message, TopicPartitionList,
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 struct CustomContext;
 
@@ -34,10 +35,13 @@ type LoggingConsumer = StreamConsumer<CustomContext>;
 pub async fn spawn(
     brokers: &str,
     group_id: &str,
+    max_concurrency: usize,
     mongodb_client: MongoDbClient,
     elastic_client: ElasticsearchClient,
 ) -> anyhow::Result<()> {
     let context = CustomContext;
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
 
     let consumer: LoggingConsumer = ClientConfig::new()
         .set("group.id", group_id)
@@ -56,12 +60,12 @@ pub async fn spawn(
         match consumer.recv().await {
             Err(e) => warn!("Kafka error: {}", e),
             Ok(m) => {
+                let permit = semaphore.clone().acquire_owned().await?;
                 let topic = m.topic();
                 match m.payload_view::<[u8]>() {
                     None => {}
                     Some(Ok(s)) => {
                         let r = consumer.commit_message(&m, CommitMode::Async);
-                        info!("commit res = {:?}", r);
 
                         if topic == LOGS_TOPIC {
                             if let Ok(messages) = serde_json::from_slice::<Vec<LogMessage>>(s) {
@@ -112,6 +116,8 @@ pub async fn spawn(
                                                 .with_label_values(&[if is_ok { "" } else { "1" }])
                                                 .inc();
                                         }
+
+                                        mem::drop(permit);
                                     }
                                 });
                             }
@@ -145,6 +151,8 @@ pub async fn spawn(
                                         };
 
                                         start_time.observe_duration();
+
+                                        mem::drop(permit);
                                     }
                                 });
                             };
