@@ -133,12 +133,12 @@ jobs:
       - name: Build DNS server
         if: env.BRANCH_NAME == 'develop'
         run:
-          docker build --pull --target=api -t ${IMAGE_DNS}${IMAGE_POSTFIX}:${TAG} .
+          docker build --pull --target=dns -t ${IMAGE_DNS}${IMAGE_POSTFIX}:${TAG} .
 
       - name: Build commiter server
         if: env.BRANCH_NAME == 'develop'
         run:
-          docker build --pull --target=api -t ${IMAGE_COMMITER}${IMAGE_POSTFIX}:${TAG} .
+          docker build --pull --target=commiter -t ${IMAGE_COMMITER}${IMAGE_POSTFIX}:${TAG} .
 
       - name: Tag and push signaler
         if: env.BRANCH_NAME == 'develop'

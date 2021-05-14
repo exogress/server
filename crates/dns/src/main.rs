@@ -76,8 +76,8 @@ fn main() {
                 .multiple(true),
         )
         .arg(
-            Arg::with_name("ns_cname")
-                .long("ns-cname")
+            Arg::with_name("short_hosts_cname")
+                .long("short-hosts-cname")
                 .required(true)
                 .help("DNS CNAME for all records")
                 .takes_value(true),
@@ -178,9 +178,9 @@ fn main() {
 
     rt.spawn(crate::statistics::spawn(listen_int_http_addr));
 
-    let ns_cname_for_all = matches
-        .value_of("ns_cname")
-        .expect("no --ns-cname provided")
+    let short_hosts_cname = matches
+        .value_of("short_hosts_cname")
+        .expect("no --short-hosts-cname provided")
         .to_string();
 
     let short_zone = matches
@@ -255,7 +255,7 @@ fn main() {
             &net_zone,
             &ns_servers,
             "team.exogress.com.",
-            &ns_cname_for_all,
+            &short_hosts_cname,
             int_api_client,
             &ns_bind_addr,
             ns_port,

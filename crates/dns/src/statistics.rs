@@ -1,7 +1,5 @@
 use lazy_static::lazy_static;
-use prometheus::{
-    register_gauge, register_int_counter_vec, Encoder, Gauge, IntCounterVec, TextEncoder,
-};
+use prometheus::{register_int_counter_vec, Encoder, IntCounterVec, TextEncoder};
 use std::net::SocketAddr;
 use warp::Filter;
 
