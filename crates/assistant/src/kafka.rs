@@ -25,10 +25,12 @@ impl KafkaProducer {
     }
 
     pub async fn send_log_message(&self, log_messages: Vec<LogMessage>) -> anyhow::Result<()> {
+        let serialized = serde_json::to_vec(&log_messages).unwrap();
+        info!("Try to send {} bytes to kafka", serialized.len());
+
         self.producer
             .send(
-                FutureRecord::<(), _>::to(LOGS_TOPIC)
-                    .payload(&serde_json::to_vec(&log_messages).unwrap()),
+                FutureRecord::<(), _>::to(LOGS_TOPIC).payload(&serialized),
                 Duration::from_millis(10),
             )
             .await
