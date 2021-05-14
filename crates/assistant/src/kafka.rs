@@ -19,6 +19,7 @@ impl KafkaProducer {
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "20000")
             .set("fetch.message.max.bytes", "536870912")
+            .set("message.max.bytes", "536870912")
             .create()?;
 
         Ok(KafkaProducer { producer })
