@@ -17,7 +17,8 @@ impl KafkaProducer {
     pub fn new(brokers: &str) -> anyhow::Result<Self> {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
-            .set("message.timeout.ms", "5000")
+            .set("message.timeout.ms", "20000")
+            .set("fetch.message.max.bytes", "536870912")
             .create()?;
 
         Ok(KafkaProducer { producer })
