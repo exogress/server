@@ -1,18 +1,15 @@
-use crate::{
-    elasticsearch::ElasticsearchClient, reporting::MongoDbClient, termination::StopReason,
-    HttpsConfig,
-};
+use crate::{kafka::KafkaProducer, termination::StopReason, HttpsConfig};
 use exogress_common::common_utils::backoff::Backoff;
 use exogress_server_common::{
     assistant::{
         GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
     },
     dns_rules::EnvironmentsRules,
+    kafka::GwStatisticsReport,
     logging::LogMessage,
 };
 use futures::{channel::mpsc, pin_mut, FutureExt, SinkExt, StreamExt};
 use hashbrown::HashMap;
-use itertools::Itertools;
 use redis::AsyncCommands;
 use std::{convert::TryInto, io, net::SocketAddr, path::PathBuf};
 use stop_handle::{StopHandle, StopWait};
@@ -59,8 +56,7 @@ pub async fn server(
     dns_rules_path: PathBuf,
     redis: redis::Client,
     presence_client: crate::presence::Client,
-    db_client: MongoDbClient,
-    elastic_client: ElasticsearchClient,
+    kafka_producer: KafkaProducer,
     stop_handle: StopHandle<StopReason>,
     stop_wait: StopWait<StopReason>,
 ) {
@@ -70,17 +66,17 @@ pub async fn server(
         .and(warp::filters::query::query::<HashMap<String, String>>())
         .and(warp::filters::ws::ws())
         .map({
-            shadow_clone!(redis, db_client, presence_client, elastic_client);
+            shadow_clone!(redis, presence_client, kafka_producer);
 
             move |gw_hostname: String, query: HashMap<String, String>, ws: warp::ws::Ws| {
-                shadow_clone!(mut redis, common_gw_tls_config, db_client, presence_client, stop_handle, elastic_client);
+                shadow_clone!(mut redis, common_gw_tls_config, presence_client, stop_handle, kafka_producer);
 
                 let gw_location = query.get("location").unwrap().clone();
 
                 let start_time = crate::statistics::CHANELS_ESTABLISHMENT_TIME.start_timer();
                 ws.on_upgrade(move |websocket| {
                     {
-                        shadow_clone!(gw_hostname,stop_handle,elastic_client);
+                        shadow_clone!(gw_hostname,stop_handle,kafka_producer);
 
                         async move {
                             match presence_client.set_online(&gw_hostname).await {
@@ -113,50 +109,17 @@ pub async fn server(
                                         Ok::<_, anyhow::Error>(())
                                     };
 
-                                    let (mut mongo_saver_tx, mut mongo_saver_rx) = mpsc::channel(128);
-                                    let (mut elastic_saver_tx, mut elastic_saver_rx) = mpsc::channel::<Vec<LogMessage>>(128);
+                                    let (mut statistics_saver_tx, mut statistics_saver_rx) = mpsc::channel(128);
+                                    let (mut logs_saver_tx, mut logs_saver_rx) = mpsc::channel::<Vec<LogMessage>>(128);
 
-                                    let elastic_saver = tokio::spawn({
-                                        shadow_clone!(elastic_client);
+                                    let logs_saver = tokio::spawn({
+                                        shadow_clone!(kafka_producer);
 
                                         async move {
-                                            while let Some(messages) = elastic_saver_rx.next().await {
-                                                let grouped = messages
-                                                    .into_iter()
-                                                    .into_group_map_by(|msg| {
-                                                        format!("account-{}", msg.account_unique_id).to_lowercase()
-                                                    });
+                                            while let Some(messages) = logs_saver_rx.next().await {
+                                                let r = kafka_producer.send_log_message(messages).await;
 
-                                                for (index, messages_for_index) in grouped {
-                                                    info!("Start saving to elasticsearch index {}", index);
-                                                    let start_time = crate::statistics::ACCOUNT_LOGS_SAVE_TIME.start_timer();
-
-                                                    let res = tokio::time::timeout(
-                                                        Duration::from_secs(5),
-                                                        elastic_client.save_log_messages(index, messages_for_index)
-                                                    ).await;
-
-                                                    let is_ok = match res {
-                                                        Err(e) => {
-                                                            error!("Failed to save to elasticsearch: {}", e);
-                                                            false
-                                                        }
-                                                        Ok(Err(e)) => {
-                                                            error!("Failed to save to elasticsearch: {}", e);
-                                                            false
-                                                        }
-                                                        Ok(Ok(_)) => {
-                                                            start_time.observe_duration();
-                                                            true
-                                                        }
-                                                    };
-
-                                                    crate::statistics::ACCOUNT_LOGS_SAVE
-                                                        .with_label_values(&[
-                                                            if is_ok { "" } else { "1" },
-                                                        ])
-                                                        .inc();
-                                                }
+                                                info!("Kafka send Log Messages res = {:?}", r);
                                             }
 
                                             Ok::<_, anyhow::Error>(())
@@ -164,28 +127,20 @@ pub async fn server(
                                     });
 
 
-                                    let mongo_saver = tokio::spawn({
+                                    let statistics_saver = tokio::spawn({
                                         shadow_clone!(gw_hostname, gw_location);
 
                                         async move {
-                                            while let Some(report) = mongo_saver_rx.next().await {
-                                                info!("Start saving to mongodb");
-                                                let start_time = crate::statistics::STATISTICS_REPORT_SAVE_TIME.start_timer();
-
-                                                match tokio::time::timeout(
-                                                    Duration::from_secs(5),
-                                                    db_client.register_statistics_report(report, &gw_hostname, &gw_location)
-                                                ).await {
-                                                    Ok(Err(e)) => {
-                                                        error!("Error saving statistics to mongo: {:?}", e);
-                                                    }
-                                                    Err(_) => {
-                                                        error!("Timeout saving report to mongo");
+                                            while let Some(report) = statistics_saver_rx.next().await {
+                                                let r = kafka_producer.send_statistics_report(
+                                                    &GwStatisticsReport {
+                                                        report,
+                                                        gw_hostname: gw_hostname.clone(),
+                                                        gw_location: gw_location.clone(),
                                                     },
-                                                    Ok(_) => {}
-                                                };
+                                                ).await;
 
-                                                start_time.observe_duration();
+                                                info!("Kafka send statistics res = {:?}", r);
                                             }
 
                                             Ok::<_, anyhow::Error>(())
@@ -209,10 +164,10 @@ pub async fn server(
 
                                                             match msg {
                                                                 WsFromGwMessage::Statistics { report } => {
-                                                                    mongo_saver_tx.send(report).await?;
+                                                                    statistics_saver_tx.send(report).await?;
                                                                 },
                                                                 WsFromGwMessage::Logs { report } => {
-                                                                    elastic_saver_tx.send(report).await?;
+                                                                    logs_saver_tx.send(report).await?;
                                                                 }
                                                                 _ => {},
                                                             }
@@ -323,13 +278,13 @@ pub async fn server(
                                                         };
 
                                                         tokio::select! {
-                                                        r = forward_from_redis => {
-                                                            info!("forward_from_redis closed: {:?}", r);
-                                                        },
-                                                        r = periodically_send_ping => {
-                                                            info!("periodically_send_ping closed: {:?}", r);
-                                                        },
-                                                    }
+                                                            r = forward_from_redis => {
+                                                                info!("forward_from_redis closed: {:?}", r);
+                                                            },
+                                                            r = periodically_send_ping => {
+                                                                info!("periodically_send_ping closed: {:?}", r);
+                                                            },
+                                                        }
 
                                                         info!("WS forwarder closed");
                                                     }
@@ -362,11 +317,11 @@ pub async fn server(
                                         r = forward_to_ws => {
                                             warn!("WS forward_to_ws stopped: {:?}", r);
                                         },
-                                        r = mongo_saver => {
-                                            warn!("mongo_saver stopped: {:?}", r);
+                                        r = statistics_saver => {
+                                            warn!("statistics_saver stopped: {:?}", r);
                                         },
-                                        r = elastic_saver => {
-                                            warn!("elastic_saver stopped: {:?}", r);
+                                        r = logs_saver => {
+                                            warn!("logs_saver stopped: {:?}", r);
                                         },
                                         r = ensure_pong_received => {
                                             warn!("WS ensure_pong_received stopped: {:?}", r);
@@ -516,10 +471,10 @@ pub async fn server(
     let health = warp::path!("int" / "healthcheck")
         .and(warp::filters::method::get())
         .and_then({
-            shadow_clone!(redis, db_client, elastic_client);
+            shadow_clone!(redis);
 
             move || {
-                shadow_clone!(redis, db_client, elastic_client);
+                shadow_clone!(redis);
 
                 async move {
                     let res = async move {
@@ -531,18 +486,6 @@ pub async fn server(
 
                     if let Err(e) = res {
                         error!("health check: redis error: {}", e);
-                        return Ok::<_, warp::reject::Rejection>(
-                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        );
-                    }
-
-                    if !elastic_client.health().await {
-                        return Ok::<_, warp::reject::Rejection>(
-                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        );
-                    }
-
-                    if !db_client.health().await {
                         return Ok::<_, warp::reject::Rejection>(
                             warp::http::StatusCode::INTERNAL_SERVER_ERROR,
                         );
@@ -563,8 +506,7 @@ pub async fn server(
             .or(save_kv)
             .or(get_kv)
             .or(metrics)
-            .or(health)
-            .with(warp::trace::request()),
+            .or(health),
     );
 
     match https_config {

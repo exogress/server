@@ -7,10 +7,7 @@ extern crate tracing;
 #[macro_use]
 extern crate serde;
 
-use crate::{
-    elasticsearch::ElasticsearchClient, http::GatewayCommonTlsConfig, reporting::MongoDbClient,
-    termination::StopReason,
-};
+use crate::{http::GatewayCommonTlsConfig, kafka::KafkaProducer, termination::StopReason};
 use clap::{crate_version, App, Arg};
 use exogress_common::{common_utils::termination::stop_signal_listener, entities::Ulid};
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
@@ -25,10 +22,9 @@ use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod elasticsearch;
 mod http;
+mod kafka;
 mod presence;
-mod reporting;
 mod statistics;
 mod termination;
 
@@ -100,46 +96,11 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("mongodb_url")
-                .long("mongodb-url")
-                .value_name("URL")
-                .default_value("mongodb://localhost:27017")
-                .required(true)
-                .help("Set mongodb URL")
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("dns_rules_path")
                 .long("dns-rules-path")
                 .value_name("PATH")
                 .required(true)
                 .help("Set DNS rules path")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("elasticsearch_url")
-                .long("elasticsearch-url")
-                .value_name("URL")
-                .default_value("http://localhost:9200")
-                .required(true)
-                .help("Set elasticsearch URL")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("elasticsearch_ca")
-                .long("elasticsearch-ca")
-                .value_name("PATH")
-                .required(false)
-                .help("Set elasticsearch TLS CA")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("mongodb_database")
-                .long("mongodb-database")
-                .value_name("STRING")
-                .default_value("webapp_development")
-                .required(true)
-                .help("Set mongodb database name")
                 .takes_value(true),
         )
         .arg(
@@ -152,16 +113,18 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_server_common::clap::int_api::add_args(
-        exogress_common::common_utils::clap::threads::add_args(
-            exogress_server_common::clap::sentry::add_args(
-                exogress_server_common::clap::log::add_args(spawn_args),
+    let spawn_args = exogress_server_common::kafka::clap::add_args(
+        exogress_server_common::clap::int_api::add_args(
+            exogress_common::common_utils::clap::threads::add_args(
+                exogress_server_common::clap::sentry::add_args(
+                    exogress_server_common::clap::log::add_args(spawn_args),
+                ),
             ),
+            true,
+            false,
+            false,
+            false,
         ),
-        true,
-        false,
-        false,
-        false,
     );
 
     let args = App::new("Exogress Assistant Server")
@@ -194,11 +157,12 @@ fn main() {
 
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
+    let kafka_brokers = exogress_server_common::kafka::clap::extract_matches(&matches);
 
     let rt = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(num_threads)
-        .thread_name("assistant-reactor")
+        .thread_name("reactor")
         .build()
         .unwrap();
 
@@ -217,20 +181,6 @@ fn main() {
         .expect("no --dns-rules-path provided")
         .parse()
         .expect("bad --dns-rules-path");
-
-    let elasticsearch_url = matches
-        .value_of("elasticsearch_url")
-        .expect("no --elasticsearch-url provided")
-        .to_string();
-    let elasticsearch_ca = matches.value_of("elasticsearch_ca").map(|s| s.to_string());
-    let mongodb_url = matches
-        .value_of("mongodb_url")
-        .expect("no --mongodb-url provided")
-        .to_string();
-    let mongodb_db = matches
-        .value_of("mongodb_database")
-        .expect("no --mongodb-database provided")
-        .to_string();
 
     let tls_config =
         if let (Some(int_tls_cert_path), Some(int_tls_key_path), Some(int_tls_auth_ca_path)) = (
@@ -281,6 +231,9 @@ fn main() {
         shadow_clone!(webapp_base_url, assistant_id, int_client_cert);
 
         AssertUnwindSafe(async move {
+            let kafka_producer = KafkaProducer::new(kafka_brokers.as_str())
+                .expect("Failed to initialize kafka producer");
+
             info!("Register assistant");
             let presence_client = presence::Client::new(
                 webapp_base_url.clone(),
@@ -315,15 +268,6 @@ fn main() {
 
             let redis_client = Client::open(redis_addr.as_str()).unwrap();
 
-            let mongodb_client = MongoDbClient::new(mongodb_url.as_ref(), mongodb_db.as_ref())
-                .await
-                .expect("mongo db connection error");
-
-            let elastic_client =
-                ElasticsearchClient::new(elasticsearch_url.as_ref(), elasticsearch_ca)
-                    .await
-                    .expect("elasticsearch db connection error");
-
             info!("Listening  HTTP on {}", listen_http_addr);
 
             let http = http::server(
@@ -337,8 +281,7 @@ fn main() {
                 dns_rules_path,
                 redis_client,
                 presence_client,
-                mongodb_client,
-                elastic_client,
+                kafka_producer,
                 app_stop_handle,
                 app_stop_wait,
             );

@@ -595,8 +595,6 @@ impl Cache {
                     account_used = self.get_account_used(account_unique_id).await?;
                 }
 
-                error!("Will add without checks!");
-
                 self.add_file_without_checks(
                     account_unique_id,
                     req_headers,
@@ -620,7 +618,7 @@ impl Cache {
 
             r
         } else {
-            error!("Will not save since another saving is in progress");
+            debug!("Will not save since another saving is in progress");
             Ok(false)
         }
     }
@@ -855,7 +853,6 @@ impl CacheResponse {
                 }))),
             ))
         } else {
-            info!("The response from cache is full. Clone it through the temp file");
             let mut full = self.full;
 
             let cloned_future = clone_response_through_tempfile(&mut full).await?;

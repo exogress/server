@@ -19,6 +19,7 @@ env:
   IMAGE_TRANSFORMER: quay.io/exogress/transformer
   IMAGE_API: quay.io/exogress/api
   IMAGE_DNS: quay.io/exogress/dns
+  IMAGE_COMMITER: quay.io/exogress/commiter
   IMAGE_POSTFIX: ""
   TAG: dev
 
@@ -134,6 +135,11 @@ jobs:
         run:
           docker build --pull --target=api -t ${IMAGE_DNS}${IMAGE_POSTFIX}:${TAG} .
 
+      - name: Build commiter server
+        if: env.BRANCH_NAME == 'develop'
+        run:
+          docker build --pull --target=api -t ${IMAGE_COMMITER}${IMAGE_POSTFIX}:${TAG} .
+
       - name: Tag and push signaler
         if: env.BRANCH_NAME == 'develop'
         run: |
@@ -189,4 +195,12 @@ jobs:
           docker tag ${IMAGE_API}${IMAGE_POSTFIX}:${TAG} ${IMAGE_API}${IMAGE_POSTFIX}:${GITHUB_SHA}
           docker push ${IMAGE_API}${IMAGE_POSTFIX}:latest
           docker push ${IMAGE_API}${IMAGE_POSTFIX}:${GITHUB_SHA}
+
+      - name: Tag and push commiter server
+        if: env.BRANCH_NAME == 'develop'
+        run: |
+          docker tag ${IMAGE_COMMITER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_COMMITER}${IMAGE_POSTFIX}:latest
+          docker tag ${IMAGE_COMMITER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_COMMITER}${IMAGE_POSTFIX}:${GITHUB_SHA}
+          docker push ${IMAGE_COMMITER}${IMAGE_POSTFIX}:latest
+          docker push ${IMAGE_COMMITER}${IMAGE_POSTFIX}:${GITHUB_SHA}
 

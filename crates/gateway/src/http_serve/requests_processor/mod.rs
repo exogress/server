@@ -961,10 +961,6 @@ async fn trigger_transformation_if_required(
                                         Ok(acc)
                                     })
                                     .await?;
-                                info!(
-                                    "decrypted stream is ready! result {:?}",
-                                    transformed_content.len()
-                                );
 
                                 resp.headers_mut().insert(
                                     "x-exg-transformed",
@@ -1047,17 +1043,12 @@ async fn trigger_transformation_if_required(
                             Some(TransformationStatus::SavedToCache);
                     }
                     ProcessResponse::PendingUpload { upload_id, .. } => {
-                        error!("will upload");
                         transformer_client
                             .upload(&upload_id, cloned_res.content_length, resp.into_body())
                             .await?;
                     }
-                    ProcessResponse::Accepted => {
-                        error!("upload has already been accepted");
-                    }
-                    ProcessResponse::Processing => {
-                        error!("upload is processing");
-                    }
+                    ProcessResponse::Accepted => {}
+                    ProcessResponse::Processing => {}
                 }
             }
         }
@@ -1103,11 +1094,11 @@ fn is_eligible_for_transformation_not_considering_status_code(
                         || (mime_type.0 == IMAGE_PNG && post_processing.image.is_png)
                 }
                 Ok(None) => {
-                    error!("no content-type while checking transformation eligibility");
+                    // error!("no content-type while checking transformation eligibility");
                     false
                 }
                 Err(_e) => {
-                    error!("bad content-type while checking transformation eligibility");
+                    // error!("bad content-type while checking transformation eligibility");
                     false
                 }
             }
@@ -1572,7 +1563,7 @@ impl ResolvedStaticResponseAction {
                         *res = Response::new(Body::empty());
                         if !is_in_exception {
                             let rescuable = Rescuable::Exception { exception, data };
-                            error!("could not invoke static resp; call handle_rescuable. rescue handlers: {:?}", self.rescues);
+                            // error!("could not invoke static resp; call handle_rescuable. rescue handlers: {:?}", self.rescues);
                             handler.handle_rescuable(
                                 req,
                                 res,
@@ -2338,8 +2329,6 @@ impl ResolvedHandler {
         rescues: &[ResolvedRescueItem],
         rescuable: &Rescuable,
     ) -> Option<ResolvedRescueItem> {
-        error!("find_exception_handler {:?} => {:?}", rescues, rescuable);
-
         for rescue_item in rescues.iter() {
             match (rescuable, &rescue_item.catch) {
                 (
@@ -2354,9 +2343,7 @@ impl ResolvedHandler {
                 ) if Self::is_status_code_matches(status_code_range, status_code) => {
                     return Some(rescue_item.clone())
                 }
-                _ => {
-                    error!("unmatched!!");
-                }
+                _ => {}
             }
         }
 
@@ -2396,11 +2383,6 @@ impl ResolvedHandler {
 
         let result = loop {
             // iterate over the chain of exceptions
-
-            error!(
-                "maybe_resolved_rescue_item = {:?}",
-                maybe_resolved_rescue_item
-            );
 
             if let Some(rescue_item) = maybe_resolved_rescue_item {
                 // some catch block is found

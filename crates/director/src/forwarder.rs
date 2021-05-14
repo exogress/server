@@ -10,6 +10,7 @@ use tokio::{
     io,
     io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    time::sleep,
 };
 
 #[derive(Builder)]
@@ -190,6 +191,7 @@ async fn forwarder(
                                         }
                                         Err(_e) => {
                                             // error!("could not serve connection to gateway: {}", e);
+                                            sleep(Duration::from_millis(10)).await;
                                         }
                                     };
                                 }

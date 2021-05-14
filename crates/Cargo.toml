@@ -8,6 +8,7 @@ members = [
  "assistant",
  "director",
  "transformer",
+ "commiter",
 ]
 
 [profile.release]

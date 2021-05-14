@@ -124,12 +124,8 @@ impl TransformerClient {
             .header(CONTENT_TYPE, content_type)
             .header(CONTENT_LENGTH, HeaderValue::from(len));
 
-        error!("send upload request");
-
         let req = builder.body(body)?;
         let resp = self.client.request(req).await?;
-
-        error!("request sent res = {:?}", resp);
 
         if resp.status().is_success() {
             Ok(())
@@ -144,8 +140,6 @@ impl TransformerClient {
         content_type: &str,
         content_hash: &str,
     ) -> anyhow::Result<Option<(hyper::Body, String)>> {
-        error!("Best matched content from transformer: {:?}", succeeded);
-
         let r = self
             .download_format(content_hash, &succeeded, &content_type)
             .await?;

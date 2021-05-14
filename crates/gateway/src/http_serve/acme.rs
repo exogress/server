@@ -44,7 +44,7 @@ pub async fn acme_server(
         }
     });
 
-    warp::serve(own_acme.with(warp::trace::request()))
+    warp::serve(own_acme)
         .bind(listen_http_acme_challenge_addr)
         .await;
 

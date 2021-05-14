@@ -301,8 +301,7 @@ fn main() {
                 gcs_bucket.clone(),
             )
             .or(healthcheck)
-            .or(prometheus)
-            .with(warp::trace::request()),
+            .or(prometheus),
         )
         .bind_with_graceful_shutdown(
             listen_http,

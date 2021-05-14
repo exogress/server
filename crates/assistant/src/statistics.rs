@@ -17,24 +17,6 @@ lazy_static! {
         DEFAULT_TIME_BUCKETS.clone()
     )
     .unwrap();
-    pub static ref STATISTICS_REPORT_SAVE_TIME: Histogram = register_histogram!(
-        "assistant_statistics_report_save_time",
-        "Time taken to save statistics reports to mongodb",
-        DEFAULT_TIME_BUCKETS.clone()
-    )
-    .unwrap();
-    pub static ref ACCOUNT_LOGS_SAVE_TIME: Histogram = register_histogram!(
-        "assistant_accounts_logs_batch_save_time",
-        "Time taken to save log message batch to account",
-        DEFAULT_TIME_BUCKETS.clone()
-    )
-    .unwrap();
-    pub static ref ACCOUNT_LOGS_SAVE: IntCounterVec = register_int_counter_vec!(
-        "assistant_account_logs_saved",
-        "Number of account logs saved",
-        &["error"]
-    )
-    .unwrap();
     pub static ref GW_MESSAGES_PARSED: IntCounterVec = register_int_counter_vec!(
         "assistant_gw_messages_parsed",
         "Number of parsed gateway messages",
