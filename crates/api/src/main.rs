@@ -21,6 +21,7 @@ use crate::{
 };
 use clap::{crate_version, App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
+use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use mimalloc::MiMalloc;
 use std::net::SocketAddr;
 use stop_handle::stop_handle;
@@ -114,6 +115,11 @@ fn main() {
 
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
+    let IntApiBaseUrls {
+        int_client_cert,
+        assistant_url,
+        ..
+    } = exogress_server_common::clap::int_api::extract_matches(&matches, false, true, false, false);
 
     let rt = Builder::new_multi_thread()
         .enable_all()

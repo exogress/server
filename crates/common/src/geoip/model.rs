@@ -11,11 +11,6 @@ pub struct LocationAndIsp {
     pub continent: Option<model::Continent>,
     pub country: Option<model::Country>,
     pub location: Option<model::Location>,
-    // pub postal: Option<model::Postal>,
-
-    // pub connection_type: Option<model::ConnectionType>,
-
-    // pub subdivisions: Option<BTreeMap<SmolStr, model::Subdivision>>,
 }
 
 pub mod model {
@@ -33,8 +28,8 @@ pub mod model {
     pub struct Location {
         pub latitude: Option<f64>,
         pub longitude: Option<f64>,
-        pub time_zone: Option<SmolStr>,
-        pub weather_code: Option<SmolStr>,
+        // pub time_zone: Option<SmolStr>,
+        // pub weather_code: Option<SmolStr>,
     }
 
     #[derive(Deserialize, Serialize, Clone, Debug)]

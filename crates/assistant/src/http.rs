@@ -7,6 +7,7 @@ use exogress_server_common::{
     assistant::{
         GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
     },
+    dns_rules::EnvironmentsRules,
     logging::LogMessage,
 };
 use futures::{channel::mpsc, pin_mut, FutureExt, SinkExt, StreamExt};
@@ -55,6 +56,7 @@ pub async fn server(
     listen_addr: SocketAddr,
     common_gw_tls_config: GatewayCommonTlsConfig,
     https_config: Option<HttpsConfig>,
+    dns_rules_path: PathBuf,
     redis: redis::Client,
     presence_client: crate::presence::Client,
     db_client: MongoDbClient,
@@ -475,6 +477,42 @@ pub async fn server(
                 }
             });
 
+    let dns_rules = warp::path!("int_api" / "v1" / "dns_rules")
+        .and(warp::filters::method::get())
+        .and_then({
+            shadow_clone!(dns_rules_path);
+
+            move || {
+                shadow_clone!(dns_rules_path);
+
+                async move {
+                    let res = async move {
+                        let mut file = tokio::fs::File::open(dns_rules_path).await?;
+                        let mut v = Vec::new();
+
+                        file.read_to_end(&mut v).await?;
+
+                        let rules: EnvironmentsRules = serde_yaml::from_slice(&v)?;
+
+                        Ok::<_, anyhow::Error>(rules)
+                    }
+                    .await;
+
+                    match res {
+                        Ok(rules) => {
+                            Ok::<_, warp::reject::Rejection>(
+                                warp::reply::json::<EnvironmentsRules>(&rules),
+                            )
+                        }
+                        Err(e) => {
+                            error!("Error reading DNS rules: {}", e);
+                            Err(warp::reject::custom(InternalServerError {}))
+                        }
+                    }
+                }
+            }
+        });
+
     let health = warp::path!("int" / "healthcheck")
         .and(warp::filters::method::get())
         .and_then({
@@ -521,6 +559,7 @@ pub async fn server(
 
     let combined = warp::serve(
         notifications
+            .or(dns_rules)
             .or(save_kv)
             .or(get_kv)
             .or(metrics)

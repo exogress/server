@@ -18,6 +18,7 @@ env:
   IMAGE_DIRECTOR: quay.io/exogress/director
   IMAGE_TRANSFORMER: quay.io/exogress/transformer
   IMAGE_API: quay.io/exogress/api
+  IMAGE_DNS: quay.io/exogress/dns
   IMAGE_POSTFIX: ""
   TAG: dev
 
@@ -128,6 +129,11 @@ jobs:
         run:
           docker build --pull --target=api -t ${IMAGE_API}${IMAGE_POSTFIX}:${TAG} .
 
+      - name: Build DNS server
+        if: env.BRANCH_NAME == 'develop'
+        run:
+          docker build --pull --target=api -t ${IMAGE_DNS}${IMAGE_POSTFIX}:${TAG} .
+
       - name: Tag and push signaler
         if: env.BRANCH_NAME == 'develop'
         run: |
@@ -136,7 +142,7 @@ jobs:
           docker push ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:latest
           docker push ${IMAGE_SIGNALER}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
-      - name: Tag and push  director
+      - name: Tag and push director
         if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${TAG} ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:latest
@@ -144,7 +150,15 @@ jobs:
           docker push ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:latest
           docker push ${IMAGE_DIRECTOR}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
-      - name: Tag and push  gateway
+      - name: Tag and push DNS
+        if: env.BRANCH_NAME == 'develop'
+        run: |
+          docker tag ${IMAGE_DNS}${IMAGE_POSTFIX}:${TAG} ${IMAGE_DNS}${IMAGE_POSTFIX}:latest
+          docker tag ${IMAGE_DNS}${IMAGE_POSTFIX}:${TAG} ${IMAGE_DNS}${IMAGE_POSTFIX}:${GITHUB_SHA}
+          docker push ${IMAGE_DNS}${IMAGE_POSTFIX}:latest
+          docker push ${IMAGE_DNS}${IMAGE_POSTFIX}:${GITHUB_SHA}
+
+      - name: Tag and push gateway
         if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${TAG} ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:latest
@@ -152,7 +166,7 @@ jobs:
           docker push ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:latest
           docker push ${IMAGE_GATEWAY}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
-      - name: Tag and push  assistant
+      - name: Tag and push assistant
         if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${TAG} ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:latest
@@ -160,7 +174,7 @@ jobs:
           docker push ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:latest
           docker push ${IMAGE_ASSISTANT}${IMAGE_POSTFIX}:${GITHUB_SHA}
 
-      - name: Tag and push  transformer
+      - name: Tag and push transformer
         if: env.BRANCH_NAME == 'develop'
         run: |
           docker tag ${IMAGE_TRANSFORMER}${IMAGE_POSTFIX}:${TAG} ${IMAGE_TRANSFORMER}${IMAGE_POSTFIX}:latest

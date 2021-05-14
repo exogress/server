@@ -54,3 +54,10 @@ RUN apt install -y lmdb-utils liblmdb-dev liblmdb0
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
+
+FROM base as dns
+COPY --from=builder /code/crates/target/release/exogress-dns /usr/local/bin/
+COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
+RUN exogress-dns autocompletion bash > /etc/profile.d/exogress-dns.sh && \
+    echo "source /etc/profile.d/exogress-dns.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-dns"]

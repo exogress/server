@@ -45,9 +45,6 @@ async fn forwarder(
 
         match tcp.accept().await {
             Ok((mut incoming, incoming_addr)) => {
-                incoming.set_nodelay(true)?;
-                let local_addr = incoming.local_addr()?;
-
                 tokio::spawn({
                     shadow_clone!(sharded_gateways, balancers);
 
@@ -55,6 +52,9 @@ async fn forwarder(
                         crate::statistics::NUM_ACTIVE_FORWARDERS.inc();
 
                         let perform_connection = async move {
+                            incoming.set_nodelay(true)?;
+                            let local_addr = incoming.local_addr()?;
+
                             let mut consumed_bytes = None;
                             let mut sni_hostname = None;
 

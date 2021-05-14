@@ -1,0 +1,22 @@
+---
+main:
+  rules:
+    - conditions:
+        iso_code: ru
+      lat: 37.6173
+      lon: 55.7558
+      location: moscow
+      sample_rate: 0.5
+      addrs:
+        - addr: 127.0.0.2
+          weight: 1
+        - addr: 127.0.0.3
+          weight: 1
+      enabled: true
+  fallback_addrs:
+    - addr: 127.0.0.1
+      weight: 1
+#    - addr: 127.0.0.10
+#      weight: 2
+#    - addr: 127.0.0.11
+#      weight: 3

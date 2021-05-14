@@ -21,13 +21,12 @@ use exogress_common::{
     },
     tunnel::TunnelHello,
 };
-use exogress_server_common::{logging::LogMessage, presence};
+use exogress_server_common::{geoip::GeoipReader, logging::LogMessage, presence};
 use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use http::StatusCode;
 use lru_time_cache::LruCache;
-use memmap::Mmap;
 use parking_lot::Mutex;
 use percent_encoding::NON_ALPHANUMERIC;
 use reqwest::Identity;
@@ -71,7 +70,7 @@ pub struct Client {
 
     presence_client: presence::Client,
 
-    dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
+    dbip: Option<GeoipReader>,
 
     cache: Cache,
     resolver: TokioAsyncResolver,
@@ -353,7 +352,7 @@ impl Client {
         log_messages_tx: mpsc::UnboundedSender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
-        dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
+        dbip: Option<GeoipReader>,
         resolver: TokioAsyncResolver,
     ) -> Self {
         let presence_client = presence::Client::new(

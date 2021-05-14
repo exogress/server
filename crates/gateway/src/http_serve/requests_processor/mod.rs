@@ -3,7 +3,6 @@ use crate::{
         traffic_counter::{RecordedTrafficStatistics, TrafficCounters},
         ClientTunnels,
     },
-    dbip::LocationAndIsp,
     http_serve::{
         auth::JwtEcdsa,
         cache::{Cache, HandlerChecksum},
@@ -52,6 +51,7 @@ use exogress_common::{
 use exogress_server_common::{
     crypto,
     crypto::decrypt_reader,
+    geoip::{model::LocationAndIsp, GeoipReader},
     logging::{
         CacheSavingStatus, CacheableInvocationProcessingStep, CatchProcessingStep,
         CatchProcessingVariantStep, ExceptionProcessingStep, HandlerProcessingStep,
@@ -80,7 +80,6 @@ use hyper::Body;
 use itertools::Itertools;
 use langtag::LanguageTagBuf;
 use linked_hash_map::LinkedHashMap;
-use memmap::Mmap;
 use mime::{IMAGE_JPEG, IMAGE_PNG, TEXT_HTML_UTF_8};
 use parking_lot::Mutex;
 use pin_utils::pin_mut;
@@ -145,7 +144,7 @@ pub struct RequestsProcessor {
     gw_location: SmolStr,
     transformer_client: TransformerClient,
     log_messages_tx: mpsc::UnboundedSender<LogMessage>,
-    dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
+    dbip: Option<GeoipReader>,
 }
 
 impl RequestsProcessor {
@@ -908,8 +907,6 @@ async fn trigger_transformation_if_required(
                 .typed_get::<typed_headers::ContentType>()?;
 
             if let (Some(accept), Some(content_type)) = (maybe_accept, maybe_content_type) {
-                error!("TRANSFORMER: request_content");
-
                 let transformer_result = transformer_client
                     .request_content(
                         &cloned_res.content_hash,
@@ -3093,7 +3090,7 @@ impl RequestsProcessor {
         gw_location: &str,
         cache: Cache,
         presence_client: presence::Client,
-        dbip: Option<Arc<maxminddb::Reader<Mmap>>>,
+        dbip: Option<GeoipReader>,
         resolver: TokioAsyncResolver,
     ) -> anyhow::Result<RequestsProcessor> {
         let xchacha20poly1305_secret_key =

@@ -17,7 +17,7 @@ use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use mimalloc::MiMalloc;
 use redis::Client;
-use std::{net::SocketAddr, panic::AssertUnwindSafe, time::Duration};
+use std::{net::SocketAddr, panic::AssertUnwindSafe, path::PathBuf, time::Duration};
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
@@ -106,6 +106,14 @@ fn main() {
                 .default_value("mongodb://localhost:27017")
                 .required(true)
                 .help("Set mongodb URL")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("dns_rules_path")
+                .long("dns-rules-path")
+                .value_name("PATH")
+                .required(true)
+                .help("Set DNS rules path")
                 .takes_value(true),
         )
         .arg(
@@ -203,6 +211,12 @@ fn main() {
         .expect("error initializing logger");
 
     rt.spawn(logger_bg);
+
+    let dns_rules_path: PathBuf = matches
+        .value_of("dns_rules_path")
+        .expect("no --dns-rules-path provided")
+        .parse()
+        .expect("bad --dns-rules-path");
 
     let elasticsearch_url = matches
         .value_of("elasticsearch_url")
@@ -320,6 +334,7 @@ fn main() {
                     tls_key_path: gw_tls_key_path.parse().unwrap(),
                 },
                 tls_config,
+                dns_rules_path,
                 redis_client,
                 presence_client,
                 mongodb_client,

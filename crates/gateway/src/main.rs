@@ -13,19 +13,13 @@ extern crate prometheus;
 #[macro_use]
 extern crate anyhow;
 
-use async_compression::futures::write::GzipDecoder;
 use byte_unit::Byte;
 use clap::{crate_version, App, Arg};
-use futures::io::BufWriter;
-use futures_util::io::AsyncWriteExt;
 use mimalloc::MiMalloc;
-use progress_bar::progress_bar::ProgressBar;
-use reqwest::header;
 use rules_counter::AccountCounters;
 use smol_str::SmolStr;
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use stop_handle::stop_handle;
-use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::clients::{tunnels_acceptor, ClientTunnels};
@@ -57,7 +51,6 @@ use tokio::{runtime::Builder, time::sleep};
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 pub(crate) mod clients;
-mod dbip;
 mod http_serve;
 mod int_server;
 mod mime_helpers;
@@ -242,42 +235,11 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("download_dbip")
-                .long("download-dbip")
-                .help("Perform DBIP download")
-                .requires("isp_location_dbip_url"),
-        )
-        .arg(
-            Arg::with_name("isp_location_dbip_url")
-                .long("isp-location-dbip-url")
-                .env("ISP_LOCATION_DBIP_URL")
-                .value_name("URL")
-                .help("ISP DBIP Download URL")
-                .takes_value(true)
-        )
-        .arg(
             Arg::with_name("cache_dir")
                 .long("cache-dir")
                 .value_name("PATH")
                 .required(true)
                 .help("Set cache dir")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("dbip_download_dir")
-                .long("dbip-download-dir")
-                .env("DBIP_DOWNLOAD_DIR")
-                .value_name("PATH")
-                .help("ISP DBIP Download into this dir. If not set temporary directory will be created")
-                .takes_value(true)
-        )
-        .arg(
-            Arg::with_name("dbip_path")
-                .long("dbip-path")
-                .conflicts_with("download_dbip")
-                .value_name("PATH")
-                .env("DBIP_PATH")
-                .help("Path to MMDB database")
                 .takes_value(true),
         );
 
@@ -299,16 +261,18 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_server_common::clap::int_api::add_args(
-        exogress_common::common_utils::clap::threads::add_args(
-            exogress_server_common::clap::sentry::add_args(
-                exogress_server_common::clap::log::add_args(spawn_args),
+    let spawn_args = exogress_server_common::geoip::clap::add_args(
+        exogress_server_common::clap::int_api::add_args(
+            exogress_common::common_utils::clap::threads::add_args(
+                exogress_server_common::clap::sentry::add_args(
+                    exogress_server_common::clap::log::add_args(spawn_args),
+                ),
             ),
+            true,
+            true,
+            true,
+            true,
         ),
-        true,
-        true,
-        true,
-        true,
     );
 
     let args = App::new("Exogress Gateway")
@@ -503,114 +467,7 @@ fn main() {
         .unwrap();
 
     rt.block_on(async move {
-        let temp_db_file = NamedTempFile::new().expect("could not create named temp file");
-
-        let db_path = if matches.is_present("download_dbip") {
-            use tokio_util::compat::TokioAsyncReadCompatExt;
-
-            let (db_file, db_path) = match matches.value_of("dbip_download_dir") {
-                Some(download_dir) => {
-                    let db_path = PathBuf::from(download_dir.to_string()).join("dbip.mmdb");
-
-                    if db_path.exists() {
-                        fs::remove_file(&db_path).expect("Could not delete DB");
-                    };
-
-                    (
-                        tokio::fs::File::create(&db_path)
-                            .await
-                            .expect("Could not create dbip path"),
-                        db_path,
-                    )
-                }
-                None => (
-                    tokio::fs::File::from(
-                        temp_db_file.reopen().expect("could not reopen temp file"),
-                    ),
-                    temp_db_file.path().to_path_buf(),
-                ),
-            };
-
-            let dbip_url = matches
-                .value_of("isp_location_dbip_url")
-                .unwrap()
-                .to_string();
-
-            let client = reqwest::Client::new();
-
-            let total_size = {
-                let resp = client
-                    .head(dbip_url.as_str())
-                    .send()
-                    .await
-                    .expect("could not get DB size");
-                if resp.status().is_success() {
-                    resp.headers()
-                        .get(header::CONTENT_LENGTH)
-                        .and_then(|ct_len| ct_len.to_str().ok())
-                        .and_then(|ct_len| ct_len.parse().ok())
-                        .unwrap_or(0)
-                } else {
-                    error!("error getting geo DB size: {:?}", resp.status());
-                    panic!("could not get DB size");
-                }
-            };
-
-            let mut pb = ProgressBar::new(total_size);
-
-            let mut compressed_csv_db = reqwest::get(&dbip_url)
-                .await
-                .expect("Could not download dbip DB");
-
-            let mut decoder = GzipDecoder::new(BufWriter::new(db_file.compat()));
-
-            println!(
-                "Downloading dbip mmdb file from {:?} to {:?}...",
-                dbip_url, db_path
-            );
-
-            let mut read_bytes: usize = 0;
-
-            while let Some(chunk) = compressed_csv_db.chunk().await? {
-                read_bytes += chunk.len();
-                pb.set_progression(read_bytes);
-                decoder.write_all(&chunk).await.expect("Error writing DB");
-            }
-
-            decoder.close().await.expect("Error writing DB");
-
-            println!("Download complete!");
-
-            Some(db_path)
-        } else {
-            matches
-                .value_of("dbip_path")
-                .map(|path| PathBuf::from(path.to_string()))
-        };
-
-        let dbip = db_path.map(|path| {
-            info!("Opening maxminddb...");
-            let dbip = Arc::new(maxminddb::Reader::open_mmap(&path).expect("Failed to open dbip"));
-            info!("maxminddb successfully opened");
-
-            let loc = dbip
-                .lookup::<dbip::LocationAndIsp>("123.33.22.123".parse().unwrap())
-                .unwrap();
-
-            info!(
-                "{}/{}",
-                loc.country
-                    .clone()
-                    .and_then(|c| c.iso_code)
-                    .unwrap_or_default(),
-                loc.city
-                    .as_ref()
-                    .and_then(|c| c.names.as_ref().and_then(|n| n.en.clone()))
-                    .unwrap_or_default()
-            );
-
-            dbip
-        });
+        let dbip = exogress_server_common::geoip::clap::extract_matches(&matches);
 
         let gw_location: SmolStr = matches
             .value_of("location")

@@ -3,6 +3,7 @@ members = [
  "common",
  "api",
  "gateway",
+ "dns",
  "signaler",
  "assistant",
  "director",

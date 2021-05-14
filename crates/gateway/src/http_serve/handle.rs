@@ -380,7 +380,7 @@ pub async fn server(
                 tokio::spawn(async move {
                     crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.inc();
 
-                    if let Err(e) = handle_connection.await {
+                    if let Err(_e) = handle_connection.await {
                         // warn!("connection closed: {}", e);
                     }
 

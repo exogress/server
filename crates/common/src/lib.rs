@@ -6,6 +6,9 @@ pub mod clap;
 #[cfg(feature = "crypto")]
 pub mod crypto;
 pub mod director;
+pub mod dns_rules;
+#[cfg(feature = "geoip")]
+pub mod geoip;
 pub mod logging;
 pub mod presence;
 pub mod prometheus;

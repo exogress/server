@@ -1,10 +1,9 @@
-use crate::int_api_client::IntApiClient;
+use crate::{catalog::DynamicZones, int_api_client::IntApiClient, rules_processor::RulesProcessor};
 use futures::channel::oneshot;
 use std::{
     collections::BTreeMap,
     convert::TryInto,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, RwLock},
     time::Duration,
 };
 use tokio::{
@@ -12,7 +11,6 @@ use tokio::{
     select,
 };
 use trust_dns_server::{
-    authority::Catalog,
     client::{
         proto::rr::rdata::SOA,
         rr::{LowerName, RrKey},
@@ -21,38 +19,23 @@ use trust_dns_server::{
     ServerFuture,
 };
 
-mod authority;
-
 pub struct DnsServer {
     _stop: oneshot::Sender<()>,
 }
 
 impl DnsServer {
-    const SERIAL: u32 = 1;
-    const TTL: i32 = 21600;
-
-    pub async fn new(
-        short_zone: &str,
+    fn zone_records(
+        short_zone_lower_name: &LowerName,
         ns_servers: &[String],
         soa_rname: &str,
-        target: &str,
-        int_api_client: IntApiClient,
-        bind_to: &[IpAddr],
-        port: u16,
-    ) -> anyhow::Result<Self> {
-        info!(
-            "spawn DNS server for zone {} served by {:?}, with rname {}, CNAME all to {} on {:?} port {}", 
-              short_zone, ns_servers, soa_rname, target, bind_to, port);
-
-        let short_zone_lower_name: LowerName = short_zone.parse()?;
-
-        let mut records = BTreeMap::new();
-        let mut soa_val = RecordSet::with_ttl(
+    ) -> anyhow::Result<BTreeMap<RrKey, RecordSet>> {
+        let mut short_zone_records = BTreeMap::new();
+        let mut short_zone_soa_val = RecordSet::with_ttl(
             short_zone_lower_name.clone().into(),
             RecordType::SOA,
             Self::TTL.try_into()?,
         );
-        soa_val.insert(
+        short_zone_soa_val.insert(
             Record::from_rdata(
                 short_zone_lower_name.clone().into(),
                 Self::TTL.try_into()?,
@@ -68,9 +51,9 @@ impl DnsServer {
             ),
             Self::SERIAL,
         );
-        records.insert(
+        short_zone_records.insert(
             RrKey::new(short_zone_lower_name.clone(), RecordType::SOA),
-            soa_val,
+            short_zone_soa_val,
         );
 
         let mut ns_val = RecordSet::with_ttl(
@@ -90,24 +73,43 @@ impl DnsServer {
             );
         }
 
-        records.insert(
+        short_zone_records.insert(
             RrKey::new(short_zone_lower_name.clone(), RecordType::NS),
             ns_val,
         );
 
-        let mut catalog = Catalog::new();
-        catalog.upsert(
-            short_zone_lower_name,
-            Box::new(Arc::new(RwLock::new(
-                authority::ShortZoneAuthority::new(
-                    short_zone.parse()?,
-                    records,
-                    target.parse().unwrap(),
-                    int_api_client,
-                )
-                .map_err(|e| anyhow!("{}", e))?,
-            ))),
-        );
+        Ok(short_zone_records)
+    }
+
+    const SERIAL: u32 = 1;
+    const TTL: i32 = 21600;
+
+    pub async fn new(
+        short_zone: &str,
+        net_zone: &str,
+        ns_servers: &[String],
+        soa_rname: &str,
+        target: &str,
+        int_api_client: IntApiClient,
+        bind_to: &[IpAddr],
+        port: u16,
+        rules_processor: RulesProcessor,
+    ) -> anyhow::Result<Self> {
+        info!(
+            "spawn DNS server for zone {} served by {:?}, with rname {}, CNAME all to {} on {:?} port {}",
+            short_zone, ns_servers, soa_rname, target, bind_to, port);
+
+        let short_zone_lower_name: LowerName = short_zone.parse()?;
+        let net_zone_lower_name: LowerName = net_zone.parse()?;
+        let catalog = DynamicZones::new(
+            short_zone,
+            net_zone,
+            Self::zone_records(&short_zone_lower_name, ns_servers, soa_rname)?,
+            Self::zone_records(&net_zone_lower_name, ns_servers, soa_rname)?,
+            target,
+            int_api_client,
+            rules_processor,
+        )?;
 
         let mut server = ServerFuture::new(catalog);
 
