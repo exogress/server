@@ -13,6 +13,8 @@ env:
   IMAGE_DIRECTOR: quay.io/exogress/director
   IMAGE_TRANSFORMER: quay.io/exogress/transformer
   IMAGE_API: quay.io/exogress/api
+  IMAGE_COMMITER: quay.io/exogress/commiter
+  IMAGE_DNS: quay.io/exogress/dns
 
 jobs:
   test:
@@ -79,6 +81,14 @@ jobs:
         run:
           docker build --pull --target=transformer -t ${IMAGE_TRANSFORMER}:${{ github.event.release.tag_name }} .
 
+      - name: Build dns
+        run:
+          docker build --pull --target=dns -t ${IMAGE_DNS}:${{ github.event.release.tag_name }} .
+
+      - name: Build commiter
+        run:
+          docker build --pull --target=commiter -t ${IMAGE_COMMITER}:${{ github.event.release.tag_name }} .
+
       - name: Build API server
         run:
           docker build --pull --target=api -t ${IMAGE_API}:${{ github.event.release.tag_name }} .
@@ -106,3 +116,11 @@ jobs:
       - name: Tag and push api server
         run: |
           docker push ${IMAGE_API}:${{ github.event.release.tag_name }}
+
+      - name: Tag and push commiter server
+        run: |
+          docker push ${IMAGE_COMMITER}:${{ github.event.release.tag_name }}
+
+      - name: Tag and push dns server
+        run: |
+          docker push ${IMAGE_DNS}:${{ github.event.release.tag_name }}

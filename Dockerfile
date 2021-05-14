@@ -47,6 +47,12 @@ RUN exogress-api autocompletion bash > /etc/profile.d/exogress-api.sh && \
     echo "source /etc/profile.d/exogress-api.sh" >> ~/.bashrc
 ENTRYPOINT ["/usr/local/bin/exogress-api"]
 
+FROM base as commiter
+COPY --from=builder /code/crates/target/release/exogress-commiter /usr/local/bin/
+RUN exogress-commiter autocompletion bash > /etc/profile.d/exogress-commiter.sh && \
+    echo "source /etc/profile.d/exogress-commiter.sh" >> ~/.bashrc
+ENTRYPOINT ["/usr/local/bin/exogress-commiter"]
+
 FROM base as gateway
 COPY --from=builder /code/crates/target/release/exogress-gateway /usr/local/bin/
 COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
