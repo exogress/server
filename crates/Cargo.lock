@@ -314,15 +314,16 @@ checksum = "771fe0050b883fcc3ea2359b1a96bcfbc090b7116eae7c3c512c7a083fdf23d3"
 
 [[package]]
 name = "bson"
-version = "1.2.2"
+version = "2.0.0-beta"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b6553abdb9d2d8f262f0b5bccf807321d5b7d1a12796bcede8e1f150e85f2e"
+checksum = "441bd9b15699ed6fd29a3546ed614a943a9dbab851b799e2344f3f11b3230bdc"
 dependencies = [
+ "ahash",
  "base64 0.13.0",
  "chrono",
  "hex",
+ "indexmap",
  "lazy_static",
- "linked-hash-map",
  "rand 0.7.3",
  "serde",
  "serde_json",
@@ -913,7 +914,7 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "trust-dns-resolver",
- "typed-builder 0.9.0",
+ "typed-builder",
  "url",
  "warp",
 ]
@@ -1235,7 +1236,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-dns-resolver",
  "ttl_cache",
- "typed-builder 0.9.0",
+ "typed-builder",
  "typed-headers",
  "url",
  "warp",
@@ -2439,9 +2440,9 @@ dependencies = [
 
 [[package]]
 name = "mongodb"
-version = "2.0.0-alpha.1"
+version = "2.0.0-beta"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1264c64d5469f05c0201b939f971138bd385e7eb87eacdfd79f0c18b9eae7940"
+checksum = "e7bf6da4c15a6eea66750989ff2f3319d6ca9fdc8f903d4dc1c0ef72541af905"
 dependencies = [
  "async-trait",
  "base64 0.13.0",
@@ -2449,7 +2450,10 @@ dependencies = [
  "bson",
  "chrono",
  "derivative",
- "futures",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-util",
  "hex",
  "hmac",
  "lazy_static",
@@ -2475,7 +2479,7 @@ dependencies = [
  "tokio-util",
  "trust-dns-proto",
  "trust-dns-resolver",
- "typed-builder 0.4.1",
+ "typed-builder",
  "uuid",
  "version_check",
  "webpki",
@@ -3690,9 +3694,9 @@ dependencies = [
 
 [[package]]
 name = "rustversion"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb5d2a036dc6d2d8fd16fde3498b04306e29bd193bf306a57427019b823d5acd"
+checksum = "61b3909d758bb75c79f23d4736fac9433868679d3ad2ea7a61e3c25cfda9a088"
 
 [[package]]
 name = "rusty-s3"
@@ -4990,17 +4994,6 @@ checksum = "04f8ab788026715fa63b31960869617cba39117e520eb415b0139543e325ab59"
 dependencies = [
  "cfg-if 0.1.10",
  "static_assertions",
-]
-
-[[package]]
-name = "typed-builder"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfc955f27acc7a547f328f52f4a5a568986a31efec2fc6de865279f3995787b9"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
