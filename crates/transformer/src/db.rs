@@ -1,7 +1,7 @@
 use crate::{
     bucket::GcsBucketInfo, magick::ImageConversionMeta, PROCESSING_MAX_TIME_HARD, UPLOAD_TTL,
 };
-use bson::{doc, serde_helpers::chrono_datetime_as_bson_datetime};
+use bson::{doc, serde_helpers::chrono_0_4_datetime_as_bson_datetime};
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{
     AccountUniqueId, HandlerName, MountPointName, ProjectName, ProjectUniqueId, Ulid,
@@ -45,7 +45,7 @@ pub enum QueueState {
     UploadReceived,
 }
 
-pub mod optionally_chrono_datetime_as_bson_datetime {
+pub mod optionally_chrono_0_4_datetime_as_bson_datetime {
     use chrono::Utc;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::result::Result;
@@ -83,15 +83,15 @@ pub struct QueuedRequest {
     #[serde(default)]
     pub encryption_header: Option<String>,
     pub account_unique_id: AccountUniqueId,
-    #[serde(with = "chrono_datetime_as_bson_datetime")]
+    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
     pub last_requested_at: chrono::DateTime<chrono::Utc>,
     pub num_requests: i64,
-    #[serde(with = "chrono_datetime_as_bson_datetime")]
+    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
     pub upload_requested_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub upload_id: Option<Ulid>,
 
-    #[serde(default, with = "optionally_chrono_datetime_as_bson_datetime")]
+    #[serde(default, with = "optionally_chrono_0_4_datetime_as_bson_datetime")]
     pub start_processing_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -113,9 +113,9 @@ pub struct Processed {
     pub source_size: i64,
     pub content_type: String,
     pub content_hash: String,
-    #[serde(with = "chrono_datetime_as_bson_datetime")]
+    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
     pub last_requested_at: chrono::DateTime<chrono::Utc>,
-    #[serde(with = "chrono_datetime_as_bson_datetime")]
+    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
     pub transformation_started_at: chrono::DateTime<chrono::Utc>,
     pub num_requests: i64,
     pub formats: Vec<ProcessedFormat>,
