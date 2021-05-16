@@ -14,5 +14,5 @@ members = [
 [profile.release]
 lto = true
 
-[profile.dev]
-split-debuginfo = "unpacked"
+#[profile.dev]
+#split-debuginfo = "unpacked"

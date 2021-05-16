@@ -65,8 +65,9 @@ mod transformer;
 mod urls;
 mod webapp;
 
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+// #[global_allocator]
+// static GLOBAL: MiMalloc = MiMalloc;
+//
 
 fn main() {
     let spawn_args = App::new("spawn")
@@ -802,7 +803,6 @@ fn main() {
         Ok::<(), anyhow::Error>(())
     })
     .expect("error running server");
-
     rt.shutdown_timeout(Duration::from_secs(5));
 
     info!("Web server stopped");

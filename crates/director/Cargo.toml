@@ -9,7 +9,7 @@ bytes = "1.0"
 clap = "2.33.3"
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "signal", "net", "time", "parking_lot"] }
 futures = "0.3"
-sentry = { version = "0.22.0", features = ["backtrace", "panic", "anyhow"] }
+sentry = { version = "0.22.0", features = ["backtrace", "panic", "anyhow", "contexts", "rustls"], default-features=false }
 hashbrown = { version = "0.11", features = ["serde"] }
 thiserror = "1.0.13"
 parking_lot = "0.11.0"
@@ -36,7 +36,7 @@ trust-dns-server = { version = "0.20", features = ["dnssec-ring"] }
 warp = { version = "0.3", features =["websocket", "tls", "compression"] }
 mimalloc = "0.1.22"
 url = "2"
-reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"] }
+reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns", "stream", "gzip", "brotli"], default-features = false }
 
 exogress-server-common = { path = "../common" }
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.1.0", features = ["common-utils"], default-features = false }

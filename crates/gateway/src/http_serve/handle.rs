@@ -159,7 +159,9 @@ pub async fn server(
 
     let (incoming_http_connections_tx, incoming_http_connections_rx) = mpsc::channel(16);
 
-    let http_acceptor = tokio::spawn(
+    let http_acceptor = tokio::spawn({
+        shadow_clone!(high_resource_consumption);
+
         #[allow(unreachable_code)]
         async move {
             let listener = TcpListener::bind(listen_http_addr).await?;
@@ -189,8 +191,8 @@ pub async fn server(
             }
 
             Ok::<_, anyhow::Error>(())
-        },
-    );
+        }
+    });
 
     let (incoming_https_connections_tx, incoming_https_connections_rx) = mpsc::channel(16);
     let https_acceptor = tokio::spawn({
@@ -209,183 +211,192 @@ pub async fn server(
                 );
 
                 let (mut conn, _director_addr) = listener.accept().await?;
+                if !high_resource_consumption.load(Ordering::Relaxed) {
+                    let handle_connection = {
+                        shadow_clone!(mut incoming_https_connections_tx);
 
-                let handle_connection = {
-                    shadow_clone!(mut incoming_https_connections_tx);
+                        async move {
+                            shadow_clone!(tls_gw_common, public_gw_base_url, webapp_client);
 
-                    async move {
-                        shadow_clone!(tls_gw_common, public_gw_base_url, webapp_client);
+                            let handshake = async {
+                                conn.set_nodelay(true)?;
+                                let header_len = conn.read_u16().await?;
+                                let mut buf = vec![0u8; header_len.try_into().unwrap()];
+                                conn.read_exact(&mut buf).await?;
+                                let source_info = serde_cbor::from_slice::<SourceInfo>(&buf)?;
 
-                        let handshake = async {
-                            conn.set_nodelay(true)?;
-                            let header_len = conn.read_u16().await?;
-                            let mut buf = vec![0u8; header_len.try_into().unwrap()];
-                            conn.read_exact(&mut buf).await?;
-                            let source_info = serde_cbor::from_slice::<SourceInfo>(&buf)?;
+                                Ok::<_, anyhow::Error>((conn, source_info))
+                            };
 
-                            Ok::<_, anyhow::Error>((conn, source_info))
-                        };
+                            let (conn, source_info) =
+                                timeout(Duration::from_secs(10), handshake).await??;
 
-                        let (conn, source_info) =
-                            timeout(Duration::from_secs(10), handshake).await??;
+                            let hostname = if let Some(hostname) = &source_info.alpn_domain {
+                                hostname.clone()
+                            } else {
+                                return Err(anyhow!("no hostname in ClientHello"));
+                            };
 
-                        let hostname = if let Some(hostname) = &source_info.alpn_domain {
-                            hostname.clone()
-                        } else {
-                            return Err(anyhow!("no hostname in ClientHello"));
-                        };
+                            let (cert, pkey, maybe_account_info) = if public_gw_base_url
+                                .host()
+                                .unwrap()
+                                .to_string()
+                                == hostname
+                            {
+                                let cfg = (&*tls_gw_common.read()).clone();
 
-                        let (cert, pkey, maybe_account_info) = if public_gw_base_url
-                            .host()
-                            .unwrap()
-                            .to_string()
-                            == hostname
-                        {
-                            let cfg = (&*tls_gw_common.read()).clone();
-
-                            match &cfg {
-                                Some(cert_data)
-                                    if cert_data.common_gw_hostname == hostname
-                                        || cfg!(debug_assertions) =>
-                                {
-                                    (
-                                        cert_data.common_gw_host_certificate.clone(),
-                                        cert_data.common_gw_host_private_key.clone(),
-                                        None,
-                                    )
-                                }
-                                Some(cert_data) => {
-                                    info!(
-                                        "common cert for wrong hostname found. expected {}, found {}",
-                                        hostname, cert_data.common_gw_hostname
-                                    );
-                                    return Err(anyhow!("wrong hostname"));
-                                }
-                                None => {
-                                    info!("certificate haven't been set by assistant channel");
-                                    return Err(anyhow!("no certificate set"));
-                                }
-                            }
-                        } else {
-                            shadow_clone!(webapp_client);
-
-                            match webapp_client.get_certificate(hostname.clone()).await {
-                                Ok(Some(certs)) => (
-                                    certs.certificate,
-                                    certs.private_key,
-                                    Some((certs.account_unique_id, certs.project_unique_id)),
-                                ),
-                                Ok(None) => {
-                                    let locked = tls_gw_common.read();
-
-                                    match &*locked {
-                                        Some(cert_data) if cfg!(debug_assertions) => (
+                                match &cfg {
+                                    Some(cert_data)
+                                        if cert_data.common_gw_hostname == hostname
+                                            || cfg!(debug_assertions) =>
+                                    {
+                                        (
                                             cert_data.common_gw_host_certificate.clone(),
                                             cert_data.common_gw_host_private_key.clone(),
-                                            Some((
-                                                Ulid::nil().to_string().parse().unwrap(),
-                                                Ulid::nil().to_string().parse().unwrap(),
-                                            )), // FIXME
-                                        ),
-                                        _ => {
-                                            return Err(anyhow!("no certificate found"));
-                                        }
+                                            None,
+                                        )
+                                    }
+                                    Some(cert_data) => {
+                                        info!(
+                                            "common cert for wrong hostname found. expected {}, found {}",
+                                            hostname, cert_data.common_gw_hostname
+                                        );
+                                        return Err(anyhow!("wrong hostname"));
+                                    }
+                                    None => {
+                                        info!("certificate haven't been set by assistant channel");
+                                        return Err(anyhow!("no certificate set"));
                                     }
                                 }
-                                Err(e) => {
-                                    warn!("error retrieving certificate for {}: {}", hostname, e);
-                                    return Err(anyhow!("error retrieving certificates: {}", e));
+                            } else {
+                                shadow_clone!(webapp_client);
+
+                                match webapp_client.get_certificate(hostname.clone()).await {
+                                    Ok(Some(certs)) => (
+                                        certs.certificate,
+                                        certs.private_key,
+                                        Some((certs.account_unique_id, certs.project_unique_id)),
+                                    ),
+                                    Ok(None) => {
+                                        let locked = tls_gw_common.read();
+
+                                        match &*locked {
+                                            Some(cert_data) if cfg!(debug_assertions) => (
+                                                cert_data.common_gw_host_certificate.clone(),
+                                                cert_data.common_gw_host_private_key.clone(),
+                                                Some((
+                                                    Ulid::nil().to_string().parse().unwrap(),
+                                                    Ulid::nil().to_string().parse().unwrap(),
+                                                )), // FIXME
+                                            ),
+                                            _ => {
+                                                return Err(anyhow!("no certificate found"));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "error retrieving certificate for {}: {}",
+                                            hostname, e
+                                        );
+                                        return Err(anyhow!(
+                                            "error retrieving certificates: {}",
+                                            e
+                                        ));
+                                    }
                                 }
-                            }
-                        };
+                            };
 
-                        let mut config = ServerConfig::new(NoClientAuth::new());
+                            let mut config = ServerConfig::new(NoClientAuth::new());
 
-                        // FIXME: set session memory cache
-                        // TODO: migrate to shared session memory cache
-                        // config.set_persistence(rustls::ServerSessionMemoryCache::new(1024));
-                        config.ticketer = rustls::Ticketer::new();
-                        config.ignore_client_order = true;
+                            // FIXME: set session memory cache
+                            // TODO: migrate to shared session memory cache
+                            // config.set_persistence(rustls::ServerSessionMemoryCache::new(1024));
+                            config.ticketer = rustls::Ticketer::new();
+                            config.ignore_client_order = true;
 
-                        let cert_vec = cert.as_bytes().to_vec();
-                        let key_vec = pkey.as_bytes().to_vec();
+                            let cert_vec = cert.as_bytes().to_vec();
+                            let key_vec = pkey.as_bytes().to_vec();
 
-                        let mut cert_rdr = BufReader::new(Cursor::new(&cert_vec));
-                        let certs = tokio_rustls::rustls::internal::pemfile::certs(&mut cert_rdr)
-                            .map_err(|_| anyhow!("cert error"))?;
+                            let mut cert_rdr = BufReader::new(Cursor::new(&cert_vec));
+                            let certs =
+                                tokio_rustls::rustls::internal::pemfile::certs(&mut cert_rdr)
+                                    .map_err(|_| anyhow!("cert error"))?;
 
-                        let key = match tokio_rustls::rustls::internal::pemfile::pkcs8_private_keys(
-                            &mut BufReader::new(Cursor::new(&key_vec)),
-                        ) {
-                            Ok(pkcs8) if !pkcs8.is_empty() => {
-                                info!("using PKCS8 tunnel certificate");
-                                pkcs8
-                            }
-                            _ => tokio_rustls::rustls::internal::pemfile::rsa_private_keys(
-                                &mut BufReader::new(Cursor::new(&key_vec)),
-                            )
-                            .map_err(|_| anyhow!("private key error"))?,
-                        };
+                            let key =
+                                match tokio_rustls::rustls::internal::pemfile::pkcs8_private_keys(
+                                    &mut BufReader::new(Cursor::new(&key_vec)),
+                                ) {
+                                    Ok(pkcs8) if !pkcs8.is_empty() => {
+                                        info!("using PKCS8 tunnel certificate");
+                                        pkcs8
+                                    }
+                                    _ => tokio_rustls::rustls::internal::pemfile::rsa_private_keys(
+                                        &mut BufReader::new(Cursor::new(&key_vec)),
+                                    )
+                                    .map_err(|_| anyhow!("private key error"))?,
+                                };
 
-                        config.set_single_cert(certs, key[0].clone())?;
+                            config.set_single_cert(certs, key[0].clone())?;
 
-                        config.set_protocols(&["h2".into(), "http/1.1".into()]);
+                            config.set_protocols(&["h2".into(), "http/1.1".into()]);
 
-                        let acceptor = TlsAcceptor::from(Arc::new(config));
+                            let acceptor = TlsAcceptor::from(Arc::new(config));
 
-                        let metered = if let Some((account_unique_id, project_unique_id)) =
-                            maybe_account_info
-                        {
-                            let counters =
-                                TrafficCounters::new(account_unique_id, project_unique_id);
-                            let counted_stream = TrafficCountedStream::new(
-                                conn,
-                                counters.clone(),
-                                crate::statistics::HTTPS_BYTES_SENT.clone(),
-                                crate::statistics::HTTPS_BYTES_RECV.clone(),
-                            );
+                            let metered = if let Some((account_unique_id, project_unique_id)) =
+                                maybe_account_info
+                            {
+                                let counters =
+                                    TrafficCounters::new(account_unique_id, project_unique_id);
+                                let counted_stream = TrafficCountedStream::new(
+                                    conn,
+                                    counters.clone(),
+                                    crate::statistics::HTTPS_BYTES_SENT.clone(),
+                                    crate::statistics::HTTPS_BYTES_RECV.clone(),
+                                );
 
-                            let (stop_flusher_tx, stop_flusher_rx) = oneshot::channel();
+                                let (stop_flusher_tx, stop_flusher_rx) = oneshot::channel();
 
-                            let flush_counters = TrafficCounters::spawn_flusher(
-                                counters,
-                                https_counters_tx,
-                                stop_flusher_rx,
-                            );
+                                let flush_counters = TrafficCounters::spawn_flusher(
+                                    counters,
+                                    https_counters_tx,
+                                    stop_flusher_rx,
+                                );
 
-                            // we never forcefully stop flusher through the channel,
-                            // if will automatically stop when counter flush returns error
-                            tokio::spawn(async move {
-                                let _stop_flusher_tx = stop_flusher_tx;
+                                // we never forcefully stop flusher through the channel,
+                                // if will automatically stop when counter flush returns error
+                                tokio::spawn(async move {
+                                    let _stop_flusher_tx = stop_flusher_tx;
 
-                                flush_counters.await
-                            });
+                                    flush_counters.await
+                                });
 
-                            Either::Left(counted_stream)
-                        } else {
-                            Either::Right(conn)
-                        };
+                                Either::Left(counted_stream)
+                            } else {
+                                Either::Right(conn)
+                            };
 
-                        let tls_conn = acceptor.accept(metered).await?;
+                            let tls_conn = acceptor.accept(metered).await?;
 
-                        let conn = director::Connection::new(tls_conn, source_info.clone());
-                        incoming_https_connections_tx
-                            .send(Ok::<_, io::Error>((conn, source_info)))
-                            .await?;
+                            let conn = director::Connection::new(tls_conn, source_info.clone());
+                            incoming_https_connections_tx
+                                .send(Ok::<_, io::Error>((conn, source_info)))
+                                .await?;
 
-                        Ok::<_, anyhow::Error>(())
-                    }
+                            Ok::<_, anyhow::Error>(())
+                        }
+                    };
+
+                    tokio::spawn(async move {
+                        crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.inc();
+
+                        if let Err(_e) = handle_connection.await {
+                            // warn!("connection closed: {}", e);
+                        }
+
+                        crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.dec();
+                    });
                 };
-
-                tokio::spawn(async move {
-                    crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.inc();
-
-                    if let Err(_e) = handle_connection.await {
-                        // warn!("connection closed: {}", e);
-                    }
-
-                    crate::statistics::NUM_OPENED_HTTPS_CONNECTIONS.dec();
-                });
             }
 
             Ok::<(), anyhow::Error>(())

@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 clap = "2.33.3"
-sentry = { version = "0.22.0", features = ["backtrace", "panic", "anyhow"] }
+sentry = { version = "0.22.0", features = ["backtrace", "panic", "anyhow", "contexts", "rustls"], default-features=false }
 tracing = "0.1"
 url = "2.1.1"
 serde = { version = "1.0.105", features = ["derive", "rc"] }
@@ -22,7 +22,7 @@ tracing-subscriber = "0.2.11"
 futures = "0.3"
 sha2 = "0.9"
 hashbrown = "0.11"
-reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns"] }
+reqwest = { version = "0.11", features = ["rustls-tls", "json", "trust-dns"], default-features = false }
 urlencoding = "1.1.1"
 lazy_static = "1.4.0"
 serde_with = "1.6"
