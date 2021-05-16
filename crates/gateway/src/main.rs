@@ -65,9 +65,8 @@ mod transformer;
 mod urls;
 mod webapp;
 
-// #[global_allocator]
-// static GLOBAL: MiMalloc = MiMalloc;
-//
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
     let spawn_args = App::new("spawn")
@@ -518,7 +517,7 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
-        let (log_messages_tx, log_messages_rx) = mpsc::unbounded();
+        let (log_messages_tx, log_messages_rx) = mpsc::channel(16536);
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (public_counters_tx, public_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
@@ -598,21 +597,15 @@ fn main() {
         let dump_log_messages = {
             shadow_clone!(mut gw_to_assistant_messages_tx);
 
-            const CHUNK: usize = 2048;
+            const CHUNK: usize = 4096;
             let mut ready_chunks = log_messages_rx.ready_chunks(CHUNK);
             async move {
                 while let Some(ready_chunks) = ready_chunks.next().await {
-                    let should_wait = ready_chunks.len() != CHUNK;
-
                     let batch = WsFromGwMessage::Logs {
                         report: ready_chunks,
                     };
 
                     gw_to_assistant_messages_tx.send(batch).await?;
-
-                    if should_wait {
-                        sleep(Duration::from_secs(5)).await;
-                    }
                 }
 
                 Ok::<_, anyhow::Error>(())
@@ -622,7 +615,7 @@ fn main() {
         let dump_traffic_statistics = {
             shadow_clone!(mut gw_to_assistant_messages_tx);
 
-            const CHUNK: usize = 2048;
+            const CHUNK: usize = 4096;
             let mut ready_chunks = futures::stream::select(
                 futures::stream::select(
                     tunnel_counters_rx.map(OneOfTrafficStatistics::Tunnel),

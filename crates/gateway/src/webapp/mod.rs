@@ -61,7 +61,7 @@ pub struct Client {
     gw_location: SmolStr,
 
     public_gw_base_url: Url,
-    log_messages_tx: mpsc::UnboundedSender<LogMessage>,
+    log_messages_tx: mpsc::Sender<LogMessage>,
 
     rules_counters: AccountCounters,
 
@@ -349,7 +349,7 @@ impl Client {
         public_gw_base_url: &Url,
         gw_location: SmolStr,
         gcs_credentials_file: String,
-        log_messages_tx: mpsc::UnboundedSender<LogMessage>,
+        log_messages_tx: mpsc::Sender<LogMessage>,
         maybe_identity: Option<Vec<u8>>,
         cache: Cache,
         dbip: Option<GeoipReader>,

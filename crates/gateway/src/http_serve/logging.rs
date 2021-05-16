@@ -92,7 +92,7 @@ pub fn save_body_info_to_log_message(
 
 pub struct LogMessageSendOnDrop {
     inner: Option<LogMessage>,
-    send_tx: futures::channel::mpsc::UnboundedSender<LogMessage>,
+    send_tx: futures::channel::mpsc::Sender<LogMessage>,
 }
 
 impl AsMut<LogMessage> for LogMessageSendOnDrop {
@@ -104,7 +104,7 @@ impl AsMut<LogMessage> for LogMessageSendOnDrop {
 impl LogMessageSendOnDrop {
     pub fn new(
         log_message: LogMessage,
-        send_tx: futures::channel::mpsc::UnboundedSender<LogMessage>,
+        send_tx: futures::channel::mpsc::Sender<LogMessage>,
     ) -> Self {
         LogMessageSendOnDrop {
             inner: Some(log_message),
@@ -125,7 +125,9 @@ impl Drop for LogMessageSendOnDrop {
             );
             msg.set_message_string();
 
-            let _ = self.send_tx.unbounded_send(msg);
+            if let Err(e) = self.send_tx.try_send(msg) {
+                error!("failed to send log message on drop: {}", e);
+            }
         }
     }
 }
@@ -171,7 +173,7 @@ mod test {
             time_taken_ms: None,
         };
 
-        let (send_tx, mut send_rx) = mpsc::unbounded();
+        let (send_tx, mut send_rx) = mpsc::channel(16);
 
         let will_send = LogMessageSendOnDrop {
             inner: Some(msg),
