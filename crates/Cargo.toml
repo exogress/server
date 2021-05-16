@@ -13,6 +13,7 @@ members = [
 
 [profile.release]
 lto = true
+debug = true
 
 #[profile.dev]
 #split-debuginfo = "unpacked"
