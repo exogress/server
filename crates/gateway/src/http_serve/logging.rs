@@ -92,7 +92,7 @@ pub fn save_body_info_to_log_message(
 
 pub struct LogMessageSendOnDrop {
     inner: Option<LogMessage>,
-    send_tx: futures::channel::mpsc::Sender<LogMessage>,
+    send_tx: tokio::sync::mpsc::Sender<LogMessage>,
 }
 
 impl AsMut<LogMessage> for LogMessageSendOnDrop {
@@ -102,10 +102,7 @@ impl AsMut<LogMessage> for LogMessageSendOnDrop {
 }
 
 impl LogMessageSendOnDrop {
-    pub fn new(
-        log_message: LogMessage,
-        send_tx: futures::channel::mpsc::Sender<LogMessage>,
-    ) -> Self {
+    pub fn new(log_message: LogMessage, send_tx: tokio::sync::mpsc::Sender<LogMessage>) -> Self {
         LogMessageSendOnDrop {
             inner: Some(log_message),
             send_tx,

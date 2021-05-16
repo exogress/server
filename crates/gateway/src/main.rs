@@ -517,7 +517,7 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
-        let (log_messages_tx, log_messages_rx) = mpsc::channel(16536);
+        let (log_messages_tx, log_messages_rx) = tokio::sync::mpsc::channel(16536);
         let (tunnel_counters_tx, tunnel_counters_rx) = mpsc::channel(16536);
         let (public_counters_tx, public_counters_rx) = mpsc::channel(16536);
         let (https_counters_tx, https_counters_rx) = mpsc::channel(16536);
@@ -598,7 +598,8 @@ fn main() {
             shadow_clone!(mut gw_to_assistant_messages_tx);
 
             const CHUNK: usize = 4096;
-            let mut ready_chunks = log_messages_rx.ready_chunks(CHUNK);
+            let mut ready_chunks =
+                tokio_stream::wrappers::ReceiverStream::new(log_messages_rx).ready_chunks(CHUNK);
             async move {
                 while let Some(ready_chunks) = ready_chunks.next().await {
                     let batch = WsFromGwMessage::Logs {
