@@ -135,7 +135,6 @@ mod test {
     use chrono::Utc;
     use exogress_common::entities::Ulid;
     use exogress_server_common::logging::{RequestMetaInfo, ResponseMetaInfo};
-    use futures::{channel::mpsc, StreamExt};
     use std::{mem, sync::Arc};
 
     #[tokio::test]
@@ -170,17 +169,15 @@ mod test {
             time_taken_ms: None,
         };
 
-        let (send_tx, mut send_rx) = mpsc::channel(16);
+        let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(16);
 
         let will_send = LogMessageSendOnDrop {
             inner: Some(msg),
             send_tx,
         };
 
-        assert!(send_rx.try_next().is_err());
-
         mem::drop(will_send);
 
-        send_rx.next().await.unwrap();
+        send_rx.recv().await.unwrap();
     }
 }
