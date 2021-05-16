@@ -59,6 +59,10 @@ COPY --from=quay.io/exogress/dbip-db:latest /dbip.mmdb /
 RUN apt install -y lmdb-utils liblmdb-dev liblmdb0
 RUN exogress-gateway autocompletion bash > /etc/profile.d/exogress-gateway.sh && \
     echo "source /etc/profile.d/exogress-gateway.sh" >> ~/.bashrc
+
+RUN apt install -y build-essential pkg-config cmake git libdwarf-dev libelf-dev libdw1 libdw-dev libunwind-dev libunwind8 && \
+    git clone https://github.com/WuBingzheng/memleax.git && \
+    cd memleax && mkdir build && cd build && cmake .. && make && make install
 ENTRYPOINT ["/usr/local/bin/exogress-gateway"]
 
 FROM base as dns
