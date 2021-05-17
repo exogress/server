@@ -2,10 +2,7 @@
 use chrono::{DateTime, Utc};
 use core::{fmt, mem};
 use exogress_common::entities::{AccountUniqueId, ProjectUniqueId};
-use futures::{
-    channel::{mpsc, oneshot},
-    ready, SinkExt,
-};
+use futures::{channel::oneshot, ready};
 use parking_lot::Mutex;
 use prometheus::IntCounter;
 use std::{
@@ -147,7 +144,7 @@ impl TrafficCounters {
 
     pub async fn spawn_flusher(
         counters: Arc<Self>,
-        mut traffic_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        traffic_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
         stop_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
         let periodically_flush = {

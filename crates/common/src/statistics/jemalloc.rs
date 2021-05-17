@@ -61,7 +61,7 @@ pub fn dump_jemalloc_statistics() -> anyhow::Result<String> {
     }
 
     if let Ok(arenas) = jemalloc_ctl::arenas::narenas::read() {
-        write!(s, "number of arenas: {}", arenas)?
+        write!(s, "number of arenas: {}\n", arenas)?
     }
 
     if let Ok(malloc_conf) = jemalloc_ctl::config::malloc_conf::read() {

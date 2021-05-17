@@ -22,7 +22,6 @@ use exogress_common::{
     tunnel::TunnelHello,
 };
 use exogress_server_common::{geoip::GeoipReader, logging::LogMessage, presence};
-use futures::channel::mpsc;
 use futures_intrusive::sync::ManualResetEvent;
 use hashbrown::HashMap;
 use http::StatusCode;
@@ -65,8 +64,8 @@ pub struct Client {
 
     rules_counters: AccountCounters,
 
-    tunnels_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
-    public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    tunnels_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
+    public_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
 
     presence_client: presence::Client,
 
@@ -339,8 +338,8 @@ impl Client {
     pub fn new(
         ttl: Duration,
         rules_counters: AccountCounters,
-        tunnels_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
-        public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        tunnels_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
+        public_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
         base_url: Url,
         google_oauth2_client: auth::google::GoogleOauth2Client,
         github_oauth2_client: auth::github::GithubOauth2Client,

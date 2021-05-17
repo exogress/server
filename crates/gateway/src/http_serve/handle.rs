@@ -153,7 +153,7 @@ pub async fn server(
     github_oauth2_client: auth::github::GithubOauth2Client,
     assistant_base_url: Url,
     maybe_identity: Option<Vec<u8>>,
-    https_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    https_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
 ) {
     let (https_stop_handle, https_stop_wait) = stop_handle();
 

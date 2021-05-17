@@ -25,6 +25,7 @@ impl State {
 }
 
 #[derive(TypedBuilder)]
+#[allow(dead_code)]
 pub struct ResourcesManager {
     #[builder(default = 90.0)]
     cpu_usage_high_watermark_percent: f32,
@@ -61,12 +62,12 @@ impl ResourcesManager {
 
             let cpu_usage_percent = filtered_cpu_usage.consume(cpus_info.get_cpu_usage()) as u8;
 
-            let free_memory = s.get_free_memory();
-            let total_memory = s.get_total_memory();
+            // let free_memory = s.get_free_memory();
+            // let total_memory = s.get_total_memory();
 
             let load_average = s.get_load_average().one;
 
-            let consumed_mem_percent = (1.0 - (free_memory as f64 / total_memory as f64)) * 100.0;
+            // let consumed_mem_percent = (1.0 - (free_memory as f64 / total_memory as f64)) * 100.0;
 
             let load_average_percent = load_average / num_cpus as f64;
 
@@ -102,21 +103,22 @@ impl ResourcesManager {
                 }
             }
 
-            if consumed_mem_percent > self.memory_high_watermark_percent as f64 {
-                if !state.memory_triggered.swap(true, Ordering::Relaxed) {
-                    warn!(
-                        "Memory usage % is higher than high watermark {}. Free = {}, Total = {}",
-                        self.memory_high_watermark_percent, free_memory, total_memory
-                    );
-                }
-            } else if consumed_mem_percent < self.memory_low_watermark_percent as f64 {
-                if state.memory_triggered.swap(false, Ordering::Relaxed) {
-                    info!(
-                        "Memory usage % now less than low watermark {}. Free = {}, Total = {}",
-                        self.memory_low_watermark_percent, free_memory, total_memory
-                    );
-                }
-            }
+            // disable for now. need to clearly understand if memory doesn't longer grow
+            // if consumed_mem_percent > self.memory_high_watermark_percent as f64 {
+            //     if !state.memory_triggered.swap(true, Ordering::Relaxed) {
+            //         warn!(
+            //             "Memory usage % is higher than high watermark {}. Free = {}, Total = {}",
+            //             self.memory_high_watermark_percent, free_memory, total_memory
+            //         );
+            //     }
+            // } else if consumed_mem_percent < self.memory_low_watermark_percent as f64 {
+            //     if state.memory_triggered.swap(false, Ordering::Relaxed) {
+            //         info!(
+            //             "Memory usage % now less than low watermark {}. Free = {}, Total = {}",
+            //             self.memory_low_watermark_percent, free_memory, total_memory
+            //         );
+            //     }
+            // }
 
             if state.is_limited() {
                 if !self.stop_trigger.swap(true, Ordering::Relaxed) {

@@ -47,7 +47,7 @@ pub struct AssistantClient {
     webapp_client: webapp::Client,
     mappings: RequestsProcessorsRegistry,
     tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
-    gw_to_assistant_messages_rx: mpsc::Receiver<WsFromGwMessage>,
+    gw_to_assistant_messages_rx: tokio::sync::mpsc::Receiver<WsFromGwMessage>,
     concurrency: u8,
     established_ips: Arc<tokio::sync::Mutex<HashSet<IpAddr>>>,
     assistant_base_url: Url,
@@ -67,7 +67,7 @@ impl AssistantClient {
         mappings: &RequestsProcessorsRegistry,
         client_tunnels: &ClientTunnels,
         tls_gw_common: Arc<RwLock<Option<GatewayConfigMessage>>>,
-        gw_to_assistant_messages_rx: mpsc::Receiver<WsFromGwMessage>,
+        gw_to_assistant_messages_rx: tokio::sync::mpsc::Receiver<WsFromGwMessage>,
         maybe_identity: Option<Vec<u8>>,
         webapp_client: &webapp::Client,
         first_connection_established_tx: oneshot::Sender<()>,
@@ -436,7 +436,7 @@ impl AssistantClient {
 
         let forward_statistics_to_channels = async {
             let mut rng = rand::rngs::SmallRng::from_entropy();
-            while let Some(msg) = gw_to_assistant_messages_rx.next().await {
+            while let Some(msg) = gw_to_assistant_messages_rx.recv().await {
                 let maybe_tx = to_assistant_streams.iter_mut().choose(&mut rng);
                 if let Some(tx) = maybe_tx {
                     let _ = tx.send(msg).await;

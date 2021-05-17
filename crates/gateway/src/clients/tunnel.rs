@@ -113,7 +113,7 @@ pub async fn tunnels_acceptor(
     tunnels: ClientTunnels,
     webapp: webapp::Client,
     high_resource_consumption: Arc<AtomicBool>,
-    tunnel_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    tunnel_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
 ) -> io::Result<()> {
     let mut config = ServerConfig::new(NoClientAuth::new());
 

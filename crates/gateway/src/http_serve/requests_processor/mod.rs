@@ -3067,7 +3067,7 @@ impl RequestsProcessor {
         rules_counter: AccountCounters,
         individual_hostname: SmolStr,
         maybe_identity: Option<Vec<u8>>,
-        public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+        public_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
         log_messages_tx: tokio::sync::mpsc::Sender<LogMessage>,
         gw_location: &str,
         cache: Cache,

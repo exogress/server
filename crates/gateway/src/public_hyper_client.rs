@@ -3,7 +3,7 @@ use crate::clients::traffic_counter::{
 };
 use exogress_common::common_utils::tls::load_native_certs_safe;
 use futures::{
-    channel::{mpsc, oneshot},
+    channel::oneshot,
     future::BoxFuture,
     task::{Context, Poll},
 };
@@ -90,7 +90,7 @@ impl AsyncWrite for HyperUsableConnection {
 
 #[derive(Clone)]
 pub struct MeteredHttpConnector {
-    pub public_counters_tx: mpsc::Sender<RecordedTrafficStatistics>,
+    pub public_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,
     pub resolver: TokioAsyncResolver,
     pub counters: Arc<TrafficCounters>,
     pub sent_counter: IntCounter,
