@@ -439,6 +439,8 @@ impl AssistantClient {
             while let Some(msg) = gw_to_assistant_messages_rx.recv().await {
                 let maybe_tx = to_assistant_streams.iter_mut().choose(&mut rng);
                 if let Some(tx) = maybe_tx {
+                    crate::statistics::REPORTS_SENT.inc();
+
                     let _ = tx.send(msg).await;
                 } else {
                     error!("No active assistant channels. Gateway is expected to stop now");

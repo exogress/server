@@ -150,6 +150,21 @@ lazy_static! {
         "Resource consumption is high, connections are not accepted if == 1"
     )
     .unwrap();
+    pub static ref OUTSTANDING_REPORTS_SENT: Gauge = register_gauge!(
+        "gw_outstanding_reports_sent",
+        "Number of outstanding statistics reports sent from disk"
+    )
+    .unwrap();
+    pub static ref REPORTS_SAVED_TO_DISK: Gauge = register_gauge!(
+        "gw_reports_saved_to_disk",
+        "Number of statistics reports saved to disk for future delivery"
+    )
+    .unwrap();
+    pub static ref REPORTS_SENT: Gauge = register_gauge!(
+        "gw_reports_sent_to_cloud",
+        "Number of reports sent to cloud"
+    )
+    .unwrap();
 }
 
 pub fn dump_prometheus() -> String {

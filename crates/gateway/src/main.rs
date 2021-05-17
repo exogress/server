@@ -35,6 +35,7 @@ use crate::{
     stop_reasons::StopReason,
     webapp::Client,
 };
+use core::mem;
 use exogress_common::{common_utils::termination::stop_signal_listener, entities::Ulid};
 use exogress_server_common::{
     assistant::{RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage},
@@ -636,6 +637,9 @@ fn main() {
             let mut ready_chunks =
                 tokio_stream::wrappers::UnboundedReceiverStream::new(log_messages_rx)
                     .ready_chunks(CHUNK);
+
+            let saving_semaphore = Arc::new(tokio::sync::Semaphore::new(16));
+
             async move {
                 while let Some(ready_chunks) = ready_chunks.next().await {
                     let batch = WsFromGwMessage::Logs {
@@ -645,14 +649,23 @@ fn main() {
                     if let Err(TrySendError::Full(batch)) =
                         gw_to_assistant_messages_tx.try_send(batch)
                     {
-                        if let Err(e) = save_statistics_message_for_future_sending(
-                            batch,
-                            &statistics_local_storage_dir,
-                        )
-                        .await
-                        {
-                            error!("Failed to save logs batch for future sending: {}", e);
-                        }
+                        let permit = saving_semaphore.clone().acquire_owned().await;
+                        tokio::spawn({
+                            shadow_clone!(statistics_local_storage_dir);
+
+                            async move {
+                                if let Err(e) = save_statistics_message_for_future_sending(
+                                    batch,
+                                    &statistics_local_storage_dir,
+                                )
+                                .await
+                                {
+                                    error!("Failed to save logs batch for future sending: {}", e);
+                                };
+
+                                mem::drop(permit);
+                            }
+                        });
                     }
                 }
 
@@ -766,14 +779,16 @@ fn main() {
                             let msg = serde_json::from_slice(&content)?;
                             permit.send(msg);
 
+                            crate::statistics::OUTSTANDING_REPORTS_SENT.inc();
+
                             Ok::<_, anyhow::Error>(())
                         }
                         .await;
 
                         if let Err(e) = res {
                             error!("error sending outstanding data: {}", e);
-                        } else {
-                            info!("sent outstanding chunk {:?}", dir_entry.path().file_name());
+                            // } else {
+                            // info!("sent outstanding chunk {:?}", dir_entry.path().file_name());
                         };
                     } else {
                         sleep(Duration::from_secs(1)).await;
@@ -904,6 +919,8 @@ async fn save_statistics_message_for_future_sending(
     batch: WsFromGwMessage,
     dir: &PathBuf,
 ) -> anyhow::Result<()> {
+    crate::statistics::REPORTS_SAVED_TO_DISK.inc();
+
     let mut tmp_path = dir.clone();
     tmp_path.push("tmp");
 
