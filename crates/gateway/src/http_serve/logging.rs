@@ -170,7 +170,7 @@ mod test {
             time_taken_ms: None,
         };
 
-        let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(16);
+        let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let will_send = LogMessageSendOnDrop {
             inner: Some(msg),
