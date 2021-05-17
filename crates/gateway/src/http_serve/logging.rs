@@ -123,7 +123,7 @@ impl Drop for LogMessageSendOnDrop {
             msg.set_message_string();
 
             if let Err(e) = self.send_tx.try_send(msg) {
-                error!("failed to send log message on drop: {}", e);
+                // error!("failed to send log message on drop: {}", e);
             }
         }
     }

@@ -65,8 +65,8 @@ mod transformer;
 mod urls;
 mod webapp;
 
-// #[global_allocator]
-// static GLOBAL: MiMalloc = MiMalloc;
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
     let spawn_args = App::new("spawn")
