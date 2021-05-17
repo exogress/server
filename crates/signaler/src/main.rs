@@ -20,13 +20,12 @@ use stop_handle::stop_handle;
 use crate::termination::StopReason;
 use exogress_common::{common_utils::termination::stop_signal_listener, entities::Ulid};
 use exogress_server_common::{clap::int_api::IntApiBaseUrls, presence};
-use mimalloc::MiMalloc;
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 mod http;
 mod statistics;

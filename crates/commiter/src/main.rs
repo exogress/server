@@ -11,14 +11,13 @@ use crate::{
 use clap::{crate_version, App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use futures::FutureExt;
-use mimalloc::MiMalloc;
 use std::{net::SocketAddr, panic::AssertUnwindSafe};
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 mod elasticsearch;
 mod http;

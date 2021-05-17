@@ -26,7 +26,6 @@ use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use forwarder::ForwarderBuilder;
-use mimalloc::MiMalloc;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -36,7 +35,7 @@ use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn main() {
     let spawn_args = App::new("spawn")

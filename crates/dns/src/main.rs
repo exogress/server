@@ -14,7 +14,6 @@ use crate::{
 use clap::{App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
-use mimalloc::MiMalloc;
 use seahash::SeaHasher;
 use std::{
     hash::{Hash, Hasher},
@@ -26,7 +25,7 @@ use tokio::{runtime::Builder, time::sleep};
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 mod assistant;
 mod authority;

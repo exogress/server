@@ -13,6 +13,7 @@ pub mod kafka;
 pub mod logging;
 pub mod presence;
 pub mod prometheus;
+pub mod statistics;
 pub mod transformer;
 
 pub type ContentHash = sha2::Sha256;

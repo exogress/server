@@ -15,7 +15,6 @@ extern crate anyhow;
 
 use byte_unit::Byte;
 use clap::{crate_version, App, Arg};
-use mimalloc::MiMalloc;
 use rules_counter::AccountCounters;
 use smol_str::SmolStr;
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
@@ -66,7 +65,7 @@ mod urls;
 mod webapp;
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn main() {
     let spawn_args = App::new("spawn")

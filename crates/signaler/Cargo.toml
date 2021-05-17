@@ -30,7 +30,7 @@ urlencoding = "1.1.1"
 hashbrown = "0.11"
 prometheus = "0.12.0"
 tokio-stream = { version = "0.1.2" }
-mimalloc = "0.1.22"
+jemallocator = "0.3.2"
 itertools = "0.10"
 
 trust-dns-resolver = "0.20"

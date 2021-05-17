@@ -31,7 +31,6 @@ use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use http::StatusCode;
 use lazy_static::lazy_static;
-use mimalloc::MiMalloc;
 use std::{
     net::SocketAddr,
     sync::{
@@ -45,7 +44,7 @@ use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 use warp::Filter;
 
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 lazy_static! {
     static ref UPLOAD_TTL: chrono::Duration = chrono::Duration::seconds(30);
