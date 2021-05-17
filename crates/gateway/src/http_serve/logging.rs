@@ -92,7 +92,7 @@ pub fn save_body_info_to_log_message(
 
 pub struct LogMessageSendOnDrop {
     inner: Option<LogMessage>,
-    send_tx: tokio::sync::mpsc::Sender<LogMessage>,
+    send_tx: tokio::sync::mpsc::UnboundedSender<LogMessage>,
 }
 
 impl AsMut<LogMessage> for LogMessageSendOnDrop {
@@ -102,7 +102,10 @@ impl AsMut<LogMessage> for LogMessageSendOnDrop {
 }
 
 impl LogMessageSendOnDrop {
-    pub fn new(log_message: LogMessage, send_tx: tokio::sync::mpsc::Sender<LogMessage>) -> Self {
+    pub fn new(
+        log_message: LogMessage,
+        send_tx: tokio::sync::mpsc::UnboundedSender<LogMessage>,
+    ) -> Self {
         LogMessageSendOnDrop {
             inner: Some(log_message),
             send_tx,
@@ -122,9 +125,7 @@ impl Drop for LogMessageSendOnDrop {
             );
             msg.set_message_string();
 
-            if let Err(e) = self.send_tx.try_send(msg) {
-                error!("failed to send log message on drop: {}", e);
-            }
+            let _ = self.send_tx.send(msg);
         }
     }
 }

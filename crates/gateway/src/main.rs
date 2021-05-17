@@ -546,7 +546,10 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
-        let (log_messages_tx, log_messages_rx) = tokio::sync::mpsc::channel(65536);
+        // log messages are "safe" to make unbounded, because tokio mpsc is implemented as a linked list,
+        // and all log messages already exist in the mem. When they get send no more memory will be allocated
+        // and there is no risk of not "shrinking" the ubounded buffer, after they get sent.
+        let (log_messages_tx, log_messages_rx) = tokio::sync::mpsc::unbounded_channel();
         let (tunnel_counters_tx, tunnel_counters_rx) = tokio::sync::mpsc::channel(256);
         let (public_counters_tx, public_counters_rx) = tokio::sync::mpsc::channel(256);
         let (https_counters_tx, https_counters_rx) = tokio::sync::mpsc::channel(256);
@@ -629,9 +632,10 @@ fn main() {
                 statistics_local_storage_dir
             );
 
-            const CHUNK: usize = 4096;
+            const CHUNK: usize = 16536;
             let mut ready_chunks =
-                tokio_stream::wrappers::ReceiverStream::new(log_messages_rx).ready_chunks(CHUNK);
+                tokio_stream::wrappers::UnboundedReceiverStream::new(log_messages_rx)
+                    .ready_chunks(CHUNK);
             async move {
                 while let Some(ready_chunks) = ready_chunks.next().await {
                     let batch = WsFromGwMessage::Logs {
