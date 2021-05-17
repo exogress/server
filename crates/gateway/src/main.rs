@@ -368,6 +368,16 @@ fn main() {
         .parse()
         .unwrap();
 
+    {
+        let mut chunks_dir = statistics_local_storage_dir.clone();
+        chunks_dir.push("chunks");
+        std::fs::create_dir_all(chunks_dir).expect("failed to create dir for statistics chunks");
+
+        let mut tmp_dir = statistics_local_storage_dir.clone();
+        tmp_dir.push("tmp");
+        std::fs::create_dir_all(tmp_dir).expect("failed to create dir for tmp chunks");
+    }
+
     let rt = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(num_threads)
@@ -536,10 +546,10 @@ fn main() {
 
         let client_tunnels = ClientTunnels::new(signaler_base_url, int_client_cert.clone());
 
-        let (log_messages_tx, log_messages_rx) = tokio::sync::mpsc::channel(64);
-        let (tunnel_counters_tx, tunnel_counters_rx) = tokio::sync::mpsc::channel(64);
-        let (public_counters_tx, public_counters_rx) = tokio::sync::mpsc::channel(64);
-        let (https_counters_tx, https_counters_rx) = tokio::sync::mpsc::channel(64);
+        let (log_messages_tx, log_messages_rx) = tokio::sync::mpsc::channel(65536);
+        let (tunnel_counters_tx, tunnel_counters_rx) = tokio::sync::mpsc::channel(256);
+        let (public_counters_tx, public_counters_rx) = tokio::sync::mpsc::channel(256);
+        let (https_counters_tx, https_counters_rx) = tokio::sync::mpsc::channel(256);
 
         let google_oauth2_client = GoogleOauth2Client::new(
             Duration::from_secs(60),
@@ -736,8 +746,11 @@ fn main() {
 
             #[allow(unreachable_code)]
             async move {
+                let mut chunks_dir = statistics_local_storage_dir.clone();
+                chunks_dir.push("chunks");
+
                 loop {
-                    let mut dir = tokio::fs::read_dir(&statistics_local_storage_dir).await?;
+                    let mut dir = tokio::fs::read_dir(&chunks_dir).await?;
 
                     if let Some(dir_entry) = dir.next_entry().await? {
                         let permit = gw_to_assistant_messages_tx.reserve().await?;
@@ -887,7 +900,10 @@ async fn save_statistics_message_for_future_sending(
     batch: WsFromGwMessage,
     dir: &PathBuf,
 ) -> anyhow::Result<()> {
-    let tempfile = tokio::task::spawn_blocking(|| NamedTempFile::new()).await??;
+    let mut tmp_path = dir.clone();
+    tmp_path.push("tmp");
+
+    let tempfile = tokio::task::spawn_blocking(|| NamedTempFile::new_in(tmp_path)).await??;
     let (reopened, tempfile) = tokio::task::spawn_blocking(|| {
         let reopened = tempfile.reopen()?;
         Ok::<_, io::Error>((reopened, tempfile))
@@ -898,10 +914,11 @@ async fn save_statistics_message_for_future_sending(
     file.write_all(&serialized).await?;
     let chunk_id = Ulid::new();
 
-    let mut path = dir.clone();
-    path.push(chunk_id.to_string());
+    let mut out_path = dir.clone();
+    out_path.push("chunks");
+    out_path.push(chunk_id.to_string());
 
-    tokio::task::spawn_blocking(|| tempfile.persist(path)).await??;
+    tokio::task::spawn_blocking(|| tempfile.persist(out_path)).await??;
 
     Ok(())
 }
