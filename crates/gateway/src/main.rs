@@ -17,7 +17,7 @@ use byte_unit::Byte;
 use clap::{crate_version, App, Arg};
 use rules_counter::AccountCounters;
 use smol_str::SmolStr;
-use std::{fs, io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use stop_handle::stop_handle;
 use url::Url;
 
@@ -31,12 +31,12 @@ use crate::{
         cache::Cache,
     },
     notification_listener::AssistantClient,
+    reports_saver::FsReportsSaver,
     resources::ResourcesManager,
     stop_reasons::StopReason,
     webapp::Client,
 };
-use core::mem;
-use exogress_common::{common_utils::termination::stop_signal_listener, entities::Ulid};
+use exogress_common::common_utils::termination::stop_signal_listener;
 use exogress_server_common::{
     assistant::{RulesRecord, StatisticsReport, TrafficRecord, WsFromGwMessage},
     clap::int_api::IntApiBaseUrls,
@@ -44,13 +44,7 @@ use exogress_server_common::{
 use futures::{channel::oneshot, StreamExt};
 use parking_lot::RwLock;
 use std::sync::atomic::AtomicBool;
-use tempfile::NamedTempFile;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    runtime::Builder,
-    sync::mpsc::error::TrySendError,
-    time::sleep,
-};
+use tokio::{runtime::Builder, sync::mpsc::error::TrySendError, time::sleep};
 use tokio_stream::wrappers::ReceiverStream;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 
@@ -61,6 +55,7 @@ mod mime_helpers;
 mod notification_listener;
 mod public_hyper_client;
 mod registry;
+mod reports_saver;
 mod resources;
 mod rules_counter;
 mod statistics;
@@ -369,16 +364,6 @@ fn main() {
         .parse()
         .unwrap();
 
-    {
-        let mut chunks_dir = statistics_local_storage_dir.clone();
-        chunks_dir.push("chunks");
-        std::fs::create_dir_all(chunks_dir).expect("failed to create dir for statistics chunks");
-
-        let mut tmp_dir = statistics_local_storage_dir.clone();
-        tmp_dir.push("tmp");
-        std::fs::create_dir_all(tmp_dir).expect("failed to create dir for tmp chunks");
-    }
-
     let rt = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(num_threads)
@@ -620,25 +605,27 @@ fn main() {
         });
 
         let (gw_to_assistant_messages_tx, gw_to_assistant_messages_rx) =
-            tokio::sync::mpsc::channel::<WsFromGwMessage>(32);
+            tokio::sync::mpsc::channel::<WsFromGwMessage>(256);
 
         let individual_hostname = matches
             .value_of("individual_hostname")
             .expect("Please provide --individual-hostname")
             .to_string();
 
+        let fs_reports_saver = FsReportsSaver::new(
+            statistics_local_storage_dir.clone(),
+            16,
+            byte_unit::n_mb_bytes(10) as u64,
+        )
+        .await?;
+
         let dump_log_messages = {
-            shadow_clone!(
-                mut gw_to_assistant_messages_tx,
-                statistics_local_storage_dir
-            );
+            shadow_clone!(mut gw_to_assistant_messages_tx, fs_reports_saver);
 
             const CHUNK: usize = 16536;
             let mut ready_chunks =
                 tokio_stream::wrappers::UnboundedReceiverStream::new(log_messages_rx)
                     .ready_chunks(CHUNK);
-
-            let saving_semaphore = Arc::new(tokio::sync::Semaphore::new(16));
 
             async move {
                 while let Some(ready_chunks) = ready_chunks.next().await {
@@ -649,23 +636,7 @@ fn main() {
                     if let Err(TrySendError::Full(batch)) =
                         gw_to_assistant_messages_tx.try_send(batch)
                     {
-                        let permit = saving_semaphore.clone().acquire_owned().await;
-                        tokio::spawn({
-                            shadow_clone!(statistics_local_storage_dir);
-
-                            async move {
-                                if let Err(e) = save_statistics_message_for_future_sending(
-                                    batch,
-                                    &statistics_local_storage_dir,
-                                )
-                                .await
-                                {
-                                    error!("Failed to save logs batch for future sending: {}", e);
-                                };
-
-                                mem::drop(permit);
-                            }
-                        });
+                        fs_reports_saver.save(batch).await?;
                     }
                 }
 
@@ -674,10 +645,7 @@ fn main() {
         };
 
         let dump_traffic_statistics = {
-            shadow_clone!(
-                mut gw_to_assistant_messages_tx,
-                statistics_local_storage_dir
-            );
+            shadow_clone!(mut gw_to_assistant_messages_tx, fs_reports_saver);
 
             const CHUNK: usize = 4096;
             let mut ready_chunks = futures::stream::select(
@@ -740,14 +708,7 @@ fn main() {
                     if let Err(TrySendError::Full(batch)) =
                         gw_to_assistant_messages_tx.try_send(batch)
                     {
-                        if let Err(e) = save_statistics_message_for_future_sending(
-                            batch,
-                            &statistics_local_storage_dir,
-                        )
-                        .await
-                        {
-                            error!("Failed to save statistics batch for future sending: {}", e);
-                        }
+                        fs_reports_saver.save(batch).await?;
                     }
                 }
 
@@ -755,49 +716,16 @@ fn main() {
             }
         };
 
-        let send_outstanding_statistics_reports = {
-            shadow_clone!(
-                mut gw_to_assistant_messages_tx,
-                statistics_local_storage_dir
-            );
+        let send_outstanding_statistics_reports = tokio::spawn({
+            shadow_clone!(gw_to_assistant_messages_tx, fs_reports_saver);
 
-            #[allow(unreachable_code)]
             async move {
-                let mut chunks_dir = statistics_local_storage_dir.clone();
-                chunks_dir.push("chunks");
-
-                loop {
-                    let mut dir = tokio::fs::read_dir(&chunks_dir).await?;
-
-                    if let Some(dir_entry) = dir.next_entry().await? {
-                        let permit = gw_to_assistant_messages_tx.reserve().await?;
-                        let res = async {
-                            let mut file = tokio::fs::File::open(dir_entry.path()).await?;
-                            tokio::fs::remove_file(dir_entry.path()).await?;
-                            let mut content = Vec::new();
-                            file.read_to_end(&mut content).await?;
-                            let msg = serde_json::from_slice(&content)?;
-                            permit.send(msg);
-
-                            crate::statistics::OUTSTANDING_REPORTS_SENT.inc();
-
-                            Ok::<_, anyhow::Error>(())
-                        }
-                        .await;
-
-                        if let Err(e) = res {
-                            error!("error sending outstanding data: {}", e);
-                            // } else {
-                            // info!("sent outstanding chunk {:?}", dir_entry.path().file_name());
-                        };
-                    } else {
-                        sleep(Duration::from_secs(1)).await;
-                    }
-                }
-
-                Ok::<_, anyhow::Error>(())
+                fs_reports_saver
+                    .outstanding_flusher(gw_to_assistant_messages_tx)
+                    .await
+                    .expect("outstanding flusher stopped");
             }
-        };
+        });
 
         let dump_rules_statistics = {
             shadow_clone!(account_rules_counters);
@@ -836,7 +764,7 @@ fn main() {
 
         let (first_connection_established_tx, first_connection_established_rx) = oneshot::channel();
 
-        let consumer = AssistantClient::new(
+        let assistant_consumer = AssistantClient::new(
             assistant_base_url.clone(),
             assistants_connections,
             &individual_hostname,
@@ -855,7 +783,7 @@ fn main() {
         .expect("notification listener error");
 
         tokio::spawn(async move {
-            consumer.spawn().await;
+            assistant_consumer.spawn().await;
 
             error!("assistant consumer unexpectedly closed");
             app_stop_handle.stop(StopReason::NotificationChannelClosed);
@@ -907,39 +835,12 @@ fn main() {
 
         server.await;
 
+        fs_reports_saver.close().await;
+
         Ok::<(), anyhow::Error>(())
     })
     .expect("error running server");
-    rt.shutdown_timeout(Duration::from_secs(5));
+    rt.shutdown_timeout(Duration::from_secs(60));
 
     info!("Web server stopped");
-}
-
-async fn save_statistics_message_for_future_sending(
-    batch: WsFromGwMessage,
-    dir: &PathBuf,
-) -> anyhow::Result<()> {
-    crate::statistics::REPORTS_SAVED_TO_DISK.inc();
-
-    let mut tmp_path = dir.clone();
-    tmp_path.push("tmp");
-
-    let tempfile = tokio::task::spawn_blocking(|| NamedTempFile::new_in(tmp_path)).await??;
-    let (reopened, tempfile) = tokio::task::spawn_blocking(|| {
-        let reopened = tempfile.reopen()?;
-        Ok::<_, io::Error>((reopened, tempfile))
-    })
-    .await??;
-    let mut file = tokio::fs::File::from_std(reopened);
-    let serialized = serde_json::to_vec(&batch).unwrap();
-    file.write_all(&serialized).await?;
-    let chunk_id = Ulid::new();
-
-    let mut out_path = dir.clone();
-    out_path.push("chunks");
-    out_path.push(chunk_id.to_string());
-
-    tokio::task::spawn_blocking(|| tempfile.persist(out_path)).await??;
-
-    Ok(())
 }
