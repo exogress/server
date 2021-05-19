@@ -23,7 +23,7 @@ use trust_dns_server::client::{
     },
 };
 
-use crate::{authority::Authority, int_api_client::IntApiClient, rules_processor::RulesProcessor};
+use crate::{authority::Authority, int_api_client::IntApiClient, rules_processor::BestPopFinder};
 use anyhow::Error;
 use exogress_server_common::geoip::{model::LocationAndIsp, GeoipReader};
 use futures::{channel::oneshot, FutureExt};
@@ -42,21 +42,21 @@ use trust_dns_server::{
 /// Authorities default to DNSClass IN. The ZoneType specifies if this should be treated as the
 /// start of authority for the zone, is a Secondary, or a cached zone.
 #[derive(Clone)]
-pub struct NetZoneAuthority {
+pub struct CdnZoneAuthority {
     origin: LowerName,
     class: DNSClass,
     records: BTreeMap<RrKey, Arc<RecordSet>>,
 
     int_api_client: IntApiClient,
-    rules_processor: RulesProcessor,
+    pop_finder: BestPopFinder,
 }
 
-impl NetZoneAuthority {
+impl CdnZoneAuthority {
     pub fn new(
         origin: Name,
         records: BTreeMap<RrKey, RecordSet>,
         int_api_client: IntApiClient,
-        rules_processor: RulesProcessor,
+        rules_processor: BestPopFinder,
     ) -> Result<Self, String> {
         let mut this = Self::empty(origin.clone(), int_api_client, rules_processor);
 
@@ -94,17 +94,13 @@ impl NetZoneAuthority {
     /// # Warning
     ///
     /// This is an invalid zone, SOA must be added
-    pub fn empty(
-        origin: Name,
-        int_api_client: IntApiClient,
-        rules_processor: RulesProcessor,
-    ) -> Self {
+    pub fn empty(origin: Name, int_api_client: IntApiClient, pop_finder: BestPopFinder) -> Self {
         Self {
             origin: LowerName::new(&origin),
             class: DNSClass::IN,
             records: BTreeMap::new(),
             int_api_client,
-            rules_processor,
+            pop_finder,
         }
     }
 
@@ -185,7 +181,7 @@ impl NetZoneAuthority {
                 .with_label_values(&["1"])
                 .inc();
 
-            return if let Ok(gws) = self.rules_processor.find_gateways(src, 2) {
+            return if let Ok(gws) = self.pop_finder.find_best(src, 2) {
                 let mut rs = RecordSet::new(&name.clone().into(), RecordType::A, 1);
 
                 for gw in gws {
@@ -305,7 +301,7 @@ impl NetZoneAuthority {
     }
 }
 
-impl Authority for NetZoneAuthority {
+impl Authority for CdnZoneAuthority {
     type Lookup = AuthLookup;
     type LookupFuture = future::Ready<Result<Self::Lookup, LookupError>>;
 

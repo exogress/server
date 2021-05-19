@@ -1,22 +1,23 @@
 ---
-main:
-  rules:
-    - conditions:
-        iso_code: ru
-      lat: 37.6173
-      lon: 55.7558
-      location: moscow
-      sample_rate: 0.5
-      addrs:
-        - addr: 127.0.0.2
-          weight: 1
-        - addr: 127.0.0.3
-          weight: 1
-      enabled: true
-  fallback_addrs:
-    - addr: 127.0.0.1
-      weight: 1
-#    - addr: 127.0.0.10
-#      weight: 2
-#    - addr: 127.0.0.11
-#      weight: 3
+locations:
+  - name: "localhost"
+    lat: 55.940356
+    lon: 37.114898
+    addrs:
+      - addr: "127.0.0.1"
+        weight: 1
+    status: enabled
+  - name: "new-york"
+    lat: 40.730610
+    lon: -73.935242
+    addrs:
+      - addr: "127.0.0.2"
+        weight: 1
+    status: enabled
+  - name: "frankfurt"
+    lat: 50.110924
+    lon: 8.682127
+    addrs:
+      - addr: "127.0.0.3"
+        weight: 1
+    status: enabled

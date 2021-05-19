@@ -8,7 +8,7 @@ extern crate shadow_clone;
 extern crate anyhow;
 
 use crate::{
-    assistant::AssistantClient, int_api_client::IntApiClient, rules_processor::RulesProcessor,
+    assistant::AssistantClient, int_api_client::IntApiClient, rules_processor::BestPopFinder,
     server::DnsServer, termination::StopReason,
 };
 use clap::{App, Arg};
@@ -30,8 +30,9 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 mod assistant;
 mod authority;
 mod catalog;
+mod cdn_zone;
+mod ecs;
 mod int_api_client;
-mod net_zone;
 mod rules;
 mod rules_processor;
 mod server;
@@ -89,10 +90,10 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("net_zone")
-                .long("net-zone")
+            Arg::with_name("cdn_zone")
+                .long("cdn-zone")
                 .required(true)
-                .help("DNS .net zone name")
+                .help("DNS CDN zone name")
                 .takes_value(true),
         );
 
@@ -187,8 +188,8 @@ fn main() {
         .expect("no --short-zone provided")
         .to_string();
 
-    let net_zone = matches
-        .value_of("net_zone")
+    let cdn_zone = matches
+        .value_of("cdn_zone")
         .expect("no --net-zone provided")
         .to_string();
 
@@ -213,7 +214,7 @@ fn main() {
     rt.block_on(async move {
         tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
-        let rules_processor = RulesProcessor::new(dbip);
+        let rules_processor = BestPopFinder::new(dbip);
 
         let assistant_client = AssistantClient::new(
             assistant_url.expect("assistant URL is not provided"),
@@ -236,7 +237,7 @@ fn main() {
 
                             if Some(hash_sum) != last_hash {
                                 last_hash = Some(hash_sum);
-                                rules_processor.update_rules(dns_records.main);
+                                rules_processor.update_rules(dns_records);
                             }
                             sleep(Duration::from_secs(10)).await;
                         }
@@ -251,7 +252,7 @@ fn main() {
 
         let _dns_server = DnsServer::new(
             &short_zone,
-            &net_zone,
+            &cdn_zone,
             &ns_servers,
             "team.exogress.com.",
             &short_hosts_cname,

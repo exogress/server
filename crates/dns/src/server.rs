@@ -1,4 +1,4 @@
-use crate::{catalog::DynamicZones, int_api_client::IntApiClient, rules_processor::RulesProcessor};
+use crate::{catalog::DynamicZones, int_api_client::IntApiClient, rules_processor::BestPopFinder};
 use futures::channel::oneshot;
 use std::{
     collections::BTreeMap,
@@ -93,7 +93,7 @@ impl DnsServer {
         int_api_client: IntApiClient,
         bind_to: &[IpAddr],
         port: u16,
-        rules_processor: RulesProcessor,
+        rules_processor: BestPopFinder,
     ) -> anyhow::Result<Self> {
         info!(
             "spawn DNS server for zone {} served by {:?}, with rname {}, CNAME all to {} on {:?} port {}",

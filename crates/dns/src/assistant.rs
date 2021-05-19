@@ -1,4 +1,4 @@
-use exogress_server_common::dns_rules::EnvironmentsRules;
+use exogress_server_common::dns_rules;
 use reqwest::Identity;
 use std::time::Duration;
 use url::Url;
@@ -29,7 +29,7 @@ impl AssistantClient {
         })
     }
 
-    pub async fn get_dns_rules(&self) -> anyhow::Result<EnvironmentsRules> {
+    pub async fn get_dns_rules(&self) -> anyhow::Result<dns_rules::Main> {
         let mut url = self.assistant_base_url.clone();
 
         url.path_segments_mut()

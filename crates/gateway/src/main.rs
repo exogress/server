@@ -615,7 +615,7 @@ fn main() {
         let fs_reports_saver = FsReportsSaver::new(
             statistics_local_storage_dir.clone(),
             16,
-            byte_unit::n_mb_bytes(10) as u64,
+            byte_unit::n_mb_bytes(4) as u64,
         )
         .await?;
 

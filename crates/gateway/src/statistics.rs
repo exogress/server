@@ -165,6 +165,12 @@ lazy_static! {
         "Number of reports sent to cloud"
     )
     .unwrap();
+    pub static ref REPORTER_FS_SEND_CHANNEL_RESERVE_TIME: Histogram = register_histogram!(
+        "reporter_fs_send_channel_reserve_time",
+        "Time take to reserve the permit in the queue to send the report stored on FS",
+        DEFAULT_TIME_BUCKETS.clone()
+    )
+    .unwrap();
 }
 
 pub fn dump_prometheus() -> String {

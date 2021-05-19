@@ -4,7 +4,7 @@ use exogress_server_common::{
     assistant::{
         GatewayConfigMessage, GetValue, Notification, SetValue, WsFromGwMessage, WsToGwMessage,
     },
-    dns_rules::EnvironmentsRules,
+    dns_rules,
     kafka::GwStatisticsReport,
     logging::LogMessage,
 };
@@ -447,7 +447,7 @@ pub async fn server(
 
                         file.read_to_end(&mut v).await?;
 
-                        let rules: EnvironmentsRules = serde_yaml::from_slice(&v)?;
+                        let rules: dns_rules::Main = serde_yaml::from_slice(&v)?;
 
                         Ok::<_, anyhow::Error>(rules)
                     }
@@ -455,9 +455,9 @@ pub async fn server(
 
                     match res {
                         Ok(rules) => {
-                            Ok::<_, warp::reject::Rejection>(
-                                warp::reply::json::<EnvironmentsRules>(&rules),
-                            )
+                            Ok::<_, warp::reject::Rejection>(warp::reply::json::<dns_rules::Main>(
+                                &rules,
+                            ))
                         }
                         Err(e) => {
                             error!("Error reading DNS rules: {}", e);

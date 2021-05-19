@@ -1,5 +1,5 @@
 use core::mem;
-use exogress_common::entities::Ulid;
+use exogress_common::{common_utils::backoff::Backoff, entities::Ulid};
 use exogress_server_common::assistant::WsFromGwMessage;
 use futures_util::{SinkExt, StreamExt};
 use std::{
@@ -11,7 +11,10 @@ use std::{
 use tempfile::NamedTempFile;
 use tokio::{
     io::AsyncWriteExt,
-    sync::oneshot,
+    sync::{
+        mpsc::{error::TrySendError, Permit},
+        oneshot,
+    },
     time::{sleep, Instant},
 };
 
@@ -264,37 +267,56 @@ impl FsReportsSaver {
                     let mut reader = tokio_util::codec::FramedRead::new(file, newline_delimited);
                     let tx = gw_to_assistant_messages_tx.clone();
 
-                    'lines: while let Some(msg_result) = reader.next().await {
-                        let permit = loop {
-                            // this code will never blocks if the query is busy. This reduces the
-                            // amount of file operations
+                    let backoff =
+                        Backoff::new(Duration::from_millis(5), Duration::from_millis(200));
 
-                            // FIXME: use tx from Err response
-                            match tx.clone().try_reserve_owned() {
-                                Err(_e) => {
-                                    // wait a bit if channel is busy
-                                    sleep(Duration::from_millis(50)).await;
-                                }
-                                Ok(permit) => {
-                                    break permit;
+                    pin_utils::pin_mut!(backoff);
+
+                    // TODO: don't loose data if error happened during the iteration
+
+                    // For now semantics for both types is at-most-once
+                    // In the future this is going to be different depending of the type
+
+                    'lines: while let Some(msg_result) = reader.next().await {
+                        match msg_result {
+                            Ok(msg) => {
+                                match serde_json::from_str(&msg) {
+                                    Ok(r) => {
+                                        let start_reserving_at = crate::statistics::REPORTER_FS_SEND_CHANNEL_RESERVE_TIME.start_timer();
+                                        let permit: Permit<'_, WsFromGwMessage> = loop {
+                                            // this code will never blocks if the query is busy. This reduces the
+                                            // amount of file operations
+                                            match tx.try_reserve() {
+                                                Err(TrySendError::Full(_)) => {
+                                                    // wait a bit if the channel is busy
+                                                    if backoff.next().await.is_none() {
+                                                        bail!("Backoff handle unexpectedly closed")
+                                                    };
+                                                }
+                                                Err(e) => {
+                                                    return Err(e.into());
+                                                }
+                                                Ok(permit) => {
+                                                    backoff.reset();
+                                                    break permit;
+                                                }
+                                            }
+                                        };
+                                        start_reserving_at.observe_duration();
+
+                                        permit.send(r);
+
+                                        crate::statistics::OUTSTANDING_REPORTS_SENT.inc();
+                                    }
+                                    Err(e) => {
+                                        error!("Error reading from outstanding report: {}", e);
+                                        continue 'lines;
+                                    }
                                 }
                             }
-                        };
-
-                        match msg_result {
-                            Ok(msg) => match serde_json::from_str(&msg) {
-                                Ok(r) => {
-                                    permit.send(r);
-                                    crate::statistics::OUTSTANDING_REPORTS_SENT.inc();
-                                }
-                                Err(e) => {
-                                    error!("Error reading from outstanding report: {}", e);
-                                    continue 'lines;
-                                }
-                            },
                             Err(e) => {
                                 error!("Error reading from outstanding report: {}", e);
-                                continue 'lines;
+                                break 'lines;
                             }
                         }
                     }

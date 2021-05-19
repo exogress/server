@@ -21,8 +21,8 @@ use std::{borrow::Borrow, future::Future, io, pin::Pin};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    authority::AuthorityObject, int_api_client::IntApiClient, net_zone::NetZoneAuthority,
-    rules_processor::RulesProcessor, short_zone::ShortZoneAuthority,
+    authority::AuthorityObject, cdn_zone::CdnZoneAuthority, ecs::parse_ecs,
+    int_api_client::IntApiClient, rules_processor::BestPopFinder, short_zone::ShortZoneAuthority,
 };
 use parking_lot::RwLock;
 use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
@@ -48,7 +48,7 @@ pub struct DynamicZones {
     short_zone: LowerName,
     short_zone_authority: Box<Arc<RwLock<ShortZoneAuthority>>>,
     net_zone: LowerName,
-    net_zone_authority: Box<Arc<RwLock<NetZoneAuthority>>>,
+    net_zone_authority: Box<Arc<RwLock<CdnZoneAuthority>>>,
 }
 
 fn send_response<R: ResponseHandler>(
@@ -187,7 +187,7 @@ impl DynamicZones {
         net_zone_records: BTreeMap<RrKey, RecordSet>,
         target: &str,
         int_api_client: IntApiClient,
-        rules_processor: RulesProcessor,
+        rules_processor: BestPopFinder,
     ) -> anyhow::Result<Self> {
         Ok(DynamicZones {
             short_zone_authority: Box::new(Arc::new(RwLock::new(
@@ -201,7 +201,7 @@ impl DynamicZones {
             ))),
             short_zone: short_zone.parse()?,
             net_zone_authority: Box::new(Arc::new(RwLock::new(
-                NetZoneAuthority::new(
+                CdnZoneAuthority::new(
                     net_zone.parse()?,
                     net_zone_records,
                     int_api_client,
@@ -345,8 +345,21 @@ async fn build_response(
     response_header.set_message_type(MessageType::Response);
     response_header.set_authoritative(true);
 
-    debug!("performing {} on {}", query, authority.origin());
-    let future = authority.search(query, is_dnssec, supported_algorithms, src);
+    info!("performing {} on {}", query, authority.origin());
+
+    let remote_addr = if let Some(edns) = edns {
+        // 8 - ClientSubnet
+        if let Some(EdnsOption::Unknown(8, ref data)) = edns.option(EdnsCode::Subnet) {
+            parse_ecs(data).ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+    .unwrap_or(src);
+
+    let future = authority.search(query, is_dnssec, supported_algorithms, remote_addr);
 
     let sections = send_authoritative_response(
         future,
