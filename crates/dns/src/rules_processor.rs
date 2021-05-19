@@ -1,6 +1,6 @@
 use exogress_server_common::{
     dns_rules,
-    dns_rules::{LocationStatus, WeightedAddr},
+    dns_rules::WeightedAddr,
     geoip::{
         model::{model::Location, LocationAndIsp},
         GeoipReader, MaxMindDBError,
@@ -27,18 +27,6 @@ pub struct LocationDefinition {
     pub name: SmolStr,
     pub point: Point<f64>,
     pub addrs: SmoothWeight<IpAddr>,
-    pub status: LocationStatus,
-}
-
-impl From<dns_rules::Location> for LocationDefinition {
-    fn from(s: dns_rules::Location) -> Self {
-        LocationDefinition {
-            name: s.name,
-            point: point!(x: s.lon.try_into().unwrap(), y: s.lat.try_into().unwrap()),
-            addrs: to_weighted_balancer(s.addrs),
-            status: s.status,
-        }
-    }
 }
 
 // pub struct Conditions {
@@ -108,7 +96,21 @@ impl BestPopFinder {
     }
 
     pub fn update_rules(&self, main_rules: dns_rules::Main) {
-        *self.locations.lock() = main_rules.locations.into_iter().map(From::from).collect();
+        *self.locations.lock() = main_rules
+            .locations
+            .into_iter()
+            .filter_map(|l| {
+                if l.addrs.is_empty() && !l.status.is_enabled() {
+                    None
+                } else {
+                    Some(LocationDefinition {
+                        name: l.name,
+                        point: point!(x: l.lon.try_into().unwrap(), y: l.lat.try_into().unwrap()),
+                        addrs: to_weighted_balancer(l.addrs),
+                    })
+                }
+            })
+            .collect();
     }
 
     pub fn find_best(
@@ -143,7 +145,6 @@ impl BestPopFinder {
                 let remote_location = point!(x: remote_lon, y: remote_lat);
                 if let Some((_, loc)) = locations
                     .iter_mut()
-                    .filter(|l| l.status.is_enabled())
                     .map(|location: &mut LocationDefinition| {
                         (location.point.geodesic_distance(&remote_location), location)
                     })
