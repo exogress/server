@@ -46,9 +46,9 @@ use trust_dns_server::{
 /// Set of authorities, zones, available to this server.
 pub struct DynamicZones {
     short_zone: LowerName,
-    short_zone_authority: Box<Arc<RwLock<ShortZoneAuthority>>>,
+    short_zone_authority: Arc<RwLock<ShortZoneAuthority>>,
     net_zone: LowerName,
-    net_zone_authority: Box<Arc<RwLock<CdnZoneAuthority>>>,
+    net_zone_authority: Arc<RwLock<CdnZoneAuthority>>,
 }
 
 fn send_response<R: ResponseHandler>(
@@ -190,7 +190,7 @@ impl DynamicZones {
         rules_processor: BestPopFinder,
     ) -> anyhow::Result<Self> {
         Ok(DynamicZones {
-            short_zone_authority: Box::new(Arc::new(RwLock::new(
+            short_zone_authority: Arc::new(RwLock::new(
                 ShortZoneAuthority::new(
                     short_zone.parse()?,
                     short_zone_records,
@@ -198,9 +198,9 @@ impl DynamicZones {
                     int_api_client.clone(),
                 )
                 .map_err(|e| anyhow!("{}", e))?,
-            ))),
+            )),
             short_zone: short_zone.parse()?,
-            net_zone_authority: Box::new(Arc::new(RwLock::new(
+            net_zone_authority: Arc::new(RwLock::new(
                 CdnZoneAuthority::new(
                     net_zone.parse()?,
                     net_zone_records,
@@ -208,7 +208,7 @@ impl DynamicZones {
                     rules_processor,
                 )
                 .map_err(|e| anyhow!("{}", e))?,
-            ))),
+            )),
             net_zone: net_zone.parse()?,
         })
     }
@@ -261,9 +261,9 @@ impl DynamicZones {
     /// Recursively searches the catalog for a matching authority
     pub fn find(&self, name: &LowerName) -> Option<&(dyn AuthorityObject + 'static)> {
         if name == &self.short_zone {
-            Some(&*self.short_zone_authority)
+            Some(&self.short_zone_authority)
         } else if name == &self.net_zone {
-            Some(&*self.net_zone_authority)
+            Some(&self.net_zone_authority)
         } else {
             if !name.is_root() {
                 let name = name.base_name();

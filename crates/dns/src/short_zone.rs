@@ -34,6 +34,7 @@ use trust_dns_server::{
         AnyRecords, AuthLookup, LookupError, LookupRecords, LookupResult, MessageRequest,
         UpdateResult, ZoneType,
     },
+    client::proto::rr::rdata::CAA,
     proto::rr::rdata::TXT,
 };
 
@@ -301,27 +302,50 @@ impl ShortZoneAuthority {
             }
         }
 
-        if record_type == RecordType::CNAME
-            || record_type == RecordType::A
-            || record_type == RecordType::AAAA
-        //     TODO: and is a subzone not zone itself
-        {
-            let mut cname_record_set = RecordSet::new(&name.clone().into(), RecordType::CNAME, 1);
+        match record_type {
+            RecordType::CNAME | RecordType::A | RecordType::AAAA => {
+                let mut cname_record_set =
+                    RecordSet::new(&name.clone().into(), RecordType::CNAME, 1);
 
-            cname_record_set.insert(
-                Record::from_rdata(
-                    name.clone().into(),
-                    self.minimum_ttl(),
-                    RData::CNAME(self.cname_record.clone()),
-                ),
-                1,
-            );
+                cname_record_set.insert(
+                    Record::from_rdata(
+                        name.clone().into(),
+                        self.minimum_ttl(),
+                        RData::CNAME(self.cname_record.clone()),
+                    ),
+                    1,
+                );
 
-            crate::statistics::NUM_DNS_REQUESTS
-                .with_label_values(&["1"])
-                .inc();
+                crate::statistics::NUM_DNS_REQUESTS
+                    .with_label_values(&["1"])
+                    .inc();
 
-            return Some(Arc::new(cname_record_set));
+                return Some(Arc::new(cname_record_set));
+            }
+            RecordType::CAA => {
+                //
+                let mut caa_record = RecordSet::new(&name.clone().into(), RecordType::CAA, 1);
+
+                caa_record.insert(
+                    Record::from_rdata(
+                        name.clone().into(),
+                        self.minimum_ttl(),
+                        RData::CAA(CAA::new_issue(
+                            true,
+                            Some("letsencrypt.org".parse().unwrap()),
+                            Default::default(),
+                        )),
+                    ),
+                    1,
+                );
+
+                crate::statistics::NUM_DNS_REQUESTS
+                    .with_label_values(&["1"])
+                    .inc();
+
+                return Some(Arc::new(caa_record));
+            }
+            _ => {}
         }
 
         // this range covers all the records for any of the RecordTypes at a given label.
