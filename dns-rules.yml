@@ -1,23 +1,29 @@
----
-locations:
-  - name: "localhost"
-    lat: 55.940356
-    lon: 37.114898
-    addrs:
-      - addr: "127.0.0.1"
-        weight: 1
-    status: enabled
-  - name: "new-york"
-    lat: 40.730610
-    lon: -73.935242
-    addrs:
-      - addr: "127.0.0.2"
-        weight: 1
-    status: enabled
-  - name: "frankfurt"
-    lat: 50.110924
-    lon: 8.682127
-    addrs:
-      - addr: "127.0.0.3"
-        weight: 1
-    status: enabled
+"locations":
+  - "addrs":
+      - "addr": "35.207.78.204"
+        "weight": 1
+    "lat": 50.110924
+    "lon": 8.682127
+    "name": "frankfurt"
+    "status": "enabled"
+  - "addrs":
+      - "addr": "35.217.53.193"
+        "weight": 1
+    "lat": 60.569199
+    "lon": 27.1938
+    "name": "hamina"
+    "status": "enabled"
+  - "addrs":
+      - "addr": "35.215.72.219"
+        "weight": 1
+    "lat": 34.052235
+    "lon": -118.243683
+    "name": "los-angeles"
+    "status": "enabled"
+  - "addrs":
+      - "addr": "84.201.139.87"
+        "weight": 1
+    "lat": 55.751244
+    "lon": 37.618423
+    "name": "moscow"
+    "status": "disabled"

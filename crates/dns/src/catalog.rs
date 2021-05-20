@@ -345,7 +345,7 @@ async fn build_response(
     response_header.set_message_type(MessageType::Response);
     response_header.set_authoritative(true);
 
-    info!("performing {} on {}", query, authority.origin());
+    debug!("performing {} on {}", query, authority.origin());
 
     let remote_addr = if let Some(edns) = edns {
         // 8 - ClientSubnet
