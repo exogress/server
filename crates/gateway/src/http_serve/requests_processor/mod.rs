@@ -260,6 +260,7 @@ impl RequestsProcessor {
                         if self.is_transformations_limited {
                             *invocation_log.lock().transformation_mut() =
                                 Some(TransformationStatus::Limited);
+                            *res = resp_from_cache.into_for_user();
                         } else if is_eligible_for_transformation_not_considering_status_code(
                             resp_from_cache.as_full_resp(),
                             handler.resolved_variant.post_processing(),
@@ -438,6 +439,7 @@ impl RequestsProcessor {
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
             Some((handler, invocation_log)) => {
+                // Try to trigger transformation if applicable
                 if handler.resolved_variant.is_cache_enabled() != Some(true) {
                     // cache is disabled
                     if let CacheableInvocationProcessingStep::Invoked(step) =
@@ -454,6 +456,7 @@ impl RequestsProcessor {
                         handler.resolved_variant.post_processing(),
                     )
                 {
+                    // transformation allowed
                     if !self.cache.is_enough_space() {
                         crate::statistics::CACHE_NOT_ENOUGH_SPACE_SAVE_SKIPPED.inc();
                         warn!(
@@ -516,6 +519,7 @@ impl RequestsProcessor {
                         }
                     }
                 } else {
+                    // transformation is limited. ignore
                     *invocation_log.lock().transformation_mut() =
                         Some(if self.is_transformations_limited {
                             TransformationStatus::Limited
