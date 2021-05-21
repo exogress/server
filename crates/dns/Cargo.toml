@@ -1,6 +1,6 @@
 [package]
 name = "exogress-dns"
-version = "0.9.4"
+version = "0.10.0"
 authors = ["Gleb Pomykalov <gleb@exogress.com>"]
 edition = "2018"
 
