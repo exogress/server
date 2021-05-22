@@ -40,4 +40,4 @@ typed-builder = "0.9.0"
 bs58 = "0.4"
 
 exogress-server-common = { path = "../common" }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.1.0", features = ["common-utils", "entities", "access-tokens"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0", features = ["common-utils", "entities", "access-tokens"], default-features = false }

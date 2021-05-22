@@ -95,5 +95,5 @@ rw-stream-sink = "0.2.1"
 median = "0.3.2"
 
 exogress-server-common = { path = "../common", features = ["crypto", "geoip"] }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.1.0", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client", "ledb", "access-tokens"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0", features = ["common-utils", "tunnel", "config-core", "entities", "signaling", "ws-client", "ledb", "access-tokens"], default-features = false }
 

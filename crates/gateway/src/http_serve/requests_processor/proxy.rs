@@ -26,7 +26,7 @@ use super::helpers::{
 };
 use crate::http_serve::{
     logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
-    requests_processor::post_processing::ResolvedPostProcessing,
+    requests_processor::{post_processing::ResolvedPostProcessing, utils},
 };
 use chrono::Utc;
 use exogress_common::{
@@ -73,14 +73,6 @@ impl fmt::Debug for ResolvedProxy {
 }
 
 impl ResolvedProxy {
-    fn sec_websocket_accept(key: &str) -> String {
-        let s = format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
-
-        let mut m = sha1::Sha1::new();
-        m.update(s.as_ref());
-        base64::encode(m.digest().bytes().as_ref())
-    }
-
     pub async fn invoke(
         &self,
         req: &mut Request<Body>,
@@ -93,7 +85,7 @@ impl ResolvedProxy {
         handler_log: &mut Option<ProxyHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
-        if req.headers().contains_key("x-exg-proxied") {
+        if req.headers().contains_key("x-exg") {
             return HandlerInvocationResult::Exception {
                 name: exceptions::PROXY_LOOP_DETECTED.clone(),
                 data: Default::default(),
@@ -327,7 +319,7 @@ impl ResolvedProxy {
                             .insert(CONNECTION, "Upgrade".parse().unwrap());
 
                         if let Some(ws_key) = req.headers().get(SEC_WEBSOCKET_KEY) {
-                            let accept = Self::sec_websocket_accept(ws_key.to_str().unwrap());
+                            let accept = utils::ws::sec_websocket_accept(ws_key.to_str().unwrap());
 
                             res.headers_mut()
                                 .insert(SEC_WEBSOCKET_ACCEPT, accept.parse().unwrap());
@@ -375,19 +367,5 @@ impl ResolvedProxy {
             name: exceptions::PROXY_INSTANCE_UNREACHABLE.clone(),
             data: Default::default(),
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_sec_websocket() {
-        let key = "dGhlIHNhbXBsZSBub25jZQ==";
-        assert_eq!(
-            ResolvedProxy::sec_websocket_accept(key),
-            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
-        )
     }
 }

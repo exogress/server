@@ -69,7 +69,7 @@ impl ResolvedStaticDir {
         handler_log: &mut Option<StaticDirHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
-        if req.headers().contains_key("x-exg-proxied") {
+        if req.headers().contains_key("x-exg") {
             return HandlerInvocationResult::Exception {
                 name: exceptions::PROXY_LOOP_DETECTED.clone(),
                 data: Default::default(),

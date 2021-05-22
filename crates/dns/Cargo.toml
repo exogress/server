@@ -38,4 +38,4 @@ weighted-rs = "0.1.2"
 smol_str = "0.1.17"
 
 exogress-server-common = { path = "../common", features = ["geoip"] }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.1.0", features = ["common-utils"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0", features = ["common-utils"], default-features = false }

@@ -326,6 +326,8 @@ pub enum HandlerProcessingStepVariant {
     Auth(AuthHandlerLogMessage),
     #[serde(rename = "proxy")]
     Proxy(ProxyHandlerLogMessage),
+    #[serde(rename = "proxy-public")]
+    ProxyPublic(ProxyPublicHandlerLogMessage),
     #[serde(rename = "s3_bucket")]
     S3Bucket(S3BucketHandlerLogMessage),
     #[serde(rename = "gcs_bucket")]
@@ -444,6 +446,17 @@ pub struct InstanceLog {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProxyPublicAttemptLogMessage {
+    pub attempt: u8,
+
+    pub attempted_at: DateTime<Utc>,
+
+    pub request: ProxyRequestToOriginInfo,
+
+    pub response: ProxyOriginResponseInfo,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProxyAttemptLogMessage {
     pub attempt: u8,
 
@@ -524,6 +537,20 @@ pub struct ProxyRequestToOriginInfo {
 pub struct ProxyOriginResponseInfo {
     #[serde(skip_serializing_if = "HttpBodyLog::is_none")]
     pub body: HttpBodyLog,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProxyPublicHandlerLogMessage {
+    pub base_url: SmolStr,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<ProtocolUpgrade>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<LanguageTagBuf>,
+    pub handler_name: HandlerName,
+
+    pub attempts: Vec<ProxyPublicAttemptLogMessage>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

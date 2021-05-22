@@ -118,9 +118,12 @@ mod modifications;
 mod pass_through;
 mod post_processing;
 mod proxy;
+mod proxy_public;
 pub mod refinable;
 mod s3_bucket;
 mod static_dir;
+
+mod utils;
 
 pub struct RequestsProcessor {
     pub is_active: bool,
@@ -1227,6 +1230,7 @@ impl From<config_core::Rebase> for Rebase {
 #[derive(Debug)]
 pub enum ResolvedHandlerVariant {
     Proxy(proxy::ResolvedProxy),
+    ProxyPublic(proxy_public::ResolvedProxyPublic),
     StaticDir(static_dir::ResolvedStaticDir),
     Auth(auth::ResolvedAuth),
     S3Bucket(s3_bucket::ResolvedS3Bucket),
@@ -1245,6 +1249,7 @@ impl ResolvedHandlerVariant {
             ResolvedHandlerVariant::GcsBucket(gcs) => Some(gcs.is_cache_enabled),
             // ResolvedHandlerVariant::ApplicationFirewall(_) => None,
             ResolvedHandlerVariant::PassThrough(_) => None,
+            ResolvedHandlerVariant::ProxyPublic(p) => Some(p.is_cache_enabled),
         }
     }
 
@@ -1257,6 +1262,7 @@ impl ResolvedHandlerVariant {
             ResolvedHandlerVariant::GcsBucket(gcs) => Some(&gcs.post_processing),
             // ResolvedHandlerVariant::ApplicationFirewall(_) => None,
             ResolvedHandlerVariant::PassThrough(_) => None,
+            ResolvedHandlerVariant::ProxyPublic(p) => Some(&p.post_processing),
         }
     }
 }
@@ -1454,6 +1460,36 @@ impl ResolvedHandlerVariant {
                 pass_through
                     .invoke(req, res, requested_url, modified_url)
                     .await
+            }
+            ResolvedHandlerVariant::ProxyPublic(proxy_public) => {
+                let mut proxy_public_log = None;
+                let r = proxy_public
+                    .invoke(
+                        req,
+                        res,
+                        requested_url,
+                        modified_url,
+                        &local_addr,
+                        &remote_addr,
+                        language,
+                        &mut proxy_public_log,
+                        log_message_container,
+                    )
+                    .await;
+
+                if let Some(log) = proxy_public_log {
+                    let mut locked = cacheable_invocation_log.lock();
+                    let current = locked.transformation_mut().clone();
+                    *locked = HandlerProcessingStep {
+                        variant: HandlerProcessingStepVariant::ProxyPublic(log),
+                        path: modified_url.path_and_query().unwrap().as_str().into(),
+                        save_to_cache: None,
+                        transformation: current,
+                    }
+                    .into();
+                };
+
+                r
             }
         }
     }
@@ -3178,9 +3214,9 @@ impl RequestsProcessor {
             maybe_identity: None,
         });
         let int_metered_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
-            public_counters_tx,
-            resolver,
-            counters: traffic_counters,
+            public_counters_tx: public_counters_tx.clone(),
+            resolver: resolver.clone(),
+            counters: traffic_counters.clone(),
             sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
             recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
             maybe_identity: maybe_identity.clone(),
@@ -3221,7 +3257,7 @@ impl RequestsProcessor {
                     }
                 })
                 .map({
-                    shadow_clone!(active_profile, mount_point_name, refinable, public_client);
+                    shadow_clone!(active_profile, mount_point_name, refinable, public_client, public_counters_tx, resolver, traffic_counters);
 
                     move |(handler_name, handler)| {
                         let replace_base_path = handler
@@ -3504,6 +3540,45 @@ impl RequestsProcessor {
                                     };
 
                                     ResolvedHandlerVariant::GcsBucket(bucket)
+                                }
+                                ClientHandlerVariant::ProxyPublic(proxy_public) => {
+                                    let proxy_public = proxy_public::ResolvedProxyPublic {
+                                        handler_name: handler_name.clone(),
+                                        host: proxy_public.host.clone(),
+                                        post_processing: ResolvedPostProcessing {
+                                            encoding: ResolvedEncoding {
+                                                mime_types: proxy_public
+                                                    .post_processing
+                                                    .encoding
+                                                    .mime_types
+                                                    .clone()
+                                                    .resolve_non_referenced(
+                                                        &params,
+                                                    )
+                                                    .map(|m| m.0.iter().map(|mt| mt.0.essence_str().into()).collect()),
+                                                brotli: proxy_public.post_processing.encoding.brotli,
+                                                gzip: proxy_public.post_processing.encoding.gzip,
+                                                deflate: proxy_public.post_processing.encoding.deflate,
+                                                min_size: proxy_public.post_processing.encoding.min_size,
+                                            },
+                                            image: ResolvedImage {
+                                                is_png: proxy_public.post_processing.image_optimization.enabled && proxy_public.post_processing.image_optimization.png,
+                                                is_jpeg: proxy_public.post_processing.image_optimization.enabled && proxy_public.post_processing.image_optimization.jpeg,
+                                            }
+                                        },
+                                        client: public_client.clone(),
+                                        is_cache_enabled: proxy_public.cache.enabled,
+                                        public_counters_tx: public_counters_tx.clone(),
+                                        resolver: resolver.clone(),
+                                        counters: traffic_counters.clone(),
+                                        sent_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_SENT.clone(),
+                                        recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
+                                        is_websockets_enabled: proxy_public.websockets,
+                                        individual_hostname: individual_hostname.clone(),
+                                        public_hostname: mount_point_fqdn.to_string().into(),
+                                    };
+
+                                    ResolvedHandlerVariant::ProxyPublic(proxy_public)
                                 }
                                 // ClientHandlerVariant::ApplicationFirewall(app_firewall) => {
                                 //     ResolvedHandlerVariant::ApplicationFirewall(application_firewall::ResolvedApplicationFirewall {
