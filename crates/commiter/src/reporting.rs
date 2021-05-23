@@ -110,7 +110,7 @@ impl MongoDbClient {
                         "project_unique_id": project_unique_id.to_string(),
                         "gw_hostname": gw_hostname.to_string(),
                         "gw_location": gw_location.to_string(),
-                        "start_of_period": start_of_hour,
+                        "start_of_period": bson::Bson::from(start_of_hour),
                     };
                     let op = bson::doc! {
                         "$inc": {
@@ -177,7 +177,7 @@ impl MongoDbClient {
                         "project_unique_id": project_unique_id.to_string(),
                         "gw_hostname": gw_hostname.to_string(),
                         "gw_location": gw_location.to_string(),
-                        "start_of_period": start_of_hour,
+                        "start_of_period": bson::Bson::from(start_of_hour),
                     };
                     let op = bson::doc! {
                         "$inc": {

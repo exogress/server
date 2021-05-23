@@ -2,7 +2,7 @@ use crate::{
     bucket::GcsBucketInfo, magick::ImageConversionMeta, PROCESSING_MAX_TIME_HARD, UPLOAD_TTL,
 };
 use bson::doc;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use exogress_common::entities::{
     AccountUniqueId, HandlerName, MountPointName, ProjectName, ProjectUniqueId, Ulid,
 };
@@ -116,7 +116,7 @@ pub fn listen_queue(
                     },
                     doc! {
                         "$set": {
-                            "start_processing_at": Utc::now(),
+                            "start_processing_at": bson::Bson::from(Utc::now()),
                         }
                     },
                     options,
@@ -217,7 +217,7 @@ impl MongoDbClient {
             .unwrap())
     }
 
-    async fn cleanup_outdated_uploads(&self, now: chrono::DateTime<Utc>) -> anyhow::Result<()> {
+    async fn cleanup_outdated_uploads(&self, now: DateTime<Utc>) -> anyhow::Result<()> {
         let collection = self.db.collection::<bson::Document>(QUEUE_COLLECTION);
 
         // Cleanup outdated upload requests
@@ -225,8 +225,8 @@ impl MongoDbClient {
             .delete_many(
                 doc! {
                     "$or": [
-                        {"upload_requested_at": { "$lt": now - *UPLOAD_TTL } },
-                        {"start_processing_at": { "$lt": now - *PROCESSING_MAX_TIME_HARD } },
+                        {"upload_requested_at": { "$lt": bson::Bson::from(now - *UPLOAD_TTL) } },
+                        {"start_processing_at": { "$lt": bson::Bson::from(now - *PROCESSING_MAX_TIME_HARD) } },
                     ]
                 },
                 None,
@@ -326,13 +326,13 @@ impl MongoDbClient {
                     "$currentDate": { "last_requested_at": true },
                     "$setOnInsert": {
                         "upload_id": upload_id.clone(),
-                        "upload_requested_at": "$currentDate",
+                        "upload_requested_at": bson::Bson::from(Utc::now()),
                         "content_type": content_type,
                         "handler_name": handler_name.to_string(),
                         "project_name": project_name.to_string(),
                         "project_unique_id": project_unique_id,
                         "mount_point_name": mount_point_name.to_string(),
-                        "url": url.to_string(),
+                        "url":  url.to_string(),
                     },
                 },
                 Some(find_options),
