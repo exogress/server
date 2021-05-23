@@ -84,7 +84,7 @@ impl hyper::service::Service<Uri> for InstanceConnector {
         let target_result: Result<ConnectTarget, exogress_common::tunnel::Error> =
             extract_connect_target(dst);
         match target_result {
-            Ok(target) => self.retrieve_connection(target, Compression::Zstd),
+            Ok(target) => self.retrieve_connection(target, Compression::Plain),
             Err(e) => futures::future::ready(Err(e)).boxed(),
         }
     }
