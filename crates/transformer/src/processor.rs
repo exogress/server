@@ -151,24 +151,27 @@ impl Processor {
 
                     started_at.observe_duration();
 
-                    let started_at = crate::statistics::CONVERSION_TIME
-                        .with_label_values(&["avif"])
-                        .start_timer();
+                    let avif_result = if request.content_type != "image/png" {
+                        let started_at = crate::statistics::CONVERSION_TIME
+                            .with_label_values(&["avif"])
+                            .start_timer();
 
-                    let avif_result = crate::magick::convert(
-                        conversion_threads,
-                        conversion_memory,
-                        decrypted,
-                        &request.content_type,
-                        "avif",
-                        "image/avif",
-                    )
-                    .await;
-                    started_at.observe_duration();
+                        let r = crate::magick::convert(
+                            conversion_threads,
+                            conversion_memory,
+                            decrypted,
+                            &request.content_type,
+                            "avif",
+                            "image/avif",
+                        )
+                        .await;
 
-                    info!("finish conversion");
+                        started_at.observe_duration();
 
-                    info!("blocking conversion finished. save result");
+                        Some(r)
+                    } else {
+                        None
+                    };
 
                     let content_hash = request.content_hash.clone();
 
@@ -225,7 +228,7 @@ impl Processor {
                         }
 
                         match avif_result {
-                            Ok(avif) => {
+                            Some(Ok(avif)) => {
                                 let transformed = avif.transformed;
                                 let meta = avif.meta;
                                 let avif_path = format!(
@@ -260,9 +263,10 @@ impl Processor {
                                 results
                                     .push(("image/avif".to_string(), Ok((meta.clone(), header))));
                             }
-                            Err(e) => {
+                            Some(Err(e)) => {
                                 results.push(("image/avif".to_string(), Err(e)));
                             }
+                            None => {}
                         }
 
                         db.save_processed(source_size, results, request, &bucket_info)
