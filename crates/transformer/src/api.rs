@@ -117,7 +117,7 @@ pub fn api_handler(
                             Some(processed) => Ok(ProcessResponse::Ready(ProcessingReady {
                                 formats: processed.formats,
                                 original_content_len: processed.source_size as u64,
-                                transformed_at: processed.transformation_started_at,
+                                transformed_at: processed.transformation_started_at.into(),
                             })),
                             None => Ok(mongodb_client
                                 .find_queued_or_create_upload(

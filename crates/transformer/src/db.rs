@@ -1,7 +1,7 @@
 use crate::{
     bucket::GcsBucketInfo, magick::ImageConversionMeta, PROCESSING_MAX_TIME_HARD, UPLOAD_TTL,
 };
-use bson::{doc, serde_helpers::chrono_0_4_datetime_as_bson_datetime};
+use bson::doc;
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{
     AccountUniqueId, HandlerName, MountPointName, ProjectName, ProjectUniqueId, Ulid,
@@ -45,30 +45,6 @@ pub enum QueueState {
     UploadReceived,
 }
 
-pub mod optionally_chrono_0_4_datetime_as_bson_datetime {
-    use chrono::Utc;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::result::Result;
-
-    /// Deserializes a chrono::DateTime from a bson::DateTime.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<chrono::DateTime<Utc>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let datetime = Option::<bson::DateTime>::deserialize(deserializer)?;
-        Ok(datetime.map(|dt| dt.into()))
-    }
-
-    /// Serializes a chrono::DateTime as a bson::DateTime.
-    pub fn serialize<S: Serializer>(
-        val: &Option<chrono::DateTime<Utc>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let datetime = val.map(|datetime| bson::DateTime::from(datetime.to_owned()));
-        datetime.serialize(serializer)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueuedRequest {
     pub content_type: String,
@@ -83,16 +59,13 @@ pub struct QueuedRequest {
     #[serde(default)]
     pub encryption_header: Option<String>,
     pub account_unique_id: AccountUniqueId,
-    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
-    pub last_requested_at: chrono::DateTime<chrono::Utc>,
+    pub last_requested_at: bson::DateTime,
     pub num_requests: i64,
-    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
-    pub upload_requested_at: chrono::DateTime<chrono::Utc>,
+    pub upload_requested_at: bson::DateTime,
     #[serde(default)]
     pub upload_id: Option<Ulid>,
 
-    #[serde(default, with = "optionally_chrono_0_4_datetime_as_bson_datetime")]
-    pub start_processing_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub start_processing_at: Option<bson::DateTime>,
 }
 
 impl QueuedRequest {
@@ -113,10 +86,8 @@ pub struct Processed {
     pub source_size: i64,
     pub content_type: String,
     pub content_hash: String,
-    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
-    pub last_requested_at: chrono::DateTime<chrono::Utc>,
-    #[serde(with = "chrono_0_4_datetime_as_bson_datetime")]
-    pub transformation_started_at: chrono::DateTime<chrono::Utc>,
+    pub last_requested_at: bson::DateTime,
+    pub transformation_started_at: bson::DateTime,
     pub num_requests: i64,
     pub formats: Vec<ProcessedFormat>,
 }
@@ -145,7 +116,7 @@ pub fn listen_queue(
                     },
                     doc! {
                         "$set": {
-                            "start_processing_at": Utc::now(),
+                            "start_processing_at": bson::Bson::from(Utc::now()),
                         }
                     },
                     options,
@@ -254,8 +225,8 @@ impl MongoDbClient {
             .delete_many(
                 doc! {
                     "$or": [
-                        {"upload_requested_at": { "$lt": now - *UPLOAD_TTL } },
-                        {"start_processing_at": { "$lt": now - *PROCESSING_MAX_TIME_HARD } },
+                        {"upload_requested_at": { "$lt": bson::Bson::from(now - *UPLOAD_TTL) } },
+                        {"start_processing_at": { "$lt": bson::Bson::from(now - *PROCESSING_MAX_TIME_HARD) } },
                     ]
                 },
                 None,
@@ -355,7 +326,7 @@ impl MongoDbClient {
                     "$currentDate": { "last_requested_at": true },
                     "$setOnInsert": {
                         "upload_id": upload_id.clone(),
-                        "upload_requested_at": Utc::now(),
+                        "upload_requested_at": bson::Bson::from(Utc::now()),
                         "content_type": content_type,
                         "handler_name": handler_name.to_string(),
                         "project_name": project_name.to_string(),
@@ -422,7 +393,7 @@ impl MongoDbClient {
             account_unique_id: queued.account_unique_id,
             source_size: source_size as i64,
             last_requested_at: queued.last_requested_at,
-            transformation_started_at: Utc::now(),
+            transformation_started_at: Utc::now().into(),
             num_requests: 0,
             formats: processed
                 .into_iter()
