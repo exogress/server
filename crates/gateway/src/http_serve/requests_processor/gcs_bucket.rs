@@ -22,7 +22,7 @@ use futures::TryStreamExt;
 use hashbrown::HashMap;
 use http::{header::CONTENT_DISPOSITION, HeaderValue, Method, Request, Response};
 use hyper::Body;
-use langtag::LanguageTagBuf;
+use language_tags::LanguageTag;
 use smol_str::SmolStr;
 use std::{
     convert::{TryFrom, TryInto},
@@ -76,7 +76,7 @@ impl ResolvedGcsBucket {
         res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         handler_log: &mut Option<GcsBucketHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {

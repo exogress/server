@@ -184,6 +184,7 @@ pub async fn connect_metered(
         .into_iter()
         .choose(&mut thread_rng())
         .ok_or(Error::NotResolved)?;
+
     let tcp = TcpStream::connect((ip, dst_port)).await?;
     tcp.set_nodelay(true)?;
 

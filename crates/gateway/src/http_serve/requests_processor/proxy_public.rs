@@ -30,7 +30,7 @@ use http::{
     HeaderMap, Request, Response,
 };
 use hyper::Body;
-use langtag::LanguageTagBuf;
+use language_tags::LanguageTag;
 use prometheus::IntCounter;
 use rand::{thread_rng, RngCore};
 use smol_str::SmolStr;
@@ -71,7 +71,7 @@ impl ResolvedProxyPublic {
         modified_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         handler_log: &mut Option<ProxyPublicHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
@@ -159,6 +159,14 @@ impl ResolvedProxyPublic {
 
             *ws_req.uri_mut() = proxy_to.clone();
 
+            if proxy_to.scheme_str() == Some("https") {
+                ws_req.uri_mut().set_scheme("wss");
+            } else if proxy_to.scheme_str() == Some("http") {
+                ws_req.uri_mut().set_scheme("ws");
+            }
+
+            let dst_port = proxy_to.port_u16().unwrap_or(443);
+
             let maybe_tcp = connect_metered(
                 self.public_counters_tx.clone(),
                 self.resolver.clone(),
@@ -166,11 +174,12 @@ impl ResolvedProxyPublic {
                 self.sent_counter.clone(),
                 self.recv_counter.clone(),
                 &self.host,
-                proxy_to.port_u16().unwrap_or(443),
+                dst_port,
                 true,
                 None,
             )
             .await;
+
             let conn = try_or_exception!(
                 maybe_tcp,
                 exceptions::PROXY_UPSTREAM_UNREACHABLE_CONNECTION_REJECTED.clone()

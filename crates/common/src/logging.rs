@@ -11,7 +11,7 @@ use http::{
     header::{ACCEPT, USER_AGENT},
     HeaderMap,
 };
-use langtag::LanguageTagBuf;
+use language_tags::LanguageTag;
 use parking_lot::Mutex;
 use serde_with::{serde_as, DurationMilliSecondsWithFrac, DurationSeconds};
 use std::{net::IpAddr, sync::Arc, time::Duration};
@@ -198,7 +198,7 @@ pub struct StaticResponseProcessingStep {
     pub scope: ScopeLog,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<LanguageTagBuf>,
+    pub language: Option<LanguageTag>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -433,7 +433,7 @@ impl From<HandlerProcessingStep> for CacheableInvocationProcessingStep {
 pub struct StaticDirHandlerLogMessage {
     pub config_name: ConfigName,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<LanguageTagBuf>,
+    pub language: Option<LanguageTag>,
     pub handler_name: HandlerName,
 
     pub attempts: Vec<ProxyAttemptLogMessage>,
@@ -486,7 +486,7 @@ pub struct ProxyHandlerLogMessage {
     pub upgrade: Option<ProtocolUpgrade>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<LanguageTagBuf>,
+    pub language: Option<LanguageTag>,
 
     pub attempts: Vec<ProxyAttemptLogMessage>,
 }
@@ -521,7 +521,7 @@ pub struct BodyLog {
 pub struct S3BucketHandlerLogMessage {
     pub region: SmolStr,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<LanguageTagBuf>,
+    pub language: Option<LanguageTag>,
     pub handler_name: HandlerName,
 
     pub attempts: Vec<ProxyAttemptLogMessage>,
@@ -547,7 +547,7 @@ pub struct ProxyPublicHandlerLogMessage {
     pub upgrade: Option<ProtocolUpgrade>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<LanguageTagBuf>,
+    pub language: Option<LanguageTag>,
     pub handler_name: HandlerName,
 
     pub attempts: Vec<ProxyPublicAttemptLogMessage>,
@@ -557,7 +557,7 @@ pub struct ProxyPublicHandlerLogMessage {
 pub struct GcsBucketHandlerLogMessage {
     pub bucket: SmolStr,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<LanguageTagBuf>,
+    pub language: Option<LanguageTag>,
     pub handler_name: HandlerName,
 
     pub attempts: Vec<ProxyAttemptLogMessage>,
@@ -580,5 +580,5 @@ pub struct AuthHandlerLogMessage {
     pub acl_entry: Option<SmolStr>,
     pub acl_action: AclAction,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<LanguageTagBuf>,
+    pub language: Option<LanguageTag>,
 }

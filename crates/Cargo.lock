@@ -128,9 +128,9 @@ dependencies = [
 
 [[package]]
 name = "async-stream"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a26cb53174ddd320edfff199a853f93d571f48eeb4dde75e67a9a3dbb7b7e5e"
+checksum = "171374e7e3b2504e0e5236e3b59260560f9fe94bfe9ac39ba5e4e929c5590625"
 dependencies = [
  "async-stream-impl",
  "futures-core",
@@ -138,9 +138,9 @@ dependencies = [
 
 [[package]]
 name = "async-stream-impl"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db134ba52475c060f3329a8ef0f8786d6b872ed01515d4b79c162e5798da1340"
+checksum = "648ed8c8d2ce5409ccd57453d9d1b214b342a0d69376a6feda1fd6cae3299308"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -997,8 +997,8 @@ dependencies = [
 
 [[package]]
 name = "exogress-common"
-version = "0.2.0"
-source = "git+https://github.com/exogress/exogress.git?branch=master#4b5f9a37f2e684d890bccea653625856e9f2edeb"
+version = "0.2.0-beta.1"
+source = "git+https://github.com/exogress/exogress.git?branch=master#6e7d3ae24003e030daab65a8f7a76344dbc1e861"
 dependencies = [
  "ansi_term 0.11.0",
  "anyhow",
@@ -1016,7 +1016,7 @@ dependencies = [
  "hyper",
  "include_dir",
  "jsonwebtoken",
- "langtag",
+ "language-tags",
  "lazy_static",
  "ledb-types",
  "linked-hash-map",
@@ -1182,7 +1182,7 @@ dependencies = [
  "itertools",
  "jemallocator",
  "jsonwebtoken",
- "langtag",
+ "language-tags",
  "lazy_static",
  "ledb",
  "ledb-types",
@@ -1261,7 +1261,7 @@ dependencies = [
  "http-serde",
  "hyper",
  "jemalloc-ctl",
- "langtag",
+ "language-tags",
  "lazy_static",
  "maxminddb",
  "memmap",
@@ -2131,9 +2131,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "langtag"
-version = "0.2.0"
-source = "git+https://github.com/glebpom/langtag.git?branch=master#905672c535a4951f3c744a68abb199877eefa59a"
+name = "language-tags"
+version = "0.3.1"
+source = "git+https://github.com/glebpom/rust-language-tags.git#81f35e1a87bec64e0bc052bd9fbab9f5cc625caa"
 dependencies = [
  "serde",
 ]
@@ -3716,11 +3716,12 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "0.8.0"
-source = "git+https://github.com/glebpom/schemars.git?branch=exogress#d7ceb30b40835e459921534048a9779e889887d2"
+version = "0.8.3"
+source = "git+https://github.com/glebpom/schemars.git?branch=exogress#6779f3845aa89ba403f7fd08934e66534f8b55d6"
 dependencies = [
  "chrono",
  "dyn-clone",
+ "language-tags",
  "schemars_derive",
  "semver 0.11.0",
  "serde",
@@ -3731,8 +3732,8 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "0.8.0"
-source = "git+https://github.com/glebpom/schemars.git?branch=exogress#d7ceb30b40835e459921534048a9779e889887d2"
+version = "0.8.3"
+source = "git+https://github.com/glebpom/schemars.git?branch=exogress#6779f3845aa89ba403f7fd08934e66534f8b55d6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4470,18 +4471,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.24"
+version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0f4a65597094d4483ddaed134f409b2cb7c1beccf25201a9f73c719254fa98e"
+checksum = "fa6f76457f59514c7eeb4e59d891395fab0b2fd1d40723ae737d64153392e9c6"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.24"
+version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7765189610d8241a44529806d6fd1f2e0a08734313a35d5b3a556f92b381f3c0"
+checksum = "8a36768c0fbf1bb15eca10defa29526bda730a2376c2ab4393ccfa16fb1a318d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4977,13 +4978,13 @@ dependencies = [
 [[package]]
 name = "typed-headers"
 version = "0.2.0"
-source = "git+https://github.com/glebpom/typed-headers.git?branch=master#0ecea679b864b890165dca0d373ea77603091120"
+source = "git+https://github.com/glebpom/typed-headers.git?branch=master#dcba3ad2de71ec171fe1eef944fa70aa857268fd"
 dependencies = [
  "base64 0.11.0",
  "bytes 0.5.6",
  "chrono",
  "http",
- "langtag",
+ "language-tags",
  "mime",
 ]
 

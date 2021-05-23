@@ -25,7 +25,7 @@ use http::{
 };
 use hyper::Body;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
-use langtag::LanguageTagBuf;
+use language_tags::LanguageTag;
 use smol_str::SmolStr;
 use std::{convert::TryInto, sync::Arc};
 use typed_headers::HeaderMapExt;
@@ -152,7 +152,7 @@ impl ResolvedAuth {
         _req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
-        _language: &Option<LanguageTagBuf>,
+        _language: &Option<LanguageTag>,
         _log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> Option<HandlerInvocationResult> {
         let path_segments: Vec<_> = requested_url.path_segments();
@@ -341,7 +341,7 @@ impl ResolvedAuth {
         req: &Request<Body>,
         res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         handler_log: &mut Option<AuthHandlerLogMessage>,
     ) -> HandlerInvocationResult {
         let auth_cookie_name = self.cookie_name();

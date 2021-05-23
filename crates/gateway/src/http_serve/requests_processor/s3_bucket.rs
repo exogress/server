@@ -21,7 +21,7 @@ use exogress_server_common::logging::{
 use hashbrown::HashMap;
 use http::{Method, Request, Response};
 use hyper::Body;
-use langtag::LanguageTagBuf;
+use language_tags::LanguageTag;
 use rusty_s3::S3Action;
 use smol_str::SmolStr;
 use std::{sync::Arc, time::Duration};
@@ -62,7 +62,7 @@ impl ResolvedS3Bucket {
         res: &mut Response<Body>,
         _requested_url: &http::uri::Uri,
         rebased_url: &http::uri::Uri,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         handler_log: &mut Option<S3BucketHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {

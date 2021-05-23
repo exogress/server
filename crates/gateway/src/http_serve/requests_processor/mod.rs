@@ -36,7 +36,7 @@ use exogress_common::{
         self, is_profile_active, referenced,
         referenced::{Container, ContainerScope, Parameter},
         refinable::RefinableSet,
-        Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandlerVariant,
+        Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandlerVariant, Languages,
         MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue,
         MatchingPath, MethodMatcher, ModifyHeaders, ModifyQuery, ModifyQueryStrategy, OnResponse,
         RedirectTo, RequestModifications, ResponseBody, Scope, StaticResponse, StatusCodeRange,
@@ -78,7 +78,7 @@ use http::{
 };
 use hyper::Body;
 use itertools::Itertools;
-use langtag::LanguageTagBuf;
+use language_tags::LanguageTag;
 use linked_hash_map::LinkedHashMap;
 use mime::{IMAGE_JPEG, IMAGE_PNG, TEXT_HTML_UTF_8};
 use parking_lot::Mutex;
@@ -391,20 +391,14 @@ impl RequestsProcessor {
                 ) {
                     ordered_by_quality(&accept_languages)
                         .filter_map(|accepted| {
-                            languages.iter().find(|supported_lang| {
-                                if let Some(rest) =
-                                    supported_lang.as_str().strip_prefix(accepted.as_str())
-                                {
-                                    if rest.is_empty() || rest.starts_with('-') {
-                                        return true;
-                                    }
-                                }
-
-                                false
-                            })
+                            languages
+                                .supported
+                                .iter()
+                                .find(|supported_lang| supported_lang.matches(accepted))
                         })
                         .next()
                         .cloned()
+                        .or_else(|| languages.default.clone())
                 } else {
                     None
                 };
@@ -1283,7 +1277,7 @@ impl ResolvedHandlerVariant {
         req: &Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> Option<HandlerInvocationResult> {
         match self {
@@ -1310,7 +1304,7 @@ impl ResolvedHandlerVariant {
         modified_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         cacheable_invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
@@ -1537,7 +1531,7 @@ impl ResolvedStaticResponseAction {
         additional_data: Option<&HashMap<SmolStr, SmolStr>>,
         matches: Option<&HashMap<SmolStr, Matched>>,
         is_in_exception: bool,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
         let facts = log_message_container.lock().as_mut().facts.clone();
@@ -2240,7 +2234,7 @@ pub struct ResolvedHandler {
     project_unique_id: ProjectUniqueId,
     rules_counter: AccountCounters,
 
-    languages: Option<Vec<langtag::LanguageTagBuf>>,
+    languages: Option<Languages>,
 }
 
 #[derive(Clone, Debug)]
@@ -2399,7 +2393,7 @@ impl ResolvedHandler {
         mut rescuable: Rescuable,
         is_in_exception: bool,
         rescues: &[ResolvedRescueItem],
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
         if let Rescuable::Exception { exception, data } = &rescuable {
@@ -2596,7 +2590,7 @@ impl ResolvedHandler {
         req: &mut Request<Body>,
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
         filter_matches: HashMap<SmolStr, Matched>,
         rescues: &[ResolvedRescueItem],
@@ -2675,7 +2669,7 @@ impl ResolvedHandler {
         rebased_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         invocation_log: Arc<parking_lot::Mutex<CacheableInvocationProcessingStep>>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
@@ -3686,7 +3680,7 @@ impl RequestsProcessor {
                             account_unique_id,
                             project_unique_id,
                             rules_counter: rules_counter.clone(),
-                            languages: None, //handler.languages,
+                            languages: handler.languages,
                         })
                     }
                 })
@@ -3855,7 +3849,7 @@ impl ResolvedStaticResponse {
         requested_url: &http::uri::Uri,
         additional_data: HashMap<SmolStr, SmolStr>,
         matches: Option<&HashMap<SmolStr, Matched>>,
-        _handler_best_language: &Option<LanguageTagBuf>,
+        _handler_best_language: &Option<LanguageTag>,
         facts: Arc<Mutex<serde_json::Value>>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
         *res = Response::new(Body::empty());

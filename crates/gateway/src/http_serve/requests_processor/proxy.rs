@@ -40,7 +40,7 @@ use exogress_server_common::logging::{
 };
 use futures::StreamExt;
 use hashbrown::HashMap;
-use langtag::LanguageTagBuf;
+use language_tags::LanguageTag;
 use rand::{thread_rng, RngCore};
 use std::{io, sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -81,7 +81,7 @@ impl ResolvedProxy {
         modified_url: &http::uri::Uri,
         local_addr: &SocketAddr,
         remote_addr: &SocketAddr,
-        language: &Option<LanguageTagBuf>,
+        language: &Option<LanguageTag>,
         handler_log: &mut Option<ProxyHandlerLogMessage>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> HandlerInvocationResult {
@@ -309,6 +309,13 @@ impl ResolvedProxy {
                             exceptions::PROXY_UPSTREAM_UNREACHABLE.clone()
                         )
                     };
+
+                    if proxy_res.headers().contains_key("x-exg-proxied") {
+                        return HandlerInvocationResult::Exception {
+                            name: exceptions::PROXY_LOOP_DETECTED.clone(),
+                            data: Default::default(),
+                        };
+                    }
 
                     copy_headers_from_proxy_res_to_res(proxy_res.headers(), res);
 

@@ -37,4 +37,4 @@ warp = { version = "0.3", features = ["tls"] }
 rdkafka = { version = "0.25", features = ["cmake-build"] }
 
 exogress-server-common = { path = "../common" }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0", features = ["common-utils", "entities"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0-beta.1", features = ["common-utils", "entities"], default-features = false }
