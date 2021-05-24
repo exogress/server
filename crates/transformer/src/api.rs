@@ -1,4 +1,5 @@
 use crate::{bucket::GcsBucketClient, db::MongoDbClient, helpers::to_vec_body};
+use anyhow::Context;
 use bytes::{Buf, BufMut, BytesMut};
 use exogress_server_common::{
     crypto::encrypt_stream,
@@ -112,7 +113,8 @@ pub fn api_handler(
                     let result: anyhow::Result<_> = async {
                         let res = mongodb_client
                             .find_processed(&account_unique_id, &body.content_hash)
-                            .await?;
+                            .await
+                            .context("find_processed")?;
                         match res {
                             Some(processed) => Ok(ProcessResponse::Ready(ProcessingReady {
                                 formats: processed.formats,
@@ -130,7 +132,8 @@ pub fn api_handler(
                                     &body.mount_point_name.as_str(),
                                     &body.url.as_str(),
                                 )
-                                .await?),
+                                .await
+                                .context("find_queued_or_create_upload")?),
                         }
                     }
                     .await;

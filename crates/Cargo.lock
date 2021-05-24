@@ -21,9 +21,9 @@ checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 
 [[package]]
 name = "ahash"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f200cbb1e856866d9eade941cf3aa0c5d7dd36f74311c4273b494f4ef036957"
+checksum = "11149c3eb723d15cb065a9ea5cc74ab57250f098ef33c9f6f7f39b48bd207750"
 dependencies = [
  "getrandom 0.2.3",
  "once_cell",
@@ -89,9 +89,9 @@ dependencies = [
 
 [[package]]
 name = "arc-swap"
-version = "1.2.0"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4d7d63395147b81a9e570bcc6243aaf71c017bd666d4909cfef0085bdda8d73"
+checksum = "e906254e445520903e7fc9da4f709886c84ae4bc4ddaf0e093188d66df4dc820"
 
 [[package]]
 name = "arrayvec"
@@ -128,9 +128,9 @@ dependencies = [
 
 [[package]]
 name = "async-stream"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a26cb53174ddd320edfff199a853f93d571f48eeb4dde75e67a9a3dbb7b7e5e"
+checksum = "171374e7e3b2504e0e5236e3b59260560f9fe94bfe9ac39ba5e4e929c5590625"
 dependencies = [
  "async-stream-impl",
  "futures-core",
@@ -138,9 +138,9 @@ dependencies = [
 
 [[package]]
 name = "async-stream-impl"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db134ba52475c060f3329a8ef0f8786d6b872ed01515d4b79c162e5798da1340"
+checksum = "648ed8c8d2ce5409ccd57453d9d1b214b342a0d69376a6feda1fd6cae3299308"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -315,8 +315,7 @@ checksum = "771fe0050b883fcc3ea2359b1a96bcfbc090b7116eae7c3c512c7a083fdf23d3"
 [[package]]
 name = "bson"
 version = "2.0.0-beta"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "441bd9b15699ed6fd29a3546ed614a943a9dbab851b799e2344f3f11b3230bdc"
+source = "git+https://github.com/vkill/bson-rust.git?branch=fix-dt#da301668cf731b0fd6c4be94ebcdc88ee727c923"
 dependencies = [
  "ahash",
  "base64 0.13.0",
@@ -880,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-api"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bs58",
@@ -921,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-assistant"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -959,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-commiter"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bson",
@@ -998,7 +997,7 @@ dependencies = [
 [[package]]
 name = "exogress-common"
 version = "0.1.0"
-source = "git+https://github.com/exogress/exogress.git?branch=master#22d9d7407558631f794052f09b44251fa9fcd833"
+source = "git+https://github.com/exogress/exogress.git?rev=22d9d7407558631f794052f09b44251fa9fcd833#22d9d7407558631f794052f09b44251fa9fcd833"
 dependencies = [
  "ansi_term 0.11.0",
  "anyhow",
@@ -1069,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-director"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bytes 1.0.1",
@@ -1111,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-dns"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bytes 1.0.1",
@@ -1150,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-gateway"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1246,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-server-common"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1297,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-signaler"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1335,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-transformer"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2139,6 +2138,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "language-tags"
+version = "0.3.1"
+source = "git+https://github.com/glebpom/rust-language-tags.git#81f35e1a87bec64e0bc052bd9fbab9f5cc625caa"
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2690,9 +2694,9 @@ dependencies = [
 
 [[package]]
 name = "ordered-float"
-version = "2.2.0"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b50b8919aecb97e5ee9aceef27e24f39c46b11831130f4a6b7b091ec5de0de12"
+checksum = "76d99537dd7019c4dabfcf3898a43ee685412f76e6bee1ecc48785d730c1a275"
 dependencies = [
  "num-traits 0.2.14",
 ]
@@ -3581,9 +3585,9 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal"
-version = "1.13.0"
+version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72e80c4f9a71b5949e283189c3c3ae35fedddecfe112e75c9d58751c36605b62"
+checksum = "2fd51dfdc79146dc24efbe4626c01ed5cd9f5b3b5742b51b26ea413e7dd7730b"
 dependencies = [
  "arrayvec",
  "num-traits 0.2.14",
@@ -3592,9 +3596,9 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal_macros"
-version = "1.13.0"
+version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e57c22158e46bfc2cf146ce1e64ea3314d9d048217d92da3caf11da2054884c"
+checksum = "6a8cb1a6910e0992391a265ac9b2c68991592d30ecdefca193e2efdf2b39f7f9"
 dependencies = [
  "quote",
  "rust_decimal",
@@ -3716,8 +3720,8 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "0.8.0"
-source = "git+https://github.com/glebpom/schemars.git?branch=exogress#d7ceb30b40835e459921534048a9779e889887d2"
+version = "0.8.3"
+source = "git+https://github.com/glebpom/schemars.git?branch=exogress#6779f3845aa89ba403f7fd08934e66534f8b55d6"
 dependencies = [
  "chrono",
  "dyn-clone",
@@ -3731,8 +3735,8 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "0.8.0"
-source = "git+https://github.com/glebpom/schemars.git?branch=exogress#d7ceb30b40835e459921534048a9779e889887d2"
+version = "0.8.3"
+source = "git+https://github.com/glebpom/schemars.git?branch=exogress#6779f3845aa89ba403f7fd08934e66534f8b55d6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3930,7 +3934,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
 dependencies = [
- "ordered-float 2.2.0",
+ "ordered-float 2.4.0",
  "serde",
 ]
 
@@ -4470,18 +4474,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.24"
+version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0f4a65597094d4483ddaed134f409b2cb7c1beccf25201a9f73c719254fa98e"
+checksum = "fa6f76457f59514c7eeb4e59d891395fab0b2fd1d40723ae737d64153392e9c6"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.24"
+version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7765189610d8241a44529806d6fd1f2e0a08734313a35d5b3a556f92b381f3c0"
+checksum = "8a36768c0fbf1bb15eca10defa29526bda730a2376c2ab4393ccfa16fb1a318d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4977,13 +4981,13 @@ dependencies = [
 [[package]]
 name = "typed-headers"
 version = "0.2.0"
-source = "git+https://github.com/glebpom/typed-headers.git?branch=master#0ecea679b864b890165dca0d373ea77603091120"
+source = "git+https://github.com/glebpom/typed-headers.git?branch=master#dcba3ad2de71ec171fe1eef944fa70aa857268fd"
 dependencies = [
  "base64 0.11.0",
  "bytes 0.5.6",
  "chrono",
  "http",
- "langtag",
+ "language-tags",
  "mime",
 ]
 
@@ -5145,9 +5149,9 @@ dependencies = [
 
 [[package]]
 name = "vcpkg"
-version = "0.2.12"
+version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbdbff6266a24120518560b5dc983096efb98462e51d0d68169895b237be3e5d"
+checksum = "025ce40a007e1907e58d5bc1a594def78e5573bb0b1160bc389634e8f12e4faa"
 
 [[package]]
 name = "vec_map"

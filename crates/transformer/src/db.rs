@@ -1,6 +1,7 @@
 use crate::{
     bucket::GcsBucketInfo, magick::ImageConversionMeta, PROCESSING_MAX_TIME_HARD, UPLOAD_TTL,
 };
+use anyhow::Context;
 use bson::doc;
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{
@@ -231,7 +232,8 @@ impl MongoDbClient {
                 },
                 None,
             )
-            .await?;
+            .await
+            .context("delete outdated")?;
 
         Ok(())
     }
@@ -310,7 +312,9 @@ impl MongoDbClient {
         let now = Utc::now();
         let queue_collection = self.db.collection::<QueuedRequest>(QUEUE_COLLECTION);
 
-        self.cleanup_outdated_uploads(now).await?;
+        self.cleanup_outdated_uploads(now)
+            .await
+            .context("cleanup_outdated_uploads")?;
 
         let filter = doc! {
             "account_unique_id": account_unique_id.to_string(),

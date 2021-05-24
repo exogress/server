@@ -1,6 +1,6 @@
 [package]
 name = "exogress-transformer"
-version = "0.10.1"
+version = "0.10.2"
 authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
@@ -55,5 +55,5 @@ parse-display = "0.4.1"
 async-stream = "0.3.0"
 
 exogress-server-common = { path = "../common", features = ["crypto"] }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.1.0", features = ["entities", "common-utils"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", rev = "22d9d7407558631f794052f09b44251fa9fcd833", version = "0.1.0", features = ["entities", "common-utils"], default-features = false }
 

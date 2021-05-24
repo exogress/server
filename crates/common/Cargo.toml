@@ -1,6 +1,6 @@
 [package]
 name = "exogress-server-common"
-version = "0.10.1"
+version = "0.10.2"
 authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
@@ -50,7 +50,7 @@ rust_decimal_macros = "1.13"
 jemalloc-ctl = "0.3.3"
 thread-id = "4.0.0"
 
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.1.0", features = ["entities", "config-core", "signaling", "common-utils"], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", rev = "22d9d7407558631f794052f09b44251fa9fcd833", version = "0.1.0", features = ["entities", "config-core", "signaling", "common-utils"], default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["macros", "test-util"] }
