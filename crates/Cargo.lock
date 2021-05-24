@@ -315,8 +315,7 @@ checksum = "771fe0050b883fcc3ea2359b1a96bcfbc090b7116eae7c3c512c7a083fdf23d3"
 [[package]]
 name = "bson"
 version = "2.0.0-beta"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "441bd9b15699ed6fd29a3546ed614a943a9dbab851b799e2344f3f11b3230bdc"
+source = "git+https://github.com/vkill/bson-rust.git?branch=fix-dt#da301668cf731b0fd6c4be94ebcdc88ee727c923"
 dependencies = [
  "ahash",
  "base64 0.13.0",
@@ -880,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-api"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bs58",
@@ -921,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-assistant"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -959,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-commiter"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bson",
@@ -1069,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-director"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bytes 1.0.1",
@@ -1111,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-dns"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bytes 1.0.1",
@@ -1150,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-gateway"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1246,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-server-common"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1297,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-signaler"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1335,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-transformer"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "async-stream",

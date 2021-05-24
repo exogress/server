@@ -1,6 +1,6 @@
 [package]
 name = "exogress-gateway"
-version = "0.10.1"
+version = "0.10.2"
 authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
