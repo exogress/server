@@ -9,7 +9,6 @@ WORKDIR /code/crates
 
 FROM dirs as builder
 
-RUN cargo update -p exogress-common
 RUN cargo build --release
 
 FROM debian:buster as base
