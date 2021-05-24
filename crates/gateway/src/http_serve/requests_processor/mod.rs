@@ -385,20 +385,23 @@ impl RequestsProcessor {
             }
 
             if let Some(rebased_url) = Rebase::rebase_url(&handler.rebase, &requested_url) {
-                let best_language = if let (Some(languages), Ok(Some(accept_languages))) = (
-                    &handler.languages,
-                    req.headers().typed_get::<typed_headers::AcceptLanguage>(),
-                ) {
-                    ordered_by_quality(&accept_languages)
-                        .filter_map(|accepted| {
-                            languages
-                                .supported
-                                .iter()
-                                .find(|supported_lang| supported_lang.matches(accepted))
-                        })
-                        .next()
-                        .cloned()
-                        .or_else(|| languages.default.clone())
+                let best_language = if let Some(languages) = &handler.languages {
+                    if let Ok(Some(accept_languages)) =
+                        req.headers().typed_get::<typed_headers::AcceptLanguage>()
+                    {
+                        ordered_by_quality(&accept_languages)
+                            .filter_map(|accepted| {
+                                languages
+                                    .supported
+                                    .iter()
+                                    .find(|supported_lang| supported_lang.matches(accepted))
+                            })
+                            .next()
+                            .cloned()
+                    } else {
+                        None
+                    }
+                    .or_else(|| languages.default.clone())
                 } else {
                     None
                 };
@@ -1534,6 +1537,8 @@ impl ResolvedStaticResponseAction {
         language: &Option<LanguageTag>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
+        info!("!!lang = {:?}", language);
+
         let facts = log_message_container.lock().as_mut().facts.clone();
 
         *res = Response::new(Body::empty());
@@ -1591,6 +1596,7 @@ impl ResolvedStaticResponseAction {
                     matches,
                     &language,
                     facts,
+                    language,
                 ) {
                     Ok(()) => ResolvedHandlerProcessingResult::Processed,
                     Err((exception, data)) => {
@@ -2140,6 +2146,7 @@ impl ResolvedModifyQuery {
         uri: &mut http::Uri,
         initial_query_params: &LinkedHashMap<String, String>,
         filter_matchers: &HashMap<SmolStr, Matched>,
+        language: &Option<LanguageTag>,
     ) -> anyhow::Result<()> {
         let mut params = match &self.0.strategy {
             ModifyQueryStrategy::Keep { remove } => {
@@ -2155,7 +2162,8 @@ impl ResolvedModifyQuery {
                     if let Some(value) = initial_query_params.get(to_keep.as_str()) {
                         query_params.insert(
                             to_keep.to_string(),
-                            substitute_str_with_filter_matches(value, filter_matchers)?.to_string(),
+                            substitute_str_with_filter_matches(value, filter_matchers, language)?
+                                .to_string(),
                         );
                     }
                 }
@@ -2166,7 +2174,7 @@ impl ResolvedModifyQuery {
         for (param, value) in self.0.set.iter() {
             params.insert(
                 param.to_string(),
-                substitute_str_with_filter_matches(value, filter_matchers)?.to_string(),
+                substitute_str_with_filter_matches(value, filter_matchers, language)?.to_string(),
             );
         }
 
@@ -2604,6 +2612,7 @@ impl ResolvedHandler {
                             res.headers_mut(),
                             &modification.modifications.headers,
                             &filter_matches,
+                            language,
                         ) {
                             Ok(_) => {}
                             Err(ex) => {
@@ -2709,7 +2718,7 @@ impl ResolvedHandler {
             }
 
             for segment in path_modify.iter() {
-                let replaced = match segment.substitute(&filter_matches) {
+                let replaced = match segment.substitute(&filter_matches, language) {
                     Err(e) => {
                         let mut data = HashMap::new();
                         data.insert("error".into(), e.to_string().into());
@@ -2761,6 +2770,7 @@ impl ResolvedHandler {
             req.headers_mut(),
             &request_modification.headers,
             &filter_matches,
+            language,
         ) {
             Ok(()) => {}
             Err(ex) => {
@@ -2785,6 +2795,7 @@ impl ResolvedHandler {
             &mut modified_url,
             &query_modifications,
             &filter_matches,
+            language,
         ) {
             Ok(()) => {}
             Err(ex) => {
@@ -2890,11 +2901,15 @@ fn apply_headers(
     headers: &mut HeaderMap<HeaderValue>,
     modification: &ModifyHeaders,
     filter_matches: &HashMap<SmolStr, Matched>,
+    language: &Option<LanguageTag>,
 ) -> Result<(), Exception> {
     for (header_name, header_value) in &modification.append.0 {
-        let substituted =
-            substitute_str_with_filter_matches(header_value.to_str().unwrap(), filter_matches)
-                .map_err(|_e| MODIFICATION_ERROR.clone())?;
+        let substituted = substitute_str_with_filter_matches(
+            header_value.to_str().unwrap(),
+            filter_matches,
+            language,
+        )
+        .map_err(|_e| MODIFICATION_ERROR.clone())?;
 
         headers.append(
             header_name.clone(),
@@ -2902,9 +2917,12 @@ fn apply_headers(
         );
     }
     for (header_name, header_value) in &modification.insert.0 {
-        let substituted =
-            substitute_str_with_filter_matches(header_value.to_str().unwrap(), filter_matches)
-                .map_err(|_e| MODIFICATION_ERROR.clone())?;
+        let substituted = substitute_str_with_filter_matches(
+            header_value.to_str().unwrap(),
+            filter_matches,
+            language,
+        )
+        .map_err(|_e| MODIFICATION_ERROR.clone())?;
 
         headers.insert(
             header_name.clone(),
@@ -3747,10 +3765,11 @@ impl ResolvedModifieableRedirectTo {
     fn replace_segment(
         segment: &ResolvedPathSegmentModify,
         matches: Option<&HashMap<SmolStr, Matched>>,
+        language: &Option<LanguageTag>,
     ) -> anyhow::Result<Replaced> {
         match matches {
             None => Ok(Replaced::Single(segment.0.clone())),
-            Some(matches) => Ok(segment.substitute(matches)?),
+            Some(matches) => Ok(segment.substitute(matches, language)?),
         }
     }
 
@@ -3759,6 +3778,7 @@ impl ResolvedModifieableRedirectTo {
         query_pairs: &LinkedHashMap<String, String>,
         query_modify: &ResolvedModifyQuery,
         filter_matches: Option<&HashMap<SmolStr, Matched>>,
+        language: &Option<LanguageTag>,
     ) -> anyhow::Result<String> {
         let (mut url_with_modified_path, should_strip) = match self {
             ResolvedModifieableRedirectTo::AbsoluteUrl(url) => {
@@ -3769,7 +3789,7 @@ impl ResolvedModifieableRedirectTo {
             ResolvedModifieableRedirectTo::WithBaseUrl(base_url, segments) => {
                 let mut url = base_url.clone();
                 for segment in segments {
-                    let replaced = Self::replace_segment(segment, filter_matches)?;
+                    let replaced = Self::replace_segment(segment, filter_matches, language)?;
                     replaced.push_to_url(&mut url);
                 }
                 (url, false)
@@ -3777,7 +3797,7 @@ impl ResolvedModifieableRedirectTo {
             ResolvedModifieableRedirectTo::Segments(segments) => {
                 let mut url = http::Uri::from_static("http://base");
                 for segment in segments {
-                    let replaced = Self::replace_segment(segment, filter_matches)?;
+                    let replaced = Self::replace_segment(segment, filter_matches, language)?;
                     replaced.push_to_url(&mut url);
                 }
                 (url, true)
@@ -3791,6 +3811,7 @@ impl ResolvedModifieableRedirectTo {
                     &mut url_with_modified_path,
                     query_pairs,
                     &filter_matches.cloned().unwrap_or_default(),
+                    language,
                 )?;
             }
         }
@@ -3849,8 +3870,9 @@ impl ResolvedStaticResponse {
         requested_url: &http::uri::Uri,
         additional_data: HashMap<SmolStr, SmolStr>,
         matches: Option<&HashMap<SmolStr, Matched>>,
-        _handler_best_language: &Option<LanguageTag>,
+        handler_best_language: &Option<LanguageTag>,
         facts: Arc<Mutex<serde_json::Value>>,
+        language: &Option<LanguageTag>,
     ) -> Result<(), (Exception, HashMap<SmolStr, SmolStr>)> {
         *res = Response::new(Body::empty());
 
@@ -3870,6 +3892,7 @@ impl ResolvedStaticResponse {
                 &query_pairs,
                 &redirect.query_modify,
                 matches,
+                language,
             ) {
                 Ok(s) => {
                     res.headers_mut().insert(LOCATION, s.parse().unwrap());
@@ -3921,6 +3944,7 @@ impl ResolvedStaticResponse {
 
                         let rendering_data = json!({
                             "data": merged_data,
+                            "language": handler_best_language,
                             "facts": facts,
                             "url": requested_url.to_string(),
                             "matches": matches,

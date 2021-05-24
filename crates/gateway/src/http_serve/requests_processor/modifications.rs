@@ -2,6 +2,7 @@ use crate::http_serve::requests_processor::Matched;
 use exogress_common::common_utils::uri_ext::UriExt;
 use hashbrown::HashMap;
 use itertools::Itertools;
+use language_tags::LanguageTag;
 use regex::{Captures, RegexBuilder};
 use smol_str::SmolStr;
 use std::{borrow::Cow, num::ParseIntError};
@@ -74,6 +75,7 @@ impl ToString for Replaced {
 fn replace_single_substitution(
     s: &str,
     filter_matches: &HashMap<SmolStr, Matched>,
+    language: &Option<LanguageTag>,
 ) -> Result<Replaced, MatchPathModificationError> {
     let s = s.trim();
 
@@ -104,15 +106,18 @@ fn replace_single_substitution(
     let first_string = first.replace("\\.", ".");
     let first = first_string.as_str();
 
-    let m = filter_matches.get(first).ok_or_else(|| {
-        MatchPathModificationError::NotExistingReference {
-            main: first.into(),
-            second: None,
-        }
-    })?;
+    let m = match (first, language) {
+        ("language", Some(lang)) => Cow::Owned(Matched::Single(lang.as_str().into())),
+        (first, _) => Cow::Borrowed(filter_matches.get(first).ok_or_else(|| {
+            MatchPathModificationError::NotExistingReference {
+                main: first.into(),
+                second: None,
+            }
+        })?),
+    };
 
     match second {
-        None => match m {
+        None => match m.as_ref() {
             Matched::Multiple(_multiple) => Err(MatchPathModificationError::NotSegments),
             Matched::Single(single) => Ok(Replaced::Single(single.clone())),
             Matched::None => Ok(Replaced::Empty),
@@ -121,7 +126,7 @@ fn replace_single_substitution(
         Some(s) => {
             let ref_num = s.parse::<u8>()?;
 
-            match m {
+            match m.as_ref() {
                 Matched::Multiple(multiple) => match multiple.get(&ref_num) {
                     Some(matched) => Ok(Replaced::Single(matched.clone())),
                     None => Err(MatchPathModificationError::NothingMatched),
@@ -137,6 +142,7 @@ fn replace_single_substitution(
 pub fn substitute_str_with_filter_matches(
     s: &str,
     filter_matches: &HashMap<SmolStr, Matched>,
+    language: &Option<LanguageTag>,
 ) -> Result<Replaced, MatchPathModificationError> {
     if let Some(right) = s.strip_prefix("{{") {
         if let Some(middle) = right.strip_suffix("}}") {
@@ -144,7 +150,7 @@ pub fn substitute_str_with_filter_matches(
                 return Err(MatchPathModificationError::MultipleSegments);
             }
 
-            return replace_single_substitution(middle, filter_matches);
+            return replace_single_substitution(middle, filter_matches, language);
         }
     }
 
@@ -154,7 +160,7 @@ pub fn substitute_str_with_filter_matches(
     let replaced = re.replace_all(s, |captures: &Captures<'_>| {
         let substitution = captures.get(1).unwrap().as_str();
 
-        match replace_single_substitution(substitution, filter_matches) {
+        match replace_single_substitution(substitution, filter_matches, language) {
             Ok(replace) => match replace {
                 Replaced::Multiple(_) => {
                     if error.is_none() {
@@ -185,8 +191,9 @@ impl ResolvedPathSegmentModify {
     pub fn substitute(
         &self,
         groups: &HashMap<SmolStr, Matched>,
+        language: &Option<LanguageTag>,
     ) -> Result<Replaced, MatchPathModificationError> {
-        substitute_str_with_filter_matches(&self.0, groups)
+        substitute_str_with_filter_matches(&self.0, groups, language)
     }
 }
 
@@ -204,24 +211,24 @@ mod test {
             Matched::Segments(vec!["zero".into(), "one".into()]),
         );
 
-        let res = modify.substitute(&data).unwrap();
+        let res = modify.substitute(&data, &None).unwrap();
         assert_eq!(res, Replaced::Multiple(vec!["zero".into(), "one".into()]));
 
-        assert!(modify.substitute(&HashMap::new()).is_err());
+        assert!(modify.substitute(&HashMap::new(), &None).is_err());
 
         let mut data = HashMap::new();
         data.insert("3".into(), Matched::None);
-        assert!(modify.substitute(&data).is_ok());
+        assert!(modify.substitute(&data, &None).is_ok());
 
         let mut data = HashMap::new();
         let mut map = BTreeMap::new();
         map.insert(0, "zero".into());
         data.insert("3".into(), Matched::Multiple(map));
-        assert!(modify.substitute(&data).is_err());
+        assert!(modify.substitute(&data, &None).is_err());
 
         let mut data = HashMap::new();
         data.insert("3".into(), Matched::Single(SmolStr::from("single")));
-        let res = modify.substitute(&data).unwrap();
+        let res = modify.substitute(&data, &None).unwrap();
         assert_eq!(res, Replaced::Single(SmolStr::from("single")));
     }
 
@@ -237,7 +244,7 @@ mod test {
             inner.insert(0, "zero".into());
             Matched::Multiple(inner)
         });
-        let res = modify.substitute(&data).unwrap();
+        let res = modify.substitute(&data, &None).unwrap();
         assert_eq!(res, Replaced::Single("before-zero-middle-two-after".into()));
     }
 
@@ -248,17 +255,17 @@ mod test {
         data.insert("1".into(), {
             Matched::Segments(vec!["seg1".into(), "seg2".into()])
         });
-        assert!(modify.substitute(&data).is_err());
+        assert!(modify.substitute(&data, &None).is_err());
 
         let mut data = HashMap::new();
         data.insert("1".into(), Matched::None);
-        assert!(modify.substitute(&data).is_ok());
+        assert!(modify.substitute(&data, &None).is_ok());
 
         let data = HashMap::new();
-        assert!(modify.substitute(&data).is_err());
+        assert!(modify.substitute(&data, &None).is_err());
 
         let mut data = HashMap::new();
         data.insert("1".into(), Matched::Multiple(Default::default()));
-        assert!(modify.substitute(&data).is_err());
+        assert!(modify.substitute(&data, &None).is_err());
     }
 }
