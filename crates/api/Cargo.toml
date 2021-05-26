@@ -38,6 +38,7 @@ url = "2.1.1"
 warp = { version = "0.3" }
 typed-builder = "0.9.0"
 bs58 = "0.4"
+serde_yaml = "0.8.17"
 
 exogress-server-common = { path = "../common" }
 exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0-beta.1", features = ["common-utils", "entities", "access-tokens"], default-features = false }

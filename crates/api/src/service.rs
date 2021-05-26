@@ -3,17 +3,29 @@ use anyhow::bail;
 use bson::oid::ObjectId;
 use exogress_common::{
     access_tokens::{validate_jwt_token, Claims},
-    entities::{AccessKeyId, AccountName, AccountUniqueId, ProjectName, Ulid},
+    entities::{AccessKeyId, AccountName, AccountUniqueId, ProjectName, SmolStr, Ulid},
 };
+use exogress_server_common::dns_rules;
 use futures::future::join3;
 use serde_json::Value;
+use std::{convert::TryInto, path::PathBuf};
+use tokio::io::AsyncReadExt;
 use typed_builder::TypedBuilder;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Region {
+    name: SmolStr,
+    lat: f32,
+    lon: f32,
+    status: dns_rules::LocationStatus,
+}
 
 #[derive(TypedBuilder, Clone)]
 pub struct Service {
     redis: crate::redis_client::RedisClient,
     elasticsearch: crate::elasticsearch::ElasticsearchClient,
     mongodb: crate::mongodb::MongoDbClient,
+    dns_rules_path: PathBuf,
 }
 
 impl Service {
@@ -113,5 +125,22 @@ impl Service {
         self.mongodb
             .get_project_by_account_id_and_project_name(&account._id, project_name)
             .await
+    }
+
+    pub async fn get_regions(&self) -> anyhow::Result<Vec<Region>> {
+        let mut file = tokio::fs::File::open(&self.dns_rules_path).await?;
+        let mut v = Vec::new();
+        file.read_to_end(&mut v).await?;
+        let rules = serde_yaml::from_slice::<exogress_server_common::dns_rules::Main>(&v)?;
+        Ok(rules
+            .locations
+            .iter()
+            .map(|loc| Region {
+                name: loc.name.clone(),
+                lat: loc.lat.try_into().unwrap(),
+                lon: loc.lon.try_into().unwrap(),
+                status: loc.status.clone(),
+            })
+            .collect())
     }
 }

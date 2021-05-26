@@ -138,6 +138,26 @@ pub async fn run_http_server(
             }
         });
 
+    let regions = warp::path!("api" / "v1" / "regions")
+        .and(warp::filters::method::get())
+        .and_then({
+            shadow_clone!(service);
+
+            move || {
+                shadow_clone!(service);
+
+                async move {
+                    match service.get_regions().await {
+                        Ok(regions) => Ok(warp::reply::json(&regions)),
+                        Err(e) => {
+                            error!("Error getting regions: {}", e);
+                            Err(warp::reject::custom(ApiError::InternalServerError))
+                        }
+                    }
+                }
+            }
+        });
+
     let metrics = warp::path!("metrics").map(crate::statistics::dump_prometheus);
 
     info!("Spawning...");
@@ -145,6 +165,7 @@ pub async fn run_http_server(
     let combined = warp::serve(
         request_info
             .or(health)
+            .or(regions)
             .or(metrics)
             .recover(handle_rejection),
     );

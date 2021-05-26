@@ -86,9 +86,11 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_common::common_utils::clap::threads::add_args(
-        exogress_server_common::clap::sentry::add_args(
-            exogress_server_common::clap::log::add_args(spawn_args),
+    let spawn_args = exogress_server_common::clap::dns_rules::add_args(
+        exogress_common::common_utils::clap::threads::add_args(
+            exogress_server_common::clap::sentry::add_args(
+                exogress_server_common::clap::log::add_args(spawn_args),
+            ),
         ),
     );
 
@@ -118,6 +120,9 @@ fn main() {
     //     int_client_cert,
     //     ..
     // } = exogress_server_common::clap::int_api::extract_matches(&matches, false, false, false, false);
+
+    let dns_rules_path =
+        exogress_server_common::clap::dns_rules::handle(&matches).expect("bad dns-rules arg");
 
     let rt = Builder::new_multi_thread()
         .enable_all()
@@ -184,6 +189,7 @@ fn main() {
             .redis(redis_client)
             .elasticsearch(elastic_client)
             .mongodb(mongodb_client)
+            .dns_rules_path(dns_rules_path)
             .build();
 
         run_http_server(service, listen_http_addr, app_stop_wait).await;
