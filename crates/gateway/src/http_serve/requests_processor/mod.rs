@@ -39,8 +39,9 @@ use exogress_common::{
         Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandlerVariant, Languages,
         MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue,
         MatchingPath, MethodMatcher, ModifyHeaders, ModifyQuery, ModifyQueryStrategy, OnResponse,
-        RedirectTo, RequestModifications, ResponseBody, Scope, StaticResponse, StatusCodeRange,
-        TemplateEngine, TrailingSlashFilterRule, TrailingSlashModification, UrlPathSegment,
+        RedirectTo, RequestModifications, ResponseBody, RuleCacheMode, Scope, StaticResponse,
+        StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, TrailingSlashModification,
+        UrlPathSegment,
     },
     entities::{
         exceptions, exceptions::MODIFICATION_ERROR, serde::Serializer, AccountUniqueId, ConfigId,
@@ -251,6 +252,7 @@ impl RequestsProcessor {
 
             match cached_response {
                 Ok(Some(resp_from_cache)) => {
+                    let valid_till = resp_from_cache.valid_till;
                     if resp_from_cache.is_full_response_success()
                         || resp_from_cache.has_conditional()
                     {
@@ -268,83 +270,73 @@ impl RequestsProcessor {
                             resp_from_cache.as_full_resp(),
                             handler.resolved_variant.post_processing(),
                         ) {
-                            if let Some(max_age) =
-                                cache_max_age_without_checks(resp_from_cache.as_full_resp())
-                            {
-                                match resp_from_cache.split_for_user_and_maybe_cloned().await {
-                                    Ok((for_user, on_response_finished)) => {
-                                        *res = for_user;
+                            match resp_from_cache.split_for_user_and_maybe_cloned().await {
+                                Ok((for_user, on_response_finished)) => {
+                                    *res = for_user;
 
-                                        let transformer_client = self.transformer_client.clone();
-                                        let account_secret_key =
-                                            self.xchacha20poly1305_secret_key.clone();
+                                    let transformer_client = self.transformer_client.clone();
+                                    let account_secret_key =
+                                        self.xchacha20poly1305_secret_key.clone();
 
-                                        let req_uri = req.uri().clone();
-                                        let req_method = req.method().clone();
-                                        let req_headers = req.headers().clone();
+                                    let req_uri = req.uri().clone();
+                                    let req_method = req.method().clone();
+                                    let req_headers = req.headers().clone();
 
-                                        let cache = self.cache.clone();
-                                        let account_unique_id = self.account_unique_id;
-                                        let project_name = self.project_name.clone();
-                                        let project_unique_id = self.project_unique_id;
-                                        let mount_point_name = self.mount_point_name.clone();
-                                        let max_pop_cache_size_bytes =
-                                            self.max_pop_cache_size_bytes;
-                                        let xchacha20poly1305_secret_key =
-                                            self.xchacha20poly1305_secret_key.clone();
-                                        let handler_name = handler.handler_name.clone();
-                                        let handler_checksum = handler.handler_checksum;
-                                        let requested_url = requested_url.clone();
-                                        let log_message_container = log_message_container.clone();
-                                        let invocation_log = invocation_log.clone();
+                                    let cache = self.cache.clone();
+                                    let account_unique_id = self.account_unique_id;
+                                    let project_name = self.project_name.clone();
+                                    let project_unique_id = self.project_unique_id;
+                                    let mount_point_name = self.mount_point_name.clone();
+                                    let max_pop_cache_size_bytes = self.max_pop_cache_size_bytes;
+                                    let xchacha20poly1305_secret_key =
+                                        self.xchacha20poly1305_secret_key.clone();
+                                    let handler_name = handler.handler_name.clone();
+                                    let handler_checksum = handler.handler_checksum;
+                                    let requested_url = requested_url.clone();
+                                    let log_message_container = log_message_container.clone();
+                                    let invocation_log = invocation_log.clone();
 
-                                        tokio::spawn(async move {
-                                            match on_response_finished.await {
-                                                Some(cloned_resp) => {
-                                                    trigger_transformation_if_required(
-                                                        max_age,
-                                                        &req_headers,
-                                                        req_method,
-                                                        &req_uri,
-                                                        cloned_resp,
-                                                        account_secret_key,
-                                                        transformer_client,
-                                                        cache,
-                                                        account_unique_id,
-                                                        project_name,
-                                                        project_unique_id,
-                                                        mount_point_name,
-                                                        max_pop_cache_size_bytes,
-                                                        xchacha20poly1305_secret_key,
-                                                        handler_name,
-                                                        handler_checksum,
-                                                        &requested_url,
-                                                        invocation_log.clone(),
-                                                        log_message_container.clone(),
-                                                    )
-                                                    .await;
-                                                }
-                                                None => {
-                                                    error!("on_response_finished returned None!");
-                                                }
+                                    tokio::spawn(async move {
+                                        match on_response_finished.await {
+                                            Some(cloned_resp) => {
+                                                trigger_transformation_if_required(
+                                                    valid_till,
+                                                    &req_headers,
+                                                    req_method,
+                                                    &req_uri,
+                                                    cloned_resp,
+                                                    account_secret_key,
+                                                    transformer_client,
+                                                    cache,
+                                                    account_unique_id,
+                                                    project_name,
+                                                    project_unique_id,
+                                                    mount_point_name,
+                                                    max_pop_cache_size_bytes,
+                                                    xchacha20poly1305_secret_key,
+                                                    handler_name,
+                                                    handler_checksum,
+                                                    &requested_url,
+                                                    invocation_log.clone(),
+                                                    log_message_container.clone(),
+                                                )
+                                                .await;
                                             }
-                                        });
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to clone response through tempfile: {}", e);
-
-                                        *res.body_mut() = Body::from("internal server error");
-                                        *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-
-                                        return;
-                                    }
+                                            None => {
+                                                error!("on_response_finished returned None!");
+                                            }
+                                        }
+                                    });
                                 }
-                            } else {
-                                *invocation_log.lock().transformation_mut() =
-                                    Some(TransformationStatus::NotEligible);
+                                Err(e) => {
+                                    error!("Failed to clone response through tempfile: {}", e);
 
-                                *res = resp_from_cache.into_for_user();
-                            };
+                                    *res.body_mut() = Body::from("internal server error");
+                                    *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+
+                                    return;
+                                }
+                            }
                         } else {
                             *invocation_log.lock().transformation_mut() =
                                 Some(if resp_from_cache.is_transformed() {
@@ -421,8 +413,8 @@ impl RequestsProcessor {
                     .await;
 
                 match result {
-                    ResolvedHandlerProcessingResult::Processed => {
-                        processed_by = Some((handler, invocation_log));
+                    ResolvedHandlerProcessingResult::Processed { cache_mode } => {
+                        processed_by = Some((handler, cache_mode, invocation_log));
                         break;
                     }
                     ResolvedHandlerProcessingResult::FiltersNotMatched => {}
@@ -438,7 +430,7 @@ impl RequestsProcessor {
                 *res = Response::new(Body::from("Not found"));
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
-            Some((handler, invocation_log)) => {
+            Some((handler, cache_mode, invocation_log)) => {
                 // Try to trigger transformation if applicable
                 if handler.resolved_variant.is_cache_enabled() != Some(true) {
                     // cache is disabled
@@ -462,7 +454,7 @@ impl RequestsProcessor {
                         warn!(
                             "Not triggering transformation, because cache dir reached global limit in size"
                         );
-                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res) {
+                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res, &cache_mode) {
                         match clone_response_through_tempfile(res).await {
                             Ok(on_response_finished) => {
                                 let transformer_client = self.transformer_client.clone();
@@ -489,7 +481,7 @@ impl RequestsProcessor {
                                 tokio::spawn(async move {
                                     if let Some(cloned_resp) = on_response_finished.await {
                                         trigger_transformation_if_required(
-                                            max_age,
+                                            Utc::now() + max_age,
                                             &req_headers,
                                             req_method,
                                             &req_uri,
@@ -556,7 +548,7 @@ impl RequestsProcessor {
                         {
                             step.save_to_cache = Some(CacheSavingStatus::SaveError);
                         }
-                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res) {
+                    } else if let Some(max_age) = cache_max_age_if_eligible(req, res, &cache_mode) {
                         let cache = self.cache.clone();
                         let account_unique_id = self.account_unique_id;
                         let project_name = self.project_name.clone();
@@ -572,7 +564,7 @@ impl RequestsProcessor {
                         let req_uri = req.uri();
 
                         save_to_cache(
-                            max_age,
+                            Utc::now() + max_age,
                             req_headers,
                             req_method,
                             req_uri,
@@ -718,7 +710,7 @@ impl RequestsProcessor {
 }
 
 fn save_to_cache(
-    max_age: chrono::Duration,
+    valid_till: chrono::DateTime<Utc>,
     req_headers: &HeaderMap,
     req_method: Method,
     req_uri: &http::Uri,
@@ -818,7 +810,7 @@ fn save_to_cache(
                         header,
                         bs58::encode(content_hash.finalize()).into_string(),
                         max_pop_cache_size_bytes,
-                        Utc::now() + max_age,
+                        valid_till,
                         &xchacha20poly1305_secret_key,
                         tempfile_path,
                     )
@@ -843,9 +835,7 @@ fn save_to_cache(
                             if let CacheableInvocationProcessingStep::Invoked(step) =
                                 &mut *invocation_log.lock()
                             {
-                                step.save_to_cache = Some(CacheSavingStatus::Saved {
-                                    max_age: max_age.to_std().unwrap(),
-                                });
+                                step.save_to_cache = Some(CacheSavingStatus::Saved { valid_till });
                             }
                         }
                     }
@@ -876,7 +866,7 @@ fn save_to_cache(
 }
 
 async fn trigger_transformation_if_required(
-    max_age: chrono::Duration,
+    valid_till: chrono::DateTime<Utc>,
     req_headers: &HeaderMap,
     req_method: Method,
     req_uri: &http::Uri,
@@ -991,7 +981,7 @@ async fn trigger_transformation_if_required(
                                 *resp.body_mut() = Body::from(transformed_content);
 
                                 save_to_cache(
-                                    max_age,
+                                    valid_till,
                                     req_headers,
                                     req_method,
                                     req_uri,
@@ -1021,7 +1011,7 @@ async fn trigger_transformation_if_required(
                                 .insert("x-exg-transformed", HeaderValue::try_from("1").unwrap());
 
                             save_to_cache(
-                                max_age,
+                                valid_till,
                                 req_headers,
                                 req_method,
                                 req_uri,
@@ -1156,7 +1146,20 @@ impl Rebase {
     }
 }
 
-pub fn cache_max_age_without_checks(res: &Response<Body>) -> Option<chrono::Duration> {
+pub fn cache_max_age_without_checks(
+    res: &Response<Body>,
+    cache_mode: &RuleCacheMode,
+) -> Option<chrono::Duration> {
+    match cache_mode {
+        RuleCacheMode::Headers => {}
+        RuleCacheMode::Prohibit => {
+            return None;
+        }
+        RuleCacheMode::Force { max_age } => {
+            return Some(chrono::Duration::from_std(max_age.0).unwrap());
+        }
+    }
+
     let cache_entries: Vec<_> = res
         .headers()
         .get_all(CACHE_CONTROL)
@@ -1192,6 +1195,7 @@ pub fn cache_max_age_without_checks(res: &Response<Body>) -> Option<chrono::Dura
 pub fn cache_max_age_if_eligible(
     req: &Request<Body>,
     res: &Response<Body>,
+    cache_mode: &RuleCacheMode,
 ) -> Option<chrono::Duration> {
     if req.method() != Method::GET && req.method() != Method::HEAD {
         return None;
@@ -1212,7 +1216,7 @@ pub fn cache_max_age_if_eligible(
         return None;
     }
 
-    cache_max_age_without_checks(res)
+    cache_max_age_without_checks(res, cache_mode)
 }
 
 impl From<config_core::Rebase> for Rebase {
@@ -1537,8 +1541,6 @@ impl ResolvedStaticResponseAction {
         language: &Option<LanguageTag>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
     ) -> ResolvedHandlerProcessingResult {
-        info!("!!lang = {:?}", language);
-
         let facts = log_message_container.lock().as_mut().facts.clone();
 
         *res = Response::new(Body::empty());
@@ -1559,6 +1561,7 @@ impl ResolvedStaticResponseAction {
                     res,
                     requested_url,
                     rescuable,
+                    &Default::default(),
                     true,
                     &self.rescues,
                     &language,
@@ -1598,7 +1601,9 @@ impl ResolvedStaticResponseAction {
                     facts,
                     language,
                 ) {
-                    Ok(()) => ResolvedHandlerProcessingResult::Processed,
+                    Ok(()) => ResolvedHandlerProcessingResult::Processed {
+                        cache_mode: Default::default(),
+                    },
                     Err((exception, data)) => {
                         *res = Response::new(Body::empty());
                         if !is_in_exception {
@@ -1609,6 +1614,7 @@ impl ResolvedStaticResponseAction {
                                 res,
                                 requested_url,
                                 rescuable,
+                                &Default::default(),
                                 false,
                                 &self.rescues,
                                 &language,
@@ -1618,7 +1624,9 @@ impl ResolvedStaticResponseAction {
                             *res.body_mut() = Body::from("Internal server error");
                             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
 
-                            ResolvedHandlerProcessingResult::Processed
+                            ResolvedHandlerProcessingResult::Processed {
+                                cache_mode: Default::default(),
+                            }
                         }
                     }
                 }
@@ -2135,6 +2143,7 @@ struct ResolvedRule {
     request_modifications: ResolvedRequestModifications,
     on_response: Vec<OnResponse>,
     action: ResolvedRuleAction,
+    cache_mode: RuleCacheMode,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2207,6 +2216,7 @@ impl ResolvedRule {
         HashMap<SmolStr, Matched>,
         usize,
         &ResolvedRuleAction,
+        &RuleCacheMode,
         &ResolvedRequestModifications,
         &Vec<OnResponse>,
     )> {
@@ -2216,6 +2226,7 @@ impl ResolvedRule {
             matches,
             replaced_base_path_len,
             &self.action,
+            &self.cache_mode,
             &self.request_modifications,
             &self.on_response,
         ))
@@ -2266,7 +2277,7 @@ impl Rescuable {
 #[must_use]
 #[derive(Debug)]
 enum ResolvedHandlerProcessingResult {
-    Processed,
+    Processed { cache_mode: RuleCacheMode },
     FiltersNotMatched,
     NextHandler,
 }
@@ -2399,6 +2410,7 @@ impl ResolvedHandler {
         res: &mut Response<Body>,
         requested_url: &http::uri::Uri,
         mut rescuable: Rescuable,
+        cache_mode: &RuleCacheMode,
         is_in_exception: bool,
         rescues: &[ResolvedRescueItem],
         language: &Option<LanguageTag>,
@@ -2501,7 +2513,9 @@ impl ResolvedHandler {
                                     };
                                 }
                                 Rescuable::StatusCode(_) => {
-                                    break RescuableHandleResult::FinishProcessing
+                                    break RescuableHandleResult::FinishProcessing {
+                                        cache_mode: cache_mode.clone(),
+                                    }
                                 }
                             },
                         }
@@ -2537,7 +2551,11 @@ impl ResolvedHandler {
                             data: collected_data.clone(),
                         };
                     }
-                    Rescuable::StatusCode(_) => break RescuableHandleResult::FinishProcessing,
+                    Rescuable::StatusCode(_) => {
+                        break RescuableHandleResult::FinishProcessing {
+                            cache_mode: cache_mode.clone(),
+                        }
+                    }
                 }
             }
         };
@@ -2559,9 +2577,13 @@ impl ResolvedHandler {
             }
             RescuableHandleResult::UnhandledException { .. } => {
                 self.respond_server_error(res);
-                ResolvedHandlerProcessingResult::Processed
+                ResolvedHandlerProcessingResult::Processed {
+                    cache_mode: Default::default(),
+                }
             }
-            RescuableHandleResult::FinishProcessing => ResolvedHandlerProcessingResult::Processed,
+            RescuableHandleResult::FinishProcessing { cache_mode } => {
+                ResolvedHandlerProcessingResult::Processed { cache_mode }
+            }
         }
     }
 
@@ -2574,6 +2596,7 @@ impl ResolvedHandler {
         HashMap<SmolStr, Matched>,
         usize,
         &ResolvedRuleAction,
+        &RuleCacheMode,
         &ResolvedRequestModifications,
         &Vec<OnResponse>,
     )> {
@@ -2597,6 +2620,7 @@ impl ResolvedHandler {
         invocation_result: HandlerInvocationResult,
         req: &mut Request<Body>,
         res: &mut Response<Body>,
+        cache_mode: &RuleCacheMode,
         requested_url: &http::uri::Uri,
         language: &Option<LanguageTag>,
         log_message_container: &Arc<parking_lot::Mutex<LogMessageSendOnDrop>>,
@@ -2626,6 +2650,7 @@ impl ResolvedHandler {
                                     res,
                                     requested_url,
                                     rescuable,
+                                    &Default::default(),
                                     false,
                                     rescues,
                                     &language,
@@ -2643,6 +2668,7 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     rescuable,
+                    cache_mode,
                     false,
                     rescues,
                     &language,
@@ -2660,6 +2686,7 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     rescuable,
+                    &Default::default(),
                     false,
                     rescues,
                     &language,
@@ -2691,6 +2718,7 @@ impl ResolvedHandler {
                 invocation_result,
                 req,
                 res,
+                &Default::default(),
                 requested_url,
                 language,
                 log_message_container,
@@ -2700,11 +2728,17 @@ impl ResolvedHandler {
             );
         }
 
-        let (filter_matches, skip_segments, action, request_modification, response_modification) =
-            match self.find_action(rebased_url, req.method()) {
-                None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
-                Some(action) => action,
-            };
+        let (
+            filter_matches,
+            skip_segments,
+            action,
+            cache_mode,
+            request_modification,
+            response_modification,
+        ) = match self.find_action(rebased_url, req.method()) {
+            None => return ResolvedHandlerProcessingResult::FiltersNotMatched,
+            Some(action) => action,
+        };
 
         let query_modifications = rebased_url.query_pairs();
         let mut modified_url = rebased_url.clone();
@@ -2733,6 +2767,7 @@ impl ResolvedHandler {
                             res,
                             requested_url,
                             rescuable,
+                            cache_mode,
                             false,
                             &action.rescues(),
                             &language,
@@ -2783,6 +2818,7 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     rescuable,
+                    cache_mode,
                     false,
                     &action.rescues(),
                     &language,
@@ -2812,6 +2848,7 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     rescuable,
+                    cache_mode,
                     false,
                     &action.rescues(),
                     &language,
@@ -2853,6 +2890,7 @@ impl ResolvedHandler {
                     invocation_result,
                     req,
                     res,
+                    cache_mode,
                     requested_url,
                     language,
                     log_message_container,
@@ -2874,6 +2912,7 @@ impl ResolvedHandler {
                     res,
                     requested_url,
                     rescuable,
+                    cache_mode,
                     false,
                     &self.rescues,
                     &language,
@@ -2949,7 +2988,7 @@ enum RescuableHandleResult {
         data: HashMap<SmolStr, SmolStr>,
     },
     /// Finish processing normally, respond with prepared response
-    FinishProcessing,
+    FinishProcessing { cache_mode: RuleCacheMode },
 }
 
 fn resolve_static_response(
@@ -3692,6 +3731,7 @@ impl RequestsProcessor {
                                                 )?,
                                             })),
                                         },
+                                        cache_mode: rule.cache,
                                     })
                                 })
                                 .collect::<Option<_>>()?,

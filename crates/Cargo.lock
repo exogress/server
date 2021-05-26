@@ -21,9 +21,9 @@ checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 
 [[package]]
 name = "ahash"
-version = "0.7.3"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11149c3eb723d15cb065a9ea5cc74ab57250f098ef33c9f6f7f39b48bd207750"
+checksum = "43bb833f0bf979d8475d38fbf09ed3b8a55e1885fe93ad3f93239fc6a4f17b98"
 dependencies = [
  "getrandom 0.2.3",
  "once_cell",
@@ -390,9 +390,9 @@ checksum = "b700ce4376041dcd0a327fd0097c41095743c4c8af8887265942faf1100bd040"
 
 [[package]]
 name = "cc"
-version = "1.0.67"
+version = "1.0.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3c69b077ad434294d3ce9f1f6143a2a4b89a8a2d54ef813d85003a4fd1137fd"
+checksum = "4a72c244c1ff497a746a7e1fb3d14bd08420ecda70c8f25c7112f2781652d787"
 dependencies = [
  "jobserver",
 ]
@@ -905,6 +905,7 @@ dependencies = [
  "sentry",
  "serde",
  "serde_json",
+ "serde_yaml",
  "shadow-clone",
  "stop-handle",
  "thiserror",
@@ -997,7 +998,7 @@ dependencies = [
 [[package]]
 name = "exogress-common"
 version = "0.2.0-beta.1"
-source = "git+https://github.com/exogress/exogress.git?branch=master#b53021ddad8f9326ee6c083fff837a6e360c8964"
+source = "git+https://github.com/exogress/exogress.git?branch=master#b6b5cff50a8412230a5a29bc10b6f1ad9c99646f"
 dependencies = [
  "ansi_term 0.11.0",
  "anyhow",
@@ -1875,9 +1876,9 @@ checksum = "494b4d60369511e7dea41cf646832512a94e542f68bb9c49e54518e0f468eb47"
 
 [[package]]
 name = "httpdate"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05842d0d43232b23ccb7060ecb0f0626922c21f30012e97b767b30afd4a5d4b9"
+checksum = "6456b8a6c8f33fee7d958fcd1b60d55b11940a79e63ae87013e6d22e26034440"
 
 [[package]]
 name = "humantime"
@@ -1897,9 +1898,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "0.14.7"
+version = "0.14.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e5f105c494081baa3bf9e200b279e27ec1623895cd504c7dbef8d0b080fcf54"
+checksum = "d3f71a7eea53a3f8257a7b4795373ff886397178cd634430ea94e12d7fe4fe34"
 dependencies = [
  "bytes 1.0.1",
  "futures-channel",
@@ -1909,7 +1910,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
- "httpdate 1.0.0",
+ "httpdate 1.0.1",
  "itoa",
  "pin-project 1.0.7",
  "socket2 0.4.0",
@@ -2131,8 +2132,9 @@ dependencies = [
 
 [[package]]
 name = "language-tags"
-version = "0.3.1"
-source = "git+https://github.com/glebpom/rust-language-tags.git#81f35e1a87bec64e0bc052bd9fbab9f5cc625caa"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
 dependencies = [
  "serde",
 ]
@@ -2200,9 +2202,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.94"
+version = "0.2.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18794a8ad5b29321f790b55d93dfba91e125cb1a9edbd4f8e3150acc771c1a5e"
+checksum = "789da6d93f1b866ffe175afc5322a4d76c038605a1c3319bb57b06967ca98a36"
 
 [[package]]
 name = "liblmdb-sys"
@@ -2689,11 +2691,12 @@ dependencies = [
 
 [[package]]
 name = "ordered-float"
-version = "2.4.0"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76d99537dd7019c4dabfcf3898a43ee685412f76e6bee1ecc48785d730c1a275"
+checksum = "809348965973b261c3e504c8d0434e465274f78c880e10039914f2c5dcf49461"
 dependencies = [
  "num-traits 0.2.14",
+ "rand 0.8.3",
 ]
 
 [[package]]
@@ -3580,9 +3583,9 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fd51dfdc79146dc24efbe4626c01ed5cd9f5b3b5742b51b26ea413e7dd7730b"
+checksum = "d52f6513cf330c84095570b1f3ac073d718a50541c8392a98eaac9c6333324bf"
 dependencies = [
  "arrayvec",
  "num-traits 0.2.14",
@@ -3591,9 +3594,9 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal_macros"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8cb1a6910e0992391a265ac9b2c68991592d30ecdefca193e2efdf2b39f7f9"
+checksum = "b9ac0a0a5fcc647fd50ad212f7806cc36e5551684ddb7d5d8522d788035f7893"
 dependencies = [
  "quote",
  "rust_decimal",
@@ -3716,7 +3719,7 @@ dependencies = [
 [[package]]
 name = "schemars"
 version = "0.8.3"
-source = "git+https://github.com/glebpom/schemars.git?branch=exogress#6779f3845aa89ba403f7fd08934e66534f8b55d6"
+source = "git+https://github.com/glebpom/schemars.git?branch=exogress#78bdb41c14a56b77aee50c1503b2a9c64586a357"
 dependencies = [
  "chrono",
  "dyn-clone",
@@ -3732,7 +3735,7 @@ dependencies = [
 [[package]]
 name = "schemars_derive"
 version = "0.8.3"
-source = "git+https://github.com/glebpom/schemars.git?branch=exogress#6779f3845aa89ba403f7fd08934e66534f8b55d6"
+source = "git+https://github.com/glebpom/schemars.git?branch=exogress#78bdb41c14a56b77aee50c1503b2a9c64586a357"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3930,7 +3933,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
 dependencies = [
- "ordered-float 2.4.0",
+ "ordered-float 2.5.0",
  "serde",
 ]
 
@@ -4977,7 +4980,7 @@ dependencies = [
 [[package]]
 name = "typed-headers"
 version = "0.2.0"
-source = "git+https://github.com/glebpom/typed-headers.git?branch=master#dcba3ad2de71ec171fe1eef944fa70aa857268fd"
+source = "git+https://github.com/glebpom/typed-headers.git?branch=master#51ce4d376defea565b0a5639045e036625a8b137"
 dependencies = [
  "base64 0.11.0",
  "bytes 0.5.6",

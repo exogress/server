@@ -33,7 +33,7 @@ httparse = "1.3.4"
 hyper = "0.14"
 itertools = "0.10.0"
 jsonwebtoken = "7.2.0"
-language-tags = { git = "https://github.com/glebpom/rust-language-tags.git" }
+language-tags = "0.3.2"
 lazy_static = "1.4.0"
 ledb = "0.4.0"
 ledb-types = "0.4.0"

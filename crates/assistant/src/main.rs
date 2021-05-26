@@ -13,7 +13,7 @@ use exogress_common::{common_utils::termination::stop_signal_listener, entities:
 use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use futures::FutureExt;
 use redis::Client;
-use std::{net::SocketAddr, panic::AssertUnwindSafe, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, panic::AssertUnwindSafe, time::Duration};
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
@@ -95,14 +95,6 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("dns_rules_path")
-                .long("dns-rules-path")
-                .value_name("PATH")
-                .required(true)
-                .help("Set DNS rules path")
-                .takes_value(true),
-        )
-        .arg(
             Arg::with_name("redis_addr")
                 .long("redis-addr")
                 .value_name("URL")
@@ -112,17 +104,19 @@ fn main() {
                 .takes_value(true),
         );
 
-    let spawn_args = exogress_server_common::kafka::clap::add_args(
-        exogress_server_common::clap::int_api::add_args(
-            exogress_common::common_utils::clap::threads::add_args(
-                exogress_server_common::clap::sentry::add_args(
-                    exogress_server_common::clap::log::add_args(spawn_args),
+    let spawn_args = exogress_server_common::clap::dns_rules::add_args(
+        exogress_server_common::kafka::clap::add_args(
+            exogress_server_common::clap::int_api::add_args(
+                exogress_common::common_utils::clap::threads::add_args(
+                    exogress_server_common::clap::sentry::add_args(
+                        exogress_server_common::clap::log::add_args(spawn_args),
+                    ),
                 ),
+                true,
+                false,
+                false,
+                false,
             ),
-            true,
-            false,
-            false,
-            false,
         ),
     );
 
@@ -157,6 +151,8 @@ fn main() {
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
     let kafka_brokers = exogress_server_common::kafka::clap::extract_matches(&matches);
+    let dns_rules_path =
+        exogress_server_common::clap::dns_rules::handle(&matches).expect("bad dns-rules arg");
 
     let rt = Builder::new_multi_thread()
         .enable_all()
@@ -174,12 +170,6 @@ fn main() {
         .expect("error initializing logger");
 
     rt.spawn(logger_bg);
-
-    let dns_rules_path: PathBuf = matches
-        .value_of("dns_rules_path")
-        .expect("no --dns-rules-path provided")
-        .parse()
-        .expect("bad --dns-rules-path");
 
     let tls_config =
         if let (Some(int_tls_cert_path), Some(int_tls_key_path), Some(int_tls_auth_ca_path)) = (

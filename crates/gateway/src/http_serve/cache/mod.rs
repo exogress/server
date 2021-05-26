@@ -797,6 +797,10 @@ impl Cache {
                     full: resp,
                     full_content_hash: variation.content_hash,
                     full_content_len: original_file_size as usize,
+                    valid_till: chrono::DateTime::<Utc>::from_utc(
+                        chrono::NaiveDateTime::from_timestamp(variation.expires_at as i64, 0),
+                        Utc,
+                    ),
                 }));
             }
 
@@ -816,6 +820,10 @@ impl Cache {
                 full: resp,
                 full_content_hash: variation.content_hash,
                 full_content_len: original_file_size as usize,
+                valid_till: chrono::DateTime::<Utc>::from_utc(
+                    chrono::NaiveDateTime::from_timestamp(variation.expires_at as i64, 0),
+                    Utc,
+                ),
             }))
         } else {
             crate::statistics::EDGE_CACHE_MISS.inc();
@@ -830,6 +838,7 @@ pub struct CacheResponse {
     full: Response<hyper::Body>,
     full_content_hash: String,
     full_content_len: usize,
+    pub valid_till: chrono::DateTime<Utc>,
 }
 
 impl CacheResponse {

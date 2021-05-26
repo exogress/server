@@ -13,7 +13,7 @@ use http::{
 };
 use language_tags::LanguageTag;
 use parking_lot::Mutex;
-use serde_with::{serde_as, DurationMilliSecondsWithFrac, DurationSeconds};
+use serde_with::{serde_as, DurationMilliSecondsWithFrac};
 use std::{net::IpAddr, sync::Arc, time::Duration};
 use typed_headers::HeaderMapExt;
 
@@ -386,10 +386,7 @@ pub enum CacheSavingStatus {
     Skipped,
 
     #[serde(rename = "saved")]
-    Saved {
-        #[serde_as(as = "DurationSeconds")]
-        max_age: Duration,
-    },
+    Saved { valid_till: chrono::DateTime<Utc> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
