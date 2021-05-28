@@ -3391,9 +3391,11 @@ impl RequestsProcessor {
                                         .and_then(|cache| {
                                             cache
                                                 .invalidations
-                                                .get(&ic.invalidation_name)
-                                                .map(|filters| {
-                                                    filters
+                                                .iter()
+                                                .find(|invalidation| invalidation.name == ic.invalidation_name)
+                                                .map(|invalidation| {
+                                                    invalidation
+                                                        .filters
                                                         .iter()
                                                         .map(|filter| {
                                                             ResolvedFilter {
