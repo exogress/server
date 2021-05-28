@@ -2683,7 +2683,7 @@ impl ResolvedHandler {
             HandlerInvocationResult::Responded => {
                 for modification in on_response {
                     if modification.when.status_code.is_belongs(&res.status()) {
-                        match apply_headers(
+                        match apply_headers_modifications(
                             res.headers_mut(),
                             &modification.modifications.headers,
                             &filter_matches,
@@ -2852,7 +2852,7 @@ impl ResolvedHandler {
             TrailingSlashModification::Unset => modified_url.ensure_trailing_slash(false),
         }
 
-        match apply_headers(
+        match apply_headers_modifications(
             req.headers_mut(),
             &request_modification.headers,
             &filter_matches,
@@ -2987,13 +2987,16 @@ impl ResolvedHandler {
     }
 }
 
-fn apply_headers(
+fn apply_headers_modifications(
     headers: &mut HeaderMap<HeaderValue>,
     modification: &ModifyHeaders,
     filter_matches: &HashMap<SmolStr, Matched>,
     language: &Option<LanguageTag>,
 ) -> Result<(), Exception> {
     for (header_name, header_value) in &modification.append.0 {
+        if header_name.as_str().starts_with("x-exg") {
+            continue;
+        }
         let substituted = substitute_str_with_filter_matches(
             header_value.to_str().unwrap(),
             filter_matches,
@@ -3007,6 +3010,9 @@ fn apply_headers(
         );
     }
     for (header_name, header_value) in &modification.insert.0 {
+        if header_name.as_str().starts_with("x-exg") {
+            continue;
+        }
         let substituted = substitute_str_with_filter_matches(
             header_value.to_str().unwrap(),
             filter_matches,
@@ -3020,6 +3026,9 @@ fn apply_headers(
         );
     }
     for header_name in &modification.remove.0 {
+        if header_name.as_str().starts_with("x-exg") {
+            continue;
+        }
         headers.remove(header_name);
     }
 
