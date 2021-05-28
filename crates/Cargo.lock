@@ -998,7 +998,7 @@ dependencies = [
 [[package]]
 name = "exogress-common"
 version = "0.2.0-beta.1"
-source = "git+https://github.com/exogress/exogress.git?branch=master#ee1080a13899dd1990703c283abdb7b4e2c9536a"
+source = "git+https://github.com/exogress/exogress.git?branch=master#5538bb4d2c8dc40749b33a1ced0c7e798a6d6bd9"
 dependencies = [
  "ansi_term 0.11.0",
  "anyhow",
