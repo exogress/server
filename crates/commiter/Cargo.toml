@@ -37,4 +37,4 @@ warp = "0.3"
 trust-dns-resolver = "0.20"
 
 exogress-server-common = { path = "../common" }
-exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0-beta.1", features = [], default-features = false }
+exogress-common = { git = "https://github.com/exogress/exogress.git", branch = "master", version = "0.2.0", features = [], default-features = false }
