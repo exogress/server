@@ -289,7 +289,7 @@ pub async fn server(
                                                         info!("WS forwarder closed");
                                                     }
                                                     Err(e) => {
-                                                        error!("couldn't subscribe to invalidations: {}", e)
+                                                        error!("couldn't subscribe to invalidation_groups: {}", e)
                                                     }
                                                 }
                                             }

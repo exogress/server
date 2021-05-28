@@ -902,6 +902,7 @@ dependencies = [
  "redis",
  "reqwest",
  "rustls",
+ "rweb",
  "sentry",
  "serde",
  "serde_json",
@@ -916,7 +917,6 @@ dependencies = [
  "trust-dns-resolver",
  "typed-builder",
  "url",
- "warp",
 ]
 
 [[package]]
@@ -998,7 +998,7 @@ dependencies = [
 [[package]]
 name = "exogress-common"
 version = "0.2.0-beta.1"
-source = "git+https://github.com/exogress/exogress.git?branch=master#b6b5cff50a8412230a5a29bc10b6f1ad9c99646f"
+source = "git+https://github.com/exogress/exogress.git?branch=master#ee1080a13899dd1990703c283abdb7b4e2c9536a"
 dependencies = [
  "ansi_term 0.11.0",
  "anyhow",
@@ -1037,6 +1037,7 @@ dependencies = [
  "rustls-native-certs",
  "rusty-s3",
  "rw-stream-sink",
+ "rweb",
  "schemars",
  "seahash",
  "semver 0.11.0",
@@ -1984,6 +1985,7 @@ checksum = "824845a0bf897a9042383849b02c1bc219c2383772efcd5c6f9766fa4b81aef3"
 dependencies = [
  "autocfg 1.0.1",
  "hashbrown 0.9.1",
+ "serde",
 ]
 
 [[package]]
@@ -2379,9 +2381,9 @@ dependencies = [
 
 [[package]]
 name = "memoffset"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f83fb6581e8ed1f85fd45c116db8405483899489e38406156c25eb743554361d"
+checksum = "59accc507f1338036a0477ef61afdae33cde60840f4dfe481319ce3ad116ddf9"
 dependencies = [
  "autocfg 1.0.1",
 ]
@@ -2992,6 +2994,17 @@ name = "pkg-config"
 version = "0.3.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3831453b3449ceb48b6d9c7ad7c96d5ea673e9b470a1dc578c2ce6521230884c"
+
+[[package]]
+name = "pmutil"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3894e5d549cccbe44afecf72922f277f603cd4bb0219c8342631ef18fffbe004"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "ppv-lite86"
@@ -3692,6 +3705,50 @@ dependencies = [
  "futures",
  "pin-project 0.4.28",
  "static_assertions",
+]
+
+[[package]]
+name = "rweb"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5c581473ab25f9a3705e8284439ac1c3d1641c3c19e54487ea3bc9d56f5cdbd"
+dependencies = [
+ "futures",
+ "http",
+ "indexmap",
+ "rweb-macros",
+ "rweb-openapi",
+ "scoped-tls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "warp",
+]
+
+[[package]]
+name = "rweb-macros"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45fe32b622e939fb1d7e61f652717671450ed2f0f4905b5598d6c804acd628a8"
+dependencies = [
+ "pmutil",
+ "proc-macro2",
+ "quote",
+ "rweb-openapi",
+ "syn",
+]
+
+[[package]]
+name = "rweb-openapi"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0f3187ee05c7f920477357885f683e5c29bdf024f7873d8e2aa23930c07de29"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

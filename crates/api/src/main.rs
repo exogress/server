@@ -1,8 +1,6 @@
 #![warn(rust_2018_idioms)]
 
 #[macro_use]
-extern crate shadow_clone;
-#[macro_use]
 extern crate tracing;
 #[macro_use]
 extern crate serde;
@@ -10,18 +8,19 @@ extern crate serde;
 mod elasticsearch;
 mod http;
 mod mongodb;
-mod redis_client;
+mod redis_assistant_client;
+mod redis_sessions_client;
 mod service;
 mod statistics;
 mod termination;
 
 use crate::{
     elasticsearch::ElasticsearchClient, http::run_http_server, mongodb::MongoDbClient,
-    redis_client::RedisClient, service::Service, termination::StopReason,
+    redis_assistant_client::RedisAssistantClient, redis_sessions_client::RedisSessionsClient,
+    service::Service, termination::StopReason,
 };
 use clap::{crate_version, App, Arg};
 use exogress_common::common_utils::termination::stop_signal_listener;
-// use exogress_server_common::clap::int_api::IntApiBaseUrls;
 use std::net::SocketAddr;
 use stop_handle::stop_handle;
 use tokio::runtime::Builder;
@@ -77,12 +76,21 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("redis_addr")
-                .long("redis-addr")
+            Arg::with_name("redis_sessions_addr")
+                .long("redis-sessions-addr")
                 .value_name("URL")
                 .default_value("redis://127.0.0.1/7")
                 .required(true)
-                .help("Set redis addr")
+                .help("Set redis addr for sessions storage")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("redis_assistant_addr")
+                .long("redis-assistant-addr")
+                .value_name("URL")
+                .default_value("redis://127.0.0.1/12")
+                .required(true)
+                .help("Set redis addr for assistant bus")
                 .takes_value(true),
         );
 
@@ -116,10 +124,6 @@ fn main() {
 
     let _maybe_sentry = exogress_server_common::clap::sentry::extract_matches(&matches);
     let num_threads = exogress_common::common_utils::clap::threads::extract_matches(&matches);
-    // let IntApiBaseUrls {
-    //     int_client_cert,
-    //     ..
-    // } = exogress_server_common::clap::int_api::extract_matches(&matches, false, false, false, false);
 
     let dns_rules_path =
         exogress_server_common::clap::dns_rules::handle(&matches).expect("bad dns-rules arg");
@@ -155,9 +159,14 @@ fn main() {
         .expect("no --mongodb-database provided")
         .to_string();
 
-    let redis_addr: String = matches
-        .value_of("redis_addr")
-        .expect("no redis addr provided")
+    let redis_sessions_addr: String = matches
+        .value_of("redis_sessions_addr")
+        .expect("no redis sessions addr provided")
+        .into();
+
+    let redis_assistant_addr: String = matches
+        .value_of("redis_assistant_addr")
+        .expect("no redis assistant addr provided")
         .into();
 
     let listen_http_addr = matches
@@ -171,7 +180,11 @@ fn main() {
     rt.block_on(async move {
         tokio::spawn(stop_signal_listener(app_stop_handle.clone()));
 
-        let redis_client = RedisClient::new(redis_addr.as_str())
+        let redis_sessions_client = RedisSessionsClient::new(redis_sessions_addr.as_str())
+            .await
+            .expect("Error connecting to redis");
+
+        let redis_assistant_client = RedisAssistantClient::new(redis_assistant_addr.as_str())
             .await
             .expect("Error connecting to redis");
 
@@ -186,7 +199,8 @@ fn main() {
         info!("Listening  HTTP on {}", listen_http_addr);
 
         let service: Service = Service::builder()
-            .redis(redis_client)
+            .redis_sessions(redis_sessions_client)
+            .redis_assistant(redis_assistant_client)
             .elasticsearch(elastic_client)
             .mongodb(mongodb_client)
             .dns_rules_path(dns_rules_path)

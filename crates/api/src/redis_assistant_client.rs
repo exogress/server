@@ -1,12 +1,13 @@
+use exogress_server_common::assistant;
 use redis::{AsyncCommands, Client};
 
 #[derive(Clone)]
-pub struct RedisClient {
+pub struct RedisAssistantClient {
     redis: redis::Client,
     connection_manager: redis::aio::ConnectionManager,
 }
 
-impl RedisClient {
+impl RedisAssistantClient {
     pub async fn health(&self) -> bool {
         let res = async move {
             let mut redis_conn = self.redis.get_async_connection().await?;
@@ -24,24 +25,7 @@ impl RedisClient {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub enum Provider {
-    #[serde(rename = "auth0")]
-    Auth0,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct UserInfo {
-    provider: Provider,
-    uid: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct SessionPayload {
-    userinfo: UserInfo,
-}
-
-impl RedisClient {
+impl RedisAssistantClient {
     pub async fn new(redis_addr: &str) -> anyhow::Result<Self> {
         let redis = Client::open(redis_addr)?;
         let connection_manager = redis.get_tokio_connection_manager().await?;
@@ -52,20 +36,12 @@ impl RedisClient {
         })
     }
 
-    pub async fn get_uid_from_session_id(
+    pub async fn send_gw_notification(
         &mut self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<String>> {
-        let maybe_session: Option<String> = self
-            .connection_manager
-            .get(format!("app:session:{}", session_id))
-            .await?;
+        invalidation: &assistant::Notification,
+    ) -> anyhow::Result<u16> {
+        let s = serde_json::to_string_pretty(invalidation).unwrap();
 
-        if let Some(session) = maybe_session {
-            let payload: SessionPayload = serde_json::from_str(session.as_str())?;
-            Ok(Some(payload.userinfo.uid))
-        } else {
-            Ok(None)
-        }
+        Ok(self.connection_manager.publish("invalidations", s).await?)
     }
 }

@@ -8,7 +8,7 @@ use byte_unit::Byte;
 use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashSet;
 use etag::EntityTag;
-use exogress_common::entities::AccountUniqueId;
+use exogress_common::entities::{AccountUniqueId, InvalidationGroupName};
 use exogress_server_common::crypto;
 use futures::{future::Either, Future, TryStreamExt};
 use hashbrown::HashSet;
@@ -26,7 +26,7 @@ use sha2::Digest;
 use smol_str::SmolStr;
 use sodiumoxide::crypto::secretstream::{xchacha20poly1305, Header};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     convert::TryInto,
     io,
     io::Cursor,
@@ -104,6 +104,7 @@ pub struct CacheItem {
     last_modified: Option<u32>,
     used_times: u32,
     content_hash: String,
+    invalidation_groups: BTreeMap<InvalidationGroupName, u64>,
 }
 
 impl Cache {
@@ -373,6 +374,7 @@ impl Cache {
         temp_file_path: PathBuf,
         file_name: &str,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
+        invalidation_groups: &BTreeMap<InvalidationGroupName, u64>,
     ) -> anyhow::Result<()> {
         let file_size = tokio::fs::metadata(&temp_file_path).await?.len();
 
@@ -499,6 +501,7 @@ impl Cache {
                     last_modified: last_modified.map(|lm| lm.try_into().unwrap()),
                     used_times: 0,
                     content_hash,
+                    invalidation_groups: invalidation_groups.clone(),
                 })
                 .map_err(|e| anyhow!("{}", e))?;
 
@@ -556,6 +559,7 @@ impl Cache {
         valid_till: DateTime<Utc>,
         xchacha20poly1305_secret_key: &xchacha20poly1305::Key,
         temp_file_path: PathBuf,
+        invalidation_groups: &BTreeMap<InvalidationGroupName, u64>,
     ) -> anyhow::Result<bool> {
         let file_name = processing_identifier.to_string();
 
@@ -607,6 +611,7 @@ impl Cache {
                     temp_file_path,
                     file_name.as_str(),
                     xchacha20poly1305_secret_key,
+                    invalidation_groups,
                 )
                 .await?;
 
@@ -629,6 +634,7 @@ impl Cache {
         handler: &ResolvedHandler,
         processing_identifier: &RequestProcessingIdentifier,
         req: &Request<Body>,
+        invalidation_groups: &BTreeMap<InvalidationGroupName, u64>,
     ) -> anyhow::Result<Option<CacheResponse>> {
         if handler.resolved_variant.is_cache_enabled() != Some(true) {
             return Ok(None);
@@ -694,6 +700,24 @@ impl Cache {
             let last_modified = variation.last_modified;
 
             let expires_at = Utc.timestamp(variation.expires_at.into(), 0);
+
+            let now = Utc::now();
+            if expires_at < now {
+                return Ok(None);
+            }
+
+            for (invalidation_name, current_expired_at) in invalidation_groups {
+                let found = variation.invalidation_groups.get(invalidation_name);
+
+                if let Some(found_expired_at) = found {
+                    if found_expired_at < current_expired_at {
+                        return Ok(None);
+                    }
+                } else {
+                    return Ok(None);
+                }
+            }
+
             let body_encryption_header = sodiumoxide::crypto::secretstream::Header::from_slice(
                 &base64::decode(variation.body_encryption_header)?,
             )
@@ -724,11 +748,6 @@ impl Cache {
                 _ => None,
             };
             let maybe_stored_last_modified = last_modified.map(|lm| Utc.timestamp(lm.into(), 0));
-
-            let now = Utc::now();
-            if expires_at < now {
-                return Ok(None);
-            }
 
             self.mark_lru_used(id).await?;
 

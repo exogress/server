@@ -8,7 +8,7 @@ use crate::{
                 copy_headers_to_proxy_req,
             },
             post_processing::ResolvedPostProcessing,
-            HandlerInvocationResult,
+            HandlerInvocationResult, ResolvedInvalidation,
         },
     },
 };
@@ -16,7 +16,9 @@ use chrono::Utc;
 use core::fmt;
 use exogress_common::{
     config_core::StaticDir,
-    entities::{exceptions, ConfigId, HandlerName, InstanceId, LabelName, LabelValue},
+    entities::{
+        exceptions, ConfigId, HandlerName, InstanceId, InvalidationGroupName, LabelName, LabelValue,
+    },
     tunnel::ConnectTarget,
 };
 use exogress_server_common::logging::{
@@ -42,6 +44,7 @@ pub struct ResolvedStaticDir {
     pub individual_hostname: SmolStr,
     pub public_hostname: SmolStr,
     pub is_cache_enabled: bool,
+    pub invalidations: HashMap<InvalidationGroupName, ResolvedInvalidation>,
     pub post_processing: ResolvedPostProcessing,
 }
 
@@ -52,6 +55,7 @@ impl fmt::Debug for ResolvedStaticDir {
             .field("handler_name", &self.handler_name)
             .field("config_id", &self.config_id)
             .field("is_cache_enabled", &self.is_cache_enabled)
+            .field("invalidations", &self.invalidations)
             .finish()
     }
 }

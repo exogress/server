@@ -16,8 +16,9 @@ use exogress_common::{
         ClientConfig, ClientConfigRevision, ProjectConfig, Scope,
     },
     entities::{
-        AccountName, AccountUniqueId, ConfigName, InstanceId, LabelName, LabelValue,
-        MountPointName, ParameterName, ProfileName, ProjectName, ProjectUniqueId, Upstream,
+        AccountName, AccountUniqueId, ConfigName, HandlerName, InstanceId, InvalidationGroupName,
+        LabelName, LabelValue, MountPointName, ParameterName, ProfileName, ProjectName,
+        ProjectUniqueId, Upstream,
     },
     tunnel::TunnelHello,
 };
@@ -207,10 +208,20 @@ fn default_as_true() -> bool {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct InvalidationConfig {
+    pub invalidation_name: InvalidationGroupName,
+    pub config_name: Option<ConfigName>,
+    pub mount_point_name: MountPointName,
+    pub handler_name: HandlerName,
+    pub expired_at: u64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct ConfigsResponse {
     pub strict_transport_security: Option<u64>,
     #[serde(default = "default_as_true")]
     pub is_active: bool,
+    pub invalidation_groups: Vec<InvalidationConfig>,
     #[serde(with = "ts_milliseconds")]
     pub generated_at: DateTime<Utc>,
     pub fqdn: String,

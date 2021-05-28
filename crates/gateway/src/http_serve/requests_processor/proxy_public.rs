@@ -8,7 +8,7 @@ use crate::{
                 copy_headers_to_proxy_req,
             },
             post_processing::ResolvedPostProcessing,
-            utils, HandlerInvocationResult,
+            utils, HandlerInvocationResult, ResolvedInvalidation,
         },
     },
     public_hyper_client::{connect_metered, MeteredHttpConnector},
@@ -18,13 +18,14 @@ use chrono::Utc;
 use core::{fmt, mem};
 use exogress_common::{
     common_utils::uri_ext::UriExt,
-    entities::{exceptions, HandlerName},
+    entities::{exceptions, HandlerName, InvalidationGroupName},
 };
 use exogress_server_common::logging::{
     HttpBodyLog, ProtocolUpgrade, ProxyOriginResponseInfo, ProxyPublicAttemptLogMessage,
     ProxyPublicHandlerLogMessage, ProxyRequestToOriginInfo,
 };
 use futures::{SinkExt, StreamExt};
+use hashbrown::HashMap;
 use http::{
     header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE},
     HeaderMap, Request, Response,
@@ -45,6 +46,7 @@ pub struct ResolvedProxyPublic {
     pub individual_hostname: SmolStr,
     pub public_hostname: SmolStr,
     pub is_cache_enabled: bool,
+    pub invalidations: HashMap<InvalidationGroupName, ResolvedInvalidation>,
     pub is_websockets_enabled: bool,
     pub post_processing: ResolvedPostProcessing,
     pub public_counters_tx: tokio::sync::mpsc::Sender<RecordedTrafficStatistics>,

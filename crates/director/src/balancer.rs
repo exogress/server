@@ -256,7 +256,7 @@ mod test {
     use quickcheck::TestResult;
 
     #[quickcheck]
-    fn generation_works(
+    fn expired_at_works(
         weighted: Vec<(IpAddr, u8)>,
         num_shards: u16,
         seed: u64,

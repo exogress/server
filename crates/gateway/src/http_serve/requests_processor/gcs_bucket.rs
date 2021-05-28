@@ -3,7 +3,7 @@ use crate::{
         logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
         requests_processor::{
             helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
-            HandlerInvocationResult,
+            HandlerInvocationResult, ResolvedInvalidation,
         },
     },
     public_hyper_client::MeteredHttpConnector,
@@ -12,7 +12,7 @@ use chrono::Utc;
 use core::{fmt, mem};
 use exogress_common::{
     config_core::{referenced, referenced::google::bucket::GcsBucket},
-    entities::{exceptions, Exception, HandlerName},
+    entities::{exceptions, Exception, HandlerName, InvalidationGroupName},
 };
 use exogress_server_common::logging::{
     GcsBucketHandlerLogMessage, HttpBodyLog, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
@@ -58,6 +58,7 @@ pub struct ResolvedGcsBucket {
     pub auth: Result<tame_oauth::gcp::ServiceAccountAccess, AuthError>,
     pub token: tokio::sync::Mutex<Option<tame_oauth::Token>>,
     pub is_cache_enabled: bool,
+    pub invalidations: HashMap<InvalidationGroupName, ResolvedInvalidation>,
     pub post_processing: ResolvedPostProcessing,
 }
 
@@ -65,6 +66,7 @@ impl fmt::Debug for ResolvedGcsBucket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResolvedGcsBucket")
             .field("bucket_name", &self.bucket_name)
+            .field("invalidations", &self.invalidations)
             .finish()
     }
 }

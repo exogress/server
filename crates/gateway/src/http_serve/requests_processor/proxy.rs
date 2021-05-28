@@ -26,13 +26,13 @@ use super::helpers::{
 };
 use crate::http_serve::{
     logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
-    requests_processor::{post_processing::ResolvedPostProcessing, utils},
+    requests_processor::{post_processing::ResolvedPostProcessing, utils, ResolvedInvalidation},
 };
 use chrono::Utc;
 use exogress_common::{
     common_utils::uri_ext::UriExt,
     config_core::UpstreamDefinition,
-    entities::{HandlerName, LabelName, LabelValue},
+    entities::{HandlerName, InvalidationGroupName, LabelName, LabelValue},
 };
 use exogress_server_common::logging::{
     HttpBodyLog, InstanceLog, ProtocolUpgrade, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
@@ -58,6 +58,7 @@ pub struct ResolvedProxy {
     pub public_hostname: SmolStr,
     pub presence_client: presence::Client,
     pub is_cache_enabled: bool,
+    pub invalidations: HashMap<InvalidationGroupName, ResolvedInvalidation>,
     pub is_websockets_enabled: bool,
     pub post_processing: ResolvedPostProcessing,
 }

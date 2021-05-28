@@ -3,7 +3,7 @@ use crate::{
         logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
         requests_processor::{
             helpers::copy_headers_from_proxy_res_to_res, post_processing::ResolvedPostProcessing,
-            s3_bucket, HandlerInvocationResult,
+            s3_bucket, HandlerInvocationResult, ResolvedInvalidation,
         },
     },
     public_hyper_client::MeteredHttpConnector,
@@ -12,7 +12,7 @@ use chrono::Utc;
 use core::mem;
 use exogress_common::{
     config_core::referenced,
-    entities::{exceptions, Exception, HandlerName},
+    entities::{exceptions, Exception, HandlerName, InvalidationGroupName},
 };
 use exogress_server_common::logging::{
     HttpBodyLog, ProxyAttemptLogMessage, ProxyOriginResponseInfo, ProxyRequestToOriginInfo,
@@ -52,6 +52,7 @@ pub struct ResolvedS3Bucket {
     pub credentials: Option<Result<rusty_s3::Credentials, referenced::Error>>,
     pub bucket: Result<rusty_s3::Bucket, s3_bucket::BucketError>,
     pub is_cache_enabled: bool,
+    pub invalidations: HashMap<InvalidationGroupName, ResolvedInvalidation>,
     pub post_processing: ResolvedPostProcessing,
 }
 

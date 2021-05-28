@@ -36,17 +36,17 @@ use exogress_common::{
         self, is_profile_active, referenced,
         referenced::{Container, ContainerScope, Parameter},
         refinable::RefinableSet,
-        Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandlerVariant, Languages,
-        MatchPathSegment, MatchPathSingleSegment, MatchQuerySingleValue, MatchQueryValue,
-        MatchingPath, MethodMatcher, ModifyHeaders, ModifyQuery, ModifyQueryStrategy, OnResponse,
-        RedirectTo, RequestModifications, ResponseBody, RuleCacheMode, Scope, StaticResponse,
-        StatusCodeRange, TemplateEngine, TrailingSlashFilterRule, TrailingSlashModification,
-        UrlPathSegment,
+        Action, CatchAction, CatchMatcher, ClientConfigRevision, ClientHandler,
+        ClientHandlerVariant, Languages, MatchPathSegment, MatchPathSingleSegment,
+        MatchQuerySingleValue, MatchQueryValue, MatchingPath, MethodMatcher, ModifyHeaders,
+        ModifyQuery, ModifyQueryStrategy, OnResponse, RedirectTo, RequestModifications,
+        ResponseBody, RuleCacheMode, Scope, StaticResponse, StatusCodeRange, TemplateEngine,
+        TrailingSlashFilterRule, TrailingSlashModification, UrlPathSegment,
     },
     entities::{
         exceptions, exceptions::MODIFICATION_ERROR, serde::Serializer, AccountUniqueId, ConfigId,
-        ConfigName, Exception, HandlerName, InstanceId, MountPointName, ParameterName, ProjectName,
-        ProjectUniqueId, StaticResponseName, Ulid,
+        ConfigName, Exception, HandlerName, InstanceId, InvalidationGroupName, MountPointName,
+        ParameterName, ProjectName, ProjectUniqueId, StaticResponseName, Ulid,
     },
 };
 use exogress_server_common::{
@@ -125,6 +125,12 @@ mod s3_bucket;
 mod static_dir;
 
 mod utils;
+
+#[derive(Debug, Clone)]
+pub struct ResolvedInvalidation {
+    expired_at: u64,
+    filters: Vec<ResolvedFilter>,
+}
 
 pub struct RequestsProcessor {
     pub is_active: bool,
@@ -245,9 +251,33 @@ impl RequestsProcessor {
                 req.uri().path_and_query().unwrap().as_str(),
             );
 
+            let invalidations_for_req = handler
+                .resolved_variant
+                .invalidations()
+                .map(|invalidations| {
+                    invalidations
+                        .iter()
+                        .filter(|(_group_name, invalidation)| {
+                            invalidation.filters.iter().any(|filter: &ResolvedFilter| {
+                                filter.matches(&requested_url, req.method()).is_some()
+                            })
+                        })
+                        .map(|(group_name, invalidation)| {
+                            (group_name.clone(), invalidation.expired_at)
+                        })
+                        .collect::<BTreeMap<InvalidationGroupName, u64>>()
+                })
+                .unwrap_or_default();
+
             let cached_response = self
                 .cache
-                .serve_from_cache(&self, &handler, &processing_identifier, &req)
+                .serve_from_cache(
+                    &self,
+                    &handler,
+                    &processing_identifier,
+                    &req,
+                    &invalidations_for_req,
+                )
                 .await;
 
             match cached_response {
@@ -308,6 +338,7 @@ impl RequestsProcessor {
                                                     account_secret_key,
                                                     transformer_client,
                                                     cache,
+                                                    invalidations_for_req,
                                                     account_unique_id,
                                                     project_name,
                                                     project_unique_id,
@@ -414,7 +445,8 @@ impl RequestsProcessor {
 
                 match result {
                     ResolvedHandlerProcessingResult::Processed { cache_mode } => {
-                        processed_by = Some((handler, cache_mode, invocation_log));
+                        processed_by =
+                            Some((handler, cache_mode, invalidations_for_req, invocation_log));
                         break;
                     }
                     ResolvedHandlerProcessingResult::FiltersNotMatched => {}
@@ -430,7 +462,7 @@ impl RequestsProcessor {
                 *res = Response::new(Body::from("Not found"));
                 *res.status_mut() = StatusCode::NOT_FOUND;
             }
-            Some((handler, cache_mode, invocation_log)) => {
+            Some((handler, cache_mode, invalidations_for_req, invocation_log)) => {
                 // Try to trigger transformation if applicable
                 if handler.resolved_variant.is_cache_enabled() != Some(true) {
                     // cache is disabled
@@ -477,6 +509,7 @@ impl RequestsProcessor {
                                 let requested_url = requested_url.clone();
                                 let log_message_container = log_message_container.clone();
                                 let invocation_log = invocation_log.clone();
+                                let invalidations_for_req = invalidations_for_req.clone();
 
                                 tokio::spawn(async move {
                                     if let Some(cloned_resp) = on_response_finished.await {
@@ -489,6 +522,7 @@ impl RequestsProcessor {
                                             account_secret_key,
                                             transformer_client,
                                             cache,
+                                            invalidations_for_req,
                                             account_unique_id,
                                             project_name,
                                             project_unique_id,
@@ -570,6 +604,7 @@ impl RequestsProcessor {
                             req_uri,
                             res,
                             cache,
+                            invalidations_for_req.clone(),
                             account_unique_id,
                             project_name,
                             mount_point_name,
@@ -716,6 +751,7 @@ fn save_to_cache(
     req_uri: &http::Uri,
     res: &mut Response<Body>,
     cache: Cache,
+    invalidation_groups: BTreeMap<InvalidationGroupName, u64>,
     account_unique_id: AccountUniqueId,
     project_name: ProjectName,
     mount_point_name: MountPointName,
@@ -813,6 +849,7 @@ fn save_to_cache(
                         valid_till,
                         &xchacha20poly1305_secret_key,
                         tempfile_path,
+                        &invalidation_groups,
                     )
                     .await;
 
@@ -874,6 +911,7 @@ async fn trigger_transformation_if_required(
     account_secret_key: xchacha20poly1305::Key,
     transformer_client: TransformerClient,
     cache: Cache,
+    invalidation_groups: BTreeMap<InvalidationGroupName, u64>,
     account_unique_id: AccountUniqueId,
     project_name: ProjectName,
     project_unique_id: ProjectUniqueId,
@@ -987,6 +1025,7 @@ async fn trigger_transformation_if_required(
                                     req_uri,
                                     &mut resp,
                                     cache,
+                                    invalidation_groups.clone(),
                                     account_unique_id,
                                     project_name,
                                     mount_point_name,
@@ -1017,6 +1056,7 @@ async fn trigger_transformation_if_required(
                                 req_uri,
                                 &mut resp,
                                 cache,
+                                invalidation_groups.clone(),
                                 account_unique_id,
                                 project_name,
                                 mount_point_name,
@@ -1241,6 +1281,18 @@ pub enum ResolvedHandlerVariant {
 }
 
 impl ResolvedHandlerVariant {
+    pub fn invalidations(&self) -> Option<&HashMap<InvalidationGroupName, ResolvedInvalidation>> {
+        match self {
+            ResolvedHandlerVariant::Proxy(proxy) => Some(&proxy.invalidations),
+            ResolvedHandlerVariant::StaticDir(static_dir) => Some(&static_dir.invalidations),
+            ResolvedHandlerVariant::Auth(_) => None,
+            ResolvedHandlerVariant::S3Bucket(s3) => Some(&s3.invalidations),
+            ResolvedHandlerVariant::GcsBucket(gcs) => Some(&gcs.invalidations),
+            ResolvedHandlerVariant::PassThrough(_) => None,
+            ResolvedHandlerVariant::ProxyPublic(p) => Some(&p.invalidations),
+        }
+    }
+
     pub fn is_cache_enabled(&self) -> Option<bool> {
         match self {
             ResolvedHandlerVariant::Proxy(proxy) => Some(proxy.is_cache_enabled),
@@ -1248,7 +1300,6 @@ impl ResolvedHandlerVariant {
             ResolvedHandlerVariant::Auth(_) => None,
             ResolvedHandlerVariant::S3Bucket(s3) => Some(s3.is_cache_enabled),
             ResolvedHandlerVariant::GcsBucket(gcs) => Some(gcs.is_cache_enabled),
-            // ResolvedHandlerVariant::ApplicationFirewall(_) => None,
             ResolvedHandlerVariant::PassThrough(_) => None,
             ResolvedHandlerVariant::ProxyPublic(p) => Some(p.is_cache_enabled),
         }
@@ -1658,7 +1709,7 @@ enum ResolvedCatchAction {
 //     }
 // }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResolvedFilter {
     pub path: ResolvedMatchingPath,
     pub query_params: HashMap<SmolStr, Option<ResolvedMatchQueryValue>>,
@@ -1667,7 +1718,7 @@ pub struct ResolvedFilter {
     pub base_path_replacement: Vec<UrlPathSegment>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResolvedMatchQueryValue {
     AnySingleSegment,
     MayBeAnyMultipleSegments,
@@ -3191,6 +3242,8 @@ impl RequestsProcessor {
         let project_name = resp.project;
         let params = resp.params.clone();
 
+        let invalidation_configs = Arc::new(resp.invalidation_groups);
+
         let project_mount_points = resp
             .project_config
             .mount_points
@@ -3253,8 +3306,6 @@ impl RequestsProcessor {
             .0
             .clone();
 
-        // let project_static_responses = resp.project_config.refinable.static_responses.clone();
-        //
         let mut merged_resolved_handlers = vec![];
         let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
             public_counters_tx: public_counters_tx.clone(),
@@ -3273,7 +3324,7 @@ impl RequestsProcessor {
             maybe_identity: maybe_identity.clone(),
         });
 
-        for (_mp_name, (config_name, config_revision, upstreams, instances, active_profile, mp)) in
+        for (mp_name, (config_name, config_revision, upstreams, instances, active_profile, mp)) in
             grouped_mount_points.into_iter()
         {
             shadow_clone!(
@@ -3293,7 +3344,8 @@ impl RequestsProcessor {
                 rules_counter,
                 presence_client,
                 params,
-                active_profile
+                active_profile,
+                invalidation_configs
             );
 
             let client_config_info = config_name.clone().zip(config_revision);
@@ -3308,9 +3360,9 @@ impl RequestsProcessor {
                     }
                 })
                 .map({
-                    shadow_clone!(active_profile, mount_point_name, refinable, public_client, public_counters_tx, resolver, traffic_counters);
+                    shadow_clone!(active_profile, mount_point_name, refinable, public_client, public_counters_tx, resolver, traffic_counters, invalidation_configs);
 
-                    move |(handler_name, handler)| {
+                    move |(handler_name, handler): (_, ClientHandler)| {
                         let replace_base_path = handler
                             .variant
                             .rebase()
@@ -3322,6 +3374,50 @@ impl RequestsProcessor {
                             &mount_point_name,
                             &handler_name,
                         );
+
+                        let invalidations = invalidation_configs
+                            .iter()
+                            .filter(|ic| {
+                                ic.mount_point_name == mp_name &&
+                                    ic.handler_name == handler_name &&
+                                    ic.config_name == config_name
+                            })
+                            .map(|ic| {
+                                let invalidation = ResolvedInvalidation {
+                                    expired_at: ic.expired_at,
+                                    filters: handler
+                                        .variant
+                                        .cache()
+                                        .and_then(|cache| {
+                                            cache
+                                                .invalidations
+                                                .get(&ic.invalidation_name)
+                                                .map(|filters| {
+                                                    filters
+                                                        .iter()
+                                                        .map(|filter| {
+                                                            ResolvedFilter {
+                                                                path: filter.path.clone().into(),
+                                                                query_params: filter
+                                                                    .query_params
+                                                                    .inner
+                                                                    .iter()
+                                                                    .map(|(k, v)| {
+                                                                        (k.clone(), v.clone().map(From::from))
+                                                                    }).collect(),
+                                                                method: filter.methods.clone(),
+                                                                trailing_slash: filter.trailing_slash,
+                                                                base_path_replacement: vec![],
+                                                            }
+                                                        })
+                                                        .collect()
+                                                })
+                                        })
+                                        .unwrap_or_default(),
+                                };
+                                (ic.invalidation_name.clone(), invalidation)
+                            })
+                            .collect();
 
                         Some(ResolvedHandler {
                             handler_name: handler_name.clone(),
@@ -3363,6 +3459,7 @@ impl RequestsProcessor {
                                 ClientHandlerVariant::StaticDir(static_dir) => {
                                     ResolvedHandlerVariant::StaticDir(static_dir::ResolvedStaticDir {
                                         is_cache_enabled: static_dir.cache.enabled,
+                                        invalidations,
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: static_dir
@@ -3422,6 +3519,7 @@ impl RequestsProcessor {
                                 ClientHandlerVariant::Proxy(proxy) => {
                                     ResolvedHandlerVariant::Proxy(proxy::ResolvedProxy {
                                         handler_name: handler_name.clone(),
+                                        invalidations,
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: proxy
@@ -3489,6 +3587,7 @@ impl RequestsProcessor {
                                 ClientHandlerVariant::S3Bucket(s3_bucket) => {
                                     ResolvedHandlerVariant::S3Bucket(s3_bucket::ResolvedS3Bucket {
                                         handler_name: handler_name.clone(),
+                                        invalidations,
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: s3_bucket
@@ -3546,6 +3645,7 @@ impl RequestsProcessor {
                                 ClientHandlerVariant::GcsBucket(gcs_bucket) => {
                                     let bucket = gcs_bucket::ResolvedGcsBucket {
                                         handler_name: handler_name.clone(),
+                                        invalidations,
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
                                                 mime_types: gcs_bucket
@@ -3595,6 +3695,7 @@ impl RequestsProcessor {
                                 ClientHandlerVariant::ProxyPublic(proxy_public) => {
                                     let proxy_public = proxy_public::ResolvedProxyPublic {
                                         handler_name: handler_name.clone(),
+                                        invalidations,
                                         host: proxy_public.host.clone(),
                                         post_processing: ResolvedPostProcessing {
                                             encoding: ResolvedEncoding {
