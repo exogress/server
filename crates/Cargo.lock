@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-api"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bs58",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-assistant"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-commiter"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bson",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-director"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bytes 1.0.1",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-dns"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bytes 1.0.1",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-gateway"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-server-common"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-signaler"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1336,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "exogress-transformer"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-stream",
