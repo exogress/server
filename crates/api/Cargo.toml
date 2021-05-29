@@ -6,7 +6,6 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.31"
-bson = "2.0.0-beta"
 chrono = { version = "0.4.11", features = ["serde"] }
 clap = "2.33.3"
 elasticsearch = { version = "7.12.0-alpha.1", default-features = false, features = ["rustls-tls"] }
@@ -16,7 +15,7 @@ hashbrown = { version = "0.11", features = ["serde"] }
 itertools = "0.10"
 lazy_static = "1.4.0"
 jemallocator = "0.3.2"
-mongodb = "2.0.0-beta"
+mongodb = { git = 'https://github.com/mongodb/mongo-rust-driver.git', branch = "master", features = ["bson-chrono-0_4"]}
 pin-project = "1.0"
 prometheus = "0.12.0"
 rand = { version = "0.8" }

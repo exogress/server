@@ -4,6 +4,7 @@ use exogress_common::{
     access_tokens::{validate_jwt_token, Claims},
     entities::AccessKeyId,
 };
+use mongodb::bson;
 
 impl Service {
     pub(crate) async fn find_account_by_bearer_token(

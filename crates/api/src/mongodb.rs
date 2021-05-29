@@ -1,10 +1,10 @@
 use anyhow::bail;
-use bson::oid::ObjectId;
 use exogress_common::entities::{
     AccessKeyId, AccountName, AccountUniqueId, ConfigName, HandlerName, InvalidationGroupName,
     MountPointName, ProjectName,
 };
 use futures::StreamExt;
+use mongodb::{bson, bson::oid::ObjectId};
 use std::time::Duration;
 
 #[derive(Clone)]

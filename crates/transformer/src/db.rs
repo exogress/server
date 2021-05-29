@@ -2,7 +2,6 @@ use crate::{
     bucket::GcsBucketInfo, magick::ImageConversionMeta, PROCESSING_MAX_TIME_HARD, UPLOAD_TTL,
 };
 use anyhow::Context;
-use bson::doc;
 use chrono::{DateTime, Utc};
 use exogress_common::entities::{
     AccountUniqueId, HandlerName, MountPointName, ProjectName, ProjectUniqueId, Ulid,
@@ -14,6 +13,7 @@ use exogress_server_common::transformer::{
 use futures::Stream;
 use itertools::Itertools;
 use mongodb::{
+    bson::{self, doc, Bson},
     options::{FindOneAndReplaceOptions, FindOneAndUpdateOptions, FindOneOptions, ReturnDocument},
     Collection,
 };
@@ -60,13 +60,13 @@ pub struct QueuedRequest {
     #[serde(default)]
     pub encryption_header: Option<String>,
     pub account_unique_id: AccountUniqueId,
-    pub last_requested_at: bson::DateTime,
+    pub last_requested_at: chrono::DateTime<Utc>,
     pub num_requests: i64,
-    pub upload_requested_at: bson::DateTime,
+    pub upload_requested_at: chrono::DateTime<Utc>,
     #[serde(default)]
     pub upload_id: Option<Ulid>,
 
-    pub start_processing_at: Option<bson::DateTime>,
+    pub start_processing_at: Option<chrono::DateTime<Utc>>,
 }
 
 impl QueuedRequest {
@@ -87,8 +87,8 @@ pub struct Processed {
     pub source_size: i64,
     pub content_type: String,
     pub content_hash: String,
-    pub last_requested_at: bson::DateTime,
-    pub transformation_started_at: bson::DateTime,
+    pub last_requested_at: chrono::DateTime<Utc>,
+    pub transformation_started_at: chrono::DateTime<Utc>,
     pub num_requests: i64,
     pub formats: Vec<ProcessedFormat>,
 }
@@ -117,7 +117,7 @@ pub fn listen_queue(
                     },
                     doc! {
                         "$set": {
-                            "start_processing_at": bson::Bson::from(Utc::now()),
+                            "start_processing_at": Bson::from(Utc::now()),
                         }
                     },
                     options,

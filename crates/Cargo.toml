@@ -16,8 +16,3 @@ lto = true
 
 [profile.dev]
 split-debuginfo = "unpacked"
-
-[patch.crates-io]
-#https://github.com/mongodb/bson-rust/pull/257
-bson = { git = 'https://github.com/vkill/bson-rust.git', branch = "fix-dt"}
-#bson = { git = 'https://github.com/mongodb/bson-rust.git', branch = "master"}

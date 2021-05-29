@@ -1,6 +1,6 @@
 use crate::mongodb::{Account, Project};
-use bson::oid::ObjectId;
 use exogress_common::entities::{AccountName, ProjectName};
+use mongodb::bson::oid::ObjectId;
 use std::path::PathBuf;
 use typed_builder::TypedBuilder;
 

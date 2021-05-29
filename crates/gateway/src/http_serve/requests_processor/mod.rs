@@ -3324,6 +3324,7 @@ impl RequestsProcessor {
             recv_counter: crate::statistics::PUBLIC_ENDPOINT_BYTES_RECV.clone(),
             maybe_identity: None,
         });
+
         let int_metered_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
             public_counters_tx: public_counters_tx.clone(),
             resolver: resolver.clone(),
