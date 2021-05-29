@@ -53,7 +53,7 @@ mod http_serve;
 mod int_server;
 mod mime_helpers;
 mod notification_listener;
-mod public_hyper_client;
+mod public_metered_hyper_client;
 mod registry;
 mod reports_saver;
 mod resources;

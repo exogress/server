@@ -1,13 +1,16 @@
 use crate::clients::traffic_counter::{
     RecordedTrafficStatistics, TrafficCountedStream, TrafficCounters,
 };
+use core::mem;
 use exogress_common::common_utils::tls::load_native_certs_safe;
 use futures::{
     channel::oneshot,
     future::BoxFuture,
     task::{Context, Poll},
+    TryStreamExt,
 };
-use http::Uri;
+use http::{header::CONTENT_LENGTH, Uri};
+use hyper::Body;
 use prometheus::IntCounter;
 use rand::{seq::IteratorRandom, thread_rng};
 use std::{io::Cursor, pin::Pin, sync::Arc, task};
@@ -24,6 +27,7 @@ use tokio_rustls::{
 };
 use tokio_util::either::Either;
 use trust_dns_resolver::TokioAsyncResolver;
+use typed_headers::HeaderMapExt;
 
 pub struct HyperUsableConnection {
     inner: RawMeteredConnection,
@@ -283,5 +287,85 @@ impl hyper::service::Service<Uri> for MeteredHttpConnector {
 
             Ok(HyperUsableConnection::new(conn))
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PublicMeteredHyperClient {
+    inner: hyper::Client<MeteredHttpConnector, hyper::Body>,
+}
+
+impl PublicMeteredHyperClient {
+    pub fn new(connector: MeteredHttpConnector) -> Self {
+        PublicMeteredHyperClient {
+            inner: hyper::Client::builder().build::<_, hyper::Body>(connector),
+        }
+    }
+
+    pub async fn request(
+        &self,
+        mut req: hyper::Request<hyper::Body>,
+    ) -> anyhow::Result<hyper::Response<hyper::Body>> {
+        req.headers_mut()
+            .typed_insert::<typed_headers::AcceptEncoding>(&typed_headers::AcceptEncoding(vec![
+                typed_headers::QualityItem::new(
+                    typed_headers::ContentCoding::BROTLI,
+                    typed_headers::Quality::from_u16(1000),
+                ),
+                typed_headers::QualityItem::new(
+                    typed_headers::ContentCoding::GZIP,
+                    typed_headers::Quality::from_u16(900),
+                ),
+                typed_headers::QualityItem::new(
+                    typed_headers::ContentCoding::IDENTITY,
+                    typed_headers::Quality::from_u16(500),
+                ),
+            ]));
+        let mut res = self.inner.request(req).await?;
+
+        let content_encoding = res
+            .headers_mut()
+            .typed_remove::<typed_headers::ContentEncoding>();
+
+        if let Ok(Some(encoding)) = content_encoding {
+            match encoding.first() {
+                Some(&typed_headers::ContentCoding::BROTLI) => {
+                    let original_body = mem::replace(res.body_mut(), Body::empty());
+
+                    let decoded = tokio_util::io::ReaderStream::new(
+                        async_compression::tokio::bufread::BrotliDecoder::new(
+                            tokio_util::io::StreamReader::new(original_body.map_err(|e| {
+                                io::Error::new(io::ErrorKind::Other, format!("{}", e))
+                            })),
+                        ),
+                    );
+
+                    res.headers_mut().remove(CONTENT_LENGTH);
+
+                    *res.body_mut() = hyper::Body::wrap_stream(decoded);
+                }
+                Some(&typed_headers::ContentCoding::GZIP) => {
+                    let original_body = mem::replace(res.body_mut(), Body::empty());
+
+                    let decoded = tokio_util::io::ReaderStream::new(
+                        async_compression::tokio::bufread::GzipDecoder::new(
+                            tokio_util::io::StreamReader::new(original_body.map_err(|e| {
+                                io::Error::new(io::ErrorKind::Other, format!("{}", e))
+                            })),
+                        ),
+                    );
+
+                    res.headers_mut().remove(CONTENT_LENGTH);
+
+                    *res.body_mut() = hyper::Body::wrap_stream(decoded);
+                }
+                Some(&typed_headers::ContentCoding::IDENTITY) | None => {}
+                _ => {
+                    bail!("bad ContentEncoding {:?}", encoding);
+                }
+            }
+        }
+
+        Ok(res)
     }
 }

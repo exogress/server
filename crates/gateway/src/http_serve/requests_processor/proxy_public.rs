@@ -11,7 +11,9 @@ use crate::{
             utils, HandlerInvocationResult, ResolvedInvalidation,
         },
     },
-    public_hyper_client::{connect_metered, MeteredHttpConnector},
+    public_metered_hyper_client::{
+        connect_metered, MeteredHttpConnector, PublicMeteredHyperClient,
+    },
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -41,7 +43,7 @@ use trust_dns_resolver::TokioAsyncResolver;
 
 pub struct ResolvedProxyPublic {
     pub handler_name: HandlerName,
-    pub client: hyper::Client<MeteredHttpConnector, hyper::Body>,
+    pub client: PublicMeteredHyperClient,
     pub host: SmolStr,
     pub individual_hostname: SmolStr,
     pub public_hostname: SmolStr,

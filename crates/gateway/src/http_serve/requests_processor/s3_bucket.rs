@@ -6,7 +6,7 @@ use crate::{
             s3_bucket, HandlerInvocationResult, ResolvedInvalidation,
         },
     },
-    public_hyper_client::MeteredHttpConnector,
+    public_metered_hyper_client::{MeteredHttpConnector, PublicMeteredHyperClient},
 };
 use chrono::Utc;
 use core::mem;
@@ -48,7 +48,7 @@ impl BucketError {
 #[derive(Clone, Debug)]
 pub struct ResolvedS3Bucket {
     pub handler_name: HandlerName,
-    pub client: hyper::Client<MeteredHttpConnector, hyper::Body>,
+    pub client: PublicMeteredHyperClient,
     pub credentials: Option<Result<rusty_s3::Credentials, referenced::Error>>,
     pub bucket: Result<rusty_s3::Bucket, s3_bucket::BucketError>,
     pub is_cache_enabled: bool,
@@ -102,7 +102,13 @@ impl ResolvedS3Bucket {
         let signed_url = action.sign(Duration::from_secs(60));
 
         let mut proxy_resp = try_or_exception!(
-            self.client.get(signed_url.as_str().parse().unwrap()).await,
+            self.client
+                .request(
+                    http::Request::get(signed_url.as_str().parse::<http::Uri>().unwrap())
+                        .body(hyper::Body::empty())
+                        .unwrap()
+                )
+                .await,
             exceptions::PROXY_BAD_GATEWAY
         );
 

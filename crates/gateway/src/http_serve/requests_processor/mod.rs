@@ -19,7 +19,7 @@ use crate::{
         templates::render_limit_reached,
     },
     mime_helpers::{is_mime_match, ordered_by_quality},
-    public_hyper_client::MeteredHttpConnector,
+    public_metered_hyper_client::{MeteredHttpConnector, PublicMeteredHyperClient},
     rules_counter::AccountCounters,
     transformer::TransformerClient,
     webapp::{ConfigData, ConfigsResponse},
@@ -3316,7 +3316,7 @@ impl RequestsProcessor {
             .clone();
 
         let mut merged_resolved_handlers = vec![];
-        let public_client = hyper::Client::builder().build::<_, Body>(MeteredHttpConnector {
+        let public_client = PublicMeteredHyperClient::new(MeteredHttpConnector {
             public_counters_tx: public_counters_tx.clone(),
             resolver: resolver.clone(),
             counters: traffic_counters.clone(),

@@ -1,4 +1,4 @@
-use crate::public_hyper_client::MeteredHttpConnector;
+use crate::public_metered_hyper_client::MeteredHttpConnector;
 use core::mem;
 use exogress_common::entities::{
     AccountUniqueId, HandlerName, MountPointName, ProjectName, ProjectUniqueId,

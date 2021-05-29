@@ -6,7 +6,7 @@ use crate::{
             HandlerInvocationResult, ResolvedInvalidation,
         },
     },
-    public_hyper_client::MeteredHttpConnector,
+    public_metered_hyper_client::{MeteredHttpConnector, PublicMeteredHyperClient},
 };
 use chrono::Utc;
 use core::{fmt, mem};
@@ -53,7 +53,7 @@ impl AuthError {
 
 pub struct ResolvedGcsBucket {
     pub handler_name: HandlerName,
-    pub client: hyper::Client<MeteredHttpConnector, hyper::Body>,
+    pub client: PublicMeteredHyperClient,
     pub bucket_name: Result<GcsBucket, referenced::Error>,
     pub auth: Result<tame_oauth::gcp::ServiceAccountAccess, AuthError>,
     pub token: tokio::sync::Mutex<Option<tame_oauth::Token>>,
