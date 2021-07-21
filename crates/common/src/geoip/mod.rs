@@ -1,5 +1,5 @@
 use maxminddb::Reader;
-use memmap::Mmap;
+use memmap2::Mmap;
 use std::sync::Arc;
 
 pub mod clap;

@@ -4,7 +4,7 @@ use exogress_server_common::crypto;
 use futures::StreamExt;
 use lru_time_cache::LruCache;
 use memadvise::Advice;
-use memmap::Mmap;
+use memmap2::Mmap;
 use pin_utils::pin_mut;
 use sodiumoxide::crypto::secretstream::xchacha20poly1305;
 use std::{fs::File, path::PathBuf, sync::Arc, time::Duration};
