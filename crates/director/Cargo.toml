@@ -5,6 +5,8 @@ authors = ["Gleb Pomykalov <gleb@exogress.com>"]
 edition = "2018"
 
 [dependencies]
+# https://github.com/tkaitchuck/aHash/issues/95
+indexmap = "=1.6.2"
 bytes = "1.0"
 clap = "2.33.3"
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "signal", "net", "time", "parking_lot"] }

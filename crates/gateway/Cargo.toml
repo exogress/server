@@ -5,6 +5,8 @@ authors = ["Exogress Team <team@exogress.com>"]
 edition = "2018"
 
 [dependencies]
+# https://github.com/tkaitchuck/aHash/issues/95
+indexmap = "=1.6.2"
 aho-corasick = "0.7.15"
 anyhow = "1.0.31"
 async-compression = { version = "0.3.7", features = ["gzip", "futures-write", "brotli", "deflate"] }

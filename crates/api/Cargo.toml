@@ -5,6 +5,8 @@ authors = ["Gleb Pomykalov <gleb@exogress.com>"]
 edition = "2018"
 
 [dependencies]
+# https://github.com/tkaitchuck/aHash/issues/95
+indexmap = "=1.6.2"
 anyhow = "1.0.31"
 chrono = { version = "0.4.11", features = ["serde"] }
 clap = "2.33.3"
