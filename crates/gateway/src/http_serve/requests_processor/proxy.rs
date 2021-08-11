@@ -1,50 +1,52 @@
-use crate::{
-    clients::{ClientTunnels, HttpConnector, TcpConnector},
-    http_serve::requests_processor::HandlerInvocationResult,
-};
-use anyhow::Context;
 use core::{fmt, mem};
-use exogress_common::{
-    entities::{exceptions, ConfigId, InstanceId, Upstream},
-    tunnel::{Compression, ConnectTarget},
-};
+use std::net::SocketAddr;
+use std::{io, sync::Arc, time::Duration};
 
-use exogress_server_common::{logging::ProxyHandlerLogMessage, presence};
+use anyhow::Context;
+use chrono::Utc;
 use futures::SinkExt;
+use futures::StreamExt;
+use hashbrown::HashMap;
 use http::{
-    header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE},
+    header::{CONNECTION, HOST, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE},
     HeaderMap, Request, Response,
 };
 use hyper::Body;
+use language_tags::LanguageTag;
 use parking_lot::Mutex;
+use rand::{thread_rng, RngCore};
 use smol_str::SmolStr;
-use std::net::SocketAddr;
+use tokio::time::sleep;
+use tokio_tungstenite::WebSocketStream;
 use weighted_rs::{SmoothWeight, Weight};
 
-use super::helpers::{
-    add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
-};
-use crate::http_serve::{
-    logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
-    requests_processor::{post_processing::ResolvedPostProcessing, utils, ResolvedInvalidation},
-};
-use chrono::Utc;
 use exogress_common::{
     common_utils::uri_ext::UriExt,
     config_core::UpstreamDefinition,
     entities::{HandlerName, InvalidationGroupName, LabelName, LabelValue},
 };
+use exogress_common::{
+    entities::{exceptions, ConfigId, InstanceId, Upstream},
+    tunnel::{Compression, ConnectTarget},
+};
 use exogress_server_common::logging::{
     HttpBodyLog, InstanceLog, ProtocolUpgrade, ProxyAttemptLogMessage, ProxyOriginResponseInfo,
     ProxyRequestToOriginInfo,
 };
-use futures::StreamExt;
-use hashbrown::HashMap;
-use language_tags::LanguageTag;
-use rand::{thread_rng, RngCore};
-use std::{io, sync::Arc, time::Duration};
-use tokio::time::sleep;
-use tokio_tungstenite::WebSocketStream;
+use exogress_server_common::{logging::ProxyHandlerLogMessage, presence};
+
+use crate::http_serve::{
+    logging::{save_body_info_to_log_message, LogMessageSendOnDrop},
+    requests_processor::{post_processing::ResolvedPostProcessing, utils, ResolvedInvalidation},
+};
+use crate::{
+    clients::{ClientTunnels, HttpConnector, TcpConnector},
+    http_serve::requests_processor::HandlerInvocationResult,
+};
+
+use super::helpers::{
+    add_forwarded_headers, copy_headers_from_proxy_res_to_res, copy_headers_to_proxy_req,
+};
 
 pub struct ResolvedProxy {
     pub name: Upstream,
@@ -96,19 +98,15 @@ impl ResolvedProxy {
         let mut is_websocket = false;
 
         if let Some(upgrade) = req.headers().get(UPGRADE) {
-            info!("upgrade = {:?}", upgrade);
             if upgrade
                 .to_str()
                 .unwrap()
                 .to_lowercase()
                 .contains("websocket")
             {
-                info!("it is ws");
                 if self.is_websockets_enabled {
-                    info!("ws enabled! use it");
                     is_websocket = true;
                 } else {
-                    info!("throw exception");
                     return HandlerInvocationResult::Exception {
                         name: exceptions::PROXY_WEBSOCKETS_DISABLED.clone(),
                         data: Default::default(),
@@ -123,10 +121,8 @@ impl ResolvedProxy {
         connect_target.update_url(&mut proxy_to);
 
         if proxy_to.scheme().unwrap() == "https" {
-            info!("https->http");
             proxy_to.set_scheme("http");
         } else if proxy_to.scheme().unwrap() == "wss" {
-            info!("wss -> ws");
             proxy_to.set_scheme("ws");
         } else {
             unreachable!("unknown scheme: {}", proxy_to);
@@ -180,12 +176,13 @@ impl ResolvedProxy {
                     });
 
                     let proxy_res = if is_websocket {
-                        info!("proxying WS!");
-
                         let mut ws_req = http::Request::new(());
 
                         *ws_req.headers_mut() = proxy_req.headers().clone();
                         *ws_req.method_mut() = proxy_req.method().clone();
+
+                        // otherwise host is added two times.
+                        ws_req.headers_mut().remove(HOST);
 
                         let mut rand_key = vec![0u8; 16];
                         thread_rng().fill_bytes(&mut rand_key[..]);
@@ -227,8 +224,6 @@ impl ResolvedProxy {
                         *req.headers_mut() = req_for_upgrade.headers().clone();
                         *req.uri_mut() = req_for_upgrade.uri().clone();
                         *req.method_mut() = req_for_upgrade.method().clone();
-
-                        info!("perform WS {:?}", req);
 
                         tokio::spawn(
                             #[allow(unreachable_code)]

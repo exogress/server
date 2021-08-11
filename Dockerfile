@@ -1,4 +1,4 @@
-FROM rust:1.52 as dirs
+FROM rust:1.54 as dirs
 
 RUN rustup component add clippy rustfmt
 RUN apt-get update && apt-get install -y libssl-dev libsasl2-dev llvm-dev llvm libclang1-7 \
