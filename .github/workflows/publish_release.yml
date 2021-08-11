@@ -49,13 +49,7 @@ jobs:
           username: exogress+publisher
           password: ${{ secrets.QUAY_PASSWORD }}
 
-      - uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-toml
+      - uses: Swatinem/rust-cache@v1
 
       - name: Build base
         run:
